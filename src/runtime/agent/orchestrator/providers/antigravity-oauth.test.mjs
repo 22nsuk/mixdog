@@ -114,7 +114,7 @@ test('Antigravity keeps bare Flash thinkingLevel without guessing Claude token b
     assert.equal(body.model, 'claude-opus-4-6-thinking');
     assert.deepEqual(body.request.generationConfig.thinkingConfig, { includeThoughts: true, thinkingLevel: level });
   }
-  const claude =provider._buildBody(messages, 'claude-opus-4-6-thinking', [], {
+  const claude = provider._buildBody(messages, 'claude-opus-4-6-thinking', [], {
     effort: 'high',
     thinkingBudget: 4096,
   });
@@ -312,41 +312,44 @@ test('requests carry the Cloud Code Assist envelope and Antigravity identity', a
   assert.deepEqual(codeAssistMetadata(), { ideType: 'ANTIGRAVITY' });
 });
 
-test('replayed thinking parts are re-stamped with the accepted sentinel', async () => {
+test('replayed thinking metadata keeps the sentinel for Gemini and is dropped for Claude', async () => {
   let seen = null;
   const provider = providerWith(async (_url, init) => {
     seen = JSON.parse(init.body);
     return sseResponse([candidateChunk([{ text: 'done' }], 'STOP')]);
   });
-
-  await provider.send(
-    [
-      { role: 'user', content: 'first' },
-      {
-        role: 'assistant',
-        content: 'answer',
-        // Thinking is replayed from the recorded provider metadata, exactly as a
-        // resumed session hands it back.
-        providerMetadata: {
-          gemini: { thoughtParts: [{ text: 'because…', thoughtSignature: 'stale-signature' }] },
-        },
-        toolCalls: [{ id: 'call_1', name: 'read', arguments: { path: 'a.txt' } }],
+  const history = [
+    { role: 'user', content: 'first' },
+    {
+      role: 'assistant',
+      content: 'answer',
+      // Thinking is replayed from the recorded provider metadata, exactly as a
+      // resumed session hands it back.
+      providerMetadata: {
+        gemini: { thoughtParts: [{ text: 'because…', thoughtSignature: 'stale-signature' }] },
       },
-      { role: 'tool', toolCallId: 'call_1', name: 'read', content: 'file body' },
-      { role: 'user', content: 'second' },
-    ],
-    'claude-opus-4-6-thinking',
-    [],
-    {}
-  );
+      toolCalls: [{ id: 'call_1', name: 'read', arguments: { path: 'a.txt' } }],
+    },
+    { role: 'tool', toolCallId: 'call_1', name: 'read', content: 'file body' },
+    { role: 'user', content: 'second' },
+  ];
+  const sentParts = () => seen.request.contents.flatMap((entry) => entry.parts || []);
 
-  const thoughtParts = seen.request.contents
-    .flatMap((entry) => entry.parts || [])
-    .filter((part) => part?.thought === true);
+  await provider.send(history, 'gemini-3-flash', [], {});
+  const thoughtParts = sentParts().filter((part) => part?.thought === true);
   assert.ok(thoughtParts.length > 0, 'expected a replayed thinking part');
   for (const part of thoughtParts) {
     assert.equal(part.thoughtSignature, 'skip_thought_signature_validator');
   }
+
+  // The Claude bridge sends a sentinel-stamped thinking block unsigned and
+  // Anthropic rejects it ("thinking.signature: Field required").
+  await provider.send(history, 'claude-opus-4-6-thinking', [], {});
+  assert.equal(
+    sentParts().some((part) => part?.thought === true),
+    false
+  );
+  assert.ok(sentParts().some((part) => part?.functionCall?.name === 'read'));
 });
 
 test('Claude thinking models request the interleaved-thinking beta', async () => {
@@ -401,6 +404,19 @@ function firstByteTimeoutError() {
     code: 'EPROVIDERTIMEOUT',
   });
 }
+
+test('the provider reports its first-response budget per model for the agent watchdog', async () => {
+  const { antigravityFirstResponseBudget, antigravityFirstBytePolicy } = await import('./antigravity-retry-policy.mjs');
+  const { GEMINI_FIRST_BYTE_TIMEOUT_MS } = await import('./gemini-stream.mjs');
+  const provider = providerWith(async () => sseResponse([]));
+  // A Flash-class family, listed by both the cached test catalog and the curated fallback.
+  const policy = antigravityFirstBytePolicy('gemini-3.8-flash');
+  assert.equal(policy.retries, 1);
+  const thinking = provider.firstResponseBudget('gemini-3.8-flash');
+  assert.deepEqual(thinking, antigravityFirstResponseBudget(policy));
+  assert.ok(thinking.transportMs > GEMINI_FIRST_BYTE_TIMEOUT_MS, 'the first-byte retry is included');
+  assert.ok(thinking.semanticMs > thinking.transportMs);
+});
 
 test('generation stays on the daily host', async () => {
   assert.deepEqual([...CONTENT_ENDPOINTS], [CONTENT_ENDPOINT]);
@@ -716,7 +732,7 @@ test('each send rewarms the daily host', async () => {
   assert.deepEqual(requested, [CONTENT_ENDPOINT, CONTENT_ENDPOINT]);
 });
 
-test('native calls dispatch before EOF with stable IDs, signatures and no final redispatch', async () => {
+test('native calls dispatch once after the clean finish, with stable IDs and signatures', async () => {
   const firstProgress = Promise.withResolvers();
   const secondProgress = Promise.withResolvers();
   const encoder = new TextEncoder();
@@ -756,8 +772,8 @@ test('native calls dispatch before EOF with stable IDs, signatures and no final 
   push([], 'STOP');
   controller.close();
   const result = await pending;
-  assert.equal(afterFirstChunk, 1);
-  assert.equal(beforeEof, 2);
+  assert.equal(afterFirstChunk, 0);
+  assert.equal(beforeEof, 0);
   assert.equal(calls.length, 2);
   assert.deepEqual(result.toolCalls, calls);
   assert.notEqual(calls[0].id, calls[1].id);
@@ -834,6 +850,33 @@ for (const finishReason of ['SAFETY', 'MAX_TOKENS', 'MALFORMED_FUNCTION_CALL', '
   });
 }
 
+test('a MAX_TOKENS finish carrying whole native calls is a tool-use turn', async () => {
+  const provider = providerWith(async () =>
+    sseResponse([
+      candidateChunk([{ text: 'checking' }, { functionCall: { id: 'whole', name: 'read', args: { path: 'a.txt' } } }]),
+      candidateChunk([], 'MAX_TOKENS'),
+    ])
+  );
+  const calls = [];
+  const result = await provider.send([{ role: 'user', content: 'Read.' }], 'gemini-3.8-flash', STREAM_PARITY_TOOLS, {
+    effort: 'low',
+    onToolCall: (call) => calls.push(call),
+  });
+  assert.deepEqual(
+    result.toolCalls.map((call) => call.id),
+    ['whole']
+  );
+  assert.deepEqual(calls, result.toolCalls);
+});
+
+test('a MAX_TOKENS finish without any native call still fails the turn', async () => {
+  const provider = providerWith(async () => sseResponse([candidateChunk([{ text: 'cut' }], 'MAX_TOKENS')]));
+  await assert.rejects(
+    provider.send([{ role: 'user', content: 'Hi.' }], 'gemini-3.8-flash', STREAM_PARITY_TOOLS, { effort: 'low' }),
+    (error) => error.providerIncomplete === true && error.finishReason === 'MAX_TOKENS'
+  );
+});
+
 test('prompt blocking suppresses calls even without a candidate finish reason', async () => {
   const chunk = candidateChunk([{ functionCall: { id: 'blocked', name: 'read', args: { path: 'a.txt' } } }]);
   chunk.response.promptFeedback = { blockReason: 'SAFETY' };
@@ -870,7 +913,62 @@ test('an in-band error envelope after STOP fails the turn before any success', a
   );
 });
 
-test('a later failed finish retains earlier eager calls without dispatching the rejected call', async () => {
+test('a call followed by a SAFETY finish is never dispatched and keeps the ratings', async () => {
+  const provider = providerWith(async () =>
+    sseResponse([
+      candidateChunk([{ functionCall: { id: 'earlier', name: 'read', args: { path: 'a.txt' } } }]),
+      {
+        response: {
+          candidates: [
+            {
+              content: { role: 'model', parts: [] },
+              finishReason: 'SAFETY',
+              finishMessage: 'blocked by policy',
+              safetyRatings: [{ category: 'HARM_CATEGORY_HARASSMENT', probability: 'HIGH', blocked: true }],
+            },
+          ],
+        },
+      },
+    ])
+  );
+  const calls = [];
+  await assert.rejects(
+    provider.send([{ role: 'user', content: 'Read.' }], 'gemini-3.8-flash', STREAM_PARITY_TOOLS, {
+      effort: 'low',
+      onToolCall: (call) => calls.push(call),
+    }),
+    (error) => {
+      assert.equal(error.code, 'safety');
+      assert.equal(error.finishMessage, 'blocked by policy');
+      assert.deepEqual(error.safetyRatings, [
+        { category: 'HARM_CATEGORY_HARASSMENT', probability: 'HIGH', blocked: true },
+      ]);
+      assert.equal(error.emittedToolCall, undefined);
+      return true;
+    }
+  );
+  assert.deepEqual(calls, []);
+});
+
+test('a text-recovered call followed by a SAFETY finish is never dispatched', async () => {
+  const provider = providerWith(async () =>
+    sseResponse([
+      candidateChunk([{ text: '<invoke name="read"><parameter name="path">a.txt</parameter></invoke>' }]),
+      candidateChunk([], 'SAFETY'),
+    ])
+  );
+  const calls = [];
+  await assert.rejects(
+    provider.send([{ role: 'user', content: 'Read.' }], 'gemini-3.8-flash', STREAM_PARITY_TOOLS, {
+      effort: 'low',
+      onToolCall: (call) => calls.push(call),
+    }),
+    (error) => error.code === 'safety'
+  );
+  assert.deepEqual(calls, []);
+});
+
+test('a later failed finish dispatches none of the turn calls', async () => {
   const provider = providerWith(async () =>
     sseResponse([
       candidateChunk([{ functionCall: { id: 'accepted', name: 'read', args: { path: 'a.txt' } } }]),
@@ -885,19 +983,18 @@ test('a later failed finish retains earlier eager calls without dispatching the 
     }),
     (error) => {
       assert.equal(error.code, 'safety');
-      assert.equal(error.emittedToolCall, true);
-      assert.equal(error.unsafeToRetry, true);
-      assert.deepEqual(error.partialToolCalls, calls);
+      assert.equal(error.emittedToolCall, undefined);
+      assert.deepEqual(
+        error.partialToolCalls.map((call) => call.id),
+        ['accepted', 'blocked']
+      );
       return true;
     }
   );
-  assert.deepEqual(
-    calls.map((call) => call.id),
-    ['accepted']
-  );
+  assert.deepEqual(calls, []);
 });
 
-test('truncation after an eager native call cannot retry or fail over and retains signed replay', async () => {
+test('truncation after a native call dispatches nothing', async () => {
   const part = {
     functionCall: { id: 'already-ran', name: 'read', args: { path: 'a.txt' } },
     thoughtSignature: 'signed-call',
@@ -915,23 +1012,26 @@ test('truncation after an eager native call cannot retry or fail over and retain
     }),
     (error) => {
       assert.equal(error.code, 'TRUNCATED_STREAM');
-      assert.equal(error.emittedToolCall, true);
-      assert.equal(error.unsafeToRetry, true);
-      assert.deepEqual(error.partialToolCalls, calls);
-      assert.deepEqual(error.partialProviderReplay.items, [part]);
-      assert.deepEqual(error.partialProviderReplay.requestContext, { model: 'gemini-3.8-flash-low' });
+      assert.equal(error.emittedToolCall, undefined);
       return true;
     }
   );
-  assert.equal(calls.length, 1);
-  assert.equal(requests, 1);
+  assert.deepEqual(calls, []);
+  assert.ok(requests >= 1);
 });
 
 // ── Retry policy (capacity backoff, RPM quick retry) ──
 
 function errorResponse(status, reason, extra = {}) {
   const info = reason
-    ? [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason, domain: 'cloudcode-pa.googleapis.com', metadata: {} }]
+    ? [
+        {
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          reason,
+          domain: 'cloudcode-pa.googleapis.com',
+          metadata: {},
+        },
+      ]
     : [];
   return new Response(JSON.stringify({ error: { code: status, message: extra.message || 'x', details: info } }), {
     status,
@@ -950,7 +1050,13 @@ function retryHarness(responses, overrides = {}) {
     { sleepFn: async (ms) => sleeps.push(ms), ...overrides }
   );
   const send = (opts = {}) => provider.send([{ role: 'user', content: 'Hi.' }], 'gemini-3-pro-high', [], opts);
-  return { sleeps, send, get calls() { return calls; } };
+  return {
+    sleeps,
+    send,
+    get calls() {
+      return calls;
+    },
+  };
 }
 
 const ok = () => sseResponse([candidateChunk([{ text: 'recovered' }], 'STOP')]);
@@ -967,7 +1073,9 @@ test('capacity 429 retries the same host at 1s / 2s / 4s ±10% and then succeeds
   assert.equal(result.content, 'recovered');
   assert.equal(h.calls, 4);
   assert.equal(h.sleeps.length, 3);
-  [1000, 2000, 4000].forEach((base, index) => assert.ok(near(h.sleeps[index], base, 0.1), `${index}: ${h.sleeps[index]}`));
+  [1000, 2000, 4000].forEach((base, index) => {
+    assert.ok(near(h.sleeps[index], base, 0.1), `${index}: ${h.sleeps[index]}`);
+  });
 });
 
 test('capacity that outlasts three retries surfaces as an exhausted overload', async () => {
@@ -993,19 +1101,42 @@ test('an RPM 429 gets one 1s quick retry, then surfaces for the account layer', 
 
 function adviceResponse(status, retryDelay, reason) {
   const details = [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay }];
-  if (reason) details.push({ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason, domain: 'cloudcode-pa.googleapis.com', metadata: {} });
+  if (reason)
+    details.push({
+      '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+      reason,
+      domain: 'cloudcode-pa.googleapis.com',
+      metadata: {},
+    });
   return new Response(JSON.stringify({ error: { code: status, message: 'x', details } }), {
     status,
     headers: { 'content-type': 'application/json' },
   });
 }
 
-test('capacity ignores long server advice on 429, 503 and 529', async () => {
+test('capacity honors advised RetryInfo within the budget on 429, 503 and 529', async () => {
   for (const status of [429, 503, 529]) {
-    const h = retryHarness([() => adviceResponse(status, '600s', status === 429 ? 'MODEL_CAPACITY_EXHAUSTED' : undefined), ok]);
+    const h = retryHarness([
+      () => adviceResponse(status, '20s', status === 429 ? 'MODEL_CAPACITY_EXHAUSTED' : undefined),
+      ok,
+    ]);
     assert.equal((await h.send()).content, 'recovered', `status ${status}`);
-    assert.equal(h.sleeps.length, 1);
-    assert.ok(near(h.sleeps[0], 1000, 0.1), `status ${status}: ${h.sleeps[0]}`);
+    assert.deepEqual(h.sleeps, [20_000], `status ${status}`);
+  }
+});
+
+test('capacity advice beyond the retry budget surfaces with its reset time instead of retrying', async () => {
+  for (const status of [429, 503, 529]) {
+    const h = retryHarness([
+      () => adviceResponse(status, '600s', status === 429 ? 'MODEL_CAPACITY_EXHAUSTED' : undefined),
+      ok,
+    ]);
+    await assert.rejects(
+      h.send(),
+      (error) => error.status === status && error.retryAfterMs === 600_000 && error.resetAt > Date.now()
+    );
+    assert.equal(h.calls, 1, `status ${status}`);
+    assert.deepEqual(h.sleeps, []);
   }
 });
 
@@ -1033,7 +1164,9 @@ test('a 503 is capacity and a 500 follows the same 4-attempt same-host ladder', 
     await assert.rejects(h.send(), (error) => error.status === status);
     assert.equal(h.calls, 4, `status ${status}`);
     assert.equal(h.sleeps.length, 3);
-    h.sleeps.forEach((ms, index) => assert.ok(near(ms, [1000, 2000, 4000][index], 0.1), `${status}/${index}: ${ms}`));
+    h.sleeps.forEach((ms, index) => {
+      assert.ok(near(ms, [1000, 2000, 4000][index], 0.1), `${status}/${index}: ${ms}`);
+    });
   }
 });
 

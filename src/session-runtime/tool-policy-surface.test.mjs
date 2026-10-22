@@ -4,7 +4,14 @@ import { test } from 'node:test';
 import { join } from 'node:path';
 import { createToolSurface } from './tool-surface.mjs';
 import { createToolPolicyRefresh } from './tool-policy-refresh.mjs';
-import { toSessionWorkflowMeta, workflowDisallowsAgentTool } from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
+import {
+  composeSessionSystem,
+  seedSessionMessages,
+} from '../runtime/agent/orchestrator/session/manager/session-prompt-composition.mjs';
+import {
+  toSessionWorkflowMeta,
+  workflowDisallowsAgentTool,
+} from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { PATCH_TOOL_DEFS } from '../runtime/agent/orchestrator/tools/patch-tool-defs.mjs';
 import { DEFERRED_DEFAULT_LEAD_TOOLS } from '../runtime/agent/orchestrator/runtime-core/tool-catalog-data.mjs';
 import { LEAD_DISALLOWED_TOOLS } from '../runtime/agent/orchestrator/runtime-core/tool-defs.mjs';
@@ -182,7 +189,10 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
   assert.match(full, /Tool names are not shell commands/i);
   assert.doesNotMatch(full, /`shell` only runs/i);
   assert.match(full, /Every independent call in the same response, never one per round/i);
-  assert.match(full, /A tool that takes an array \(`read`, `grep`, `glob`, `git`, `code_graph`\) gets\s+one call with the array whenever there are\s+several targets/i);
+  assert.match(
+    full,
+    /A tool that takes an array \(`read`, `grep`, `glob`, `git`, `code_graph`\) gets\s+one call with the array whenever there are\s+several targets/i
+  );
   assert.match(
     full,
     /`shell` only for evidence or artifacts that require execution: computation,\s+data transformation, generated output, unsupported-format decoding/i
@@ -190,7 +200,10 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
   assert.match(full, /An open\s+shell is never a routing reason/i);
   // Git routing lives in the shell tool description, not the shared rules.
   assert.doesNotMatch(full, /Git→`git`/i);
-  assert.match(full, /no read\/list\/diff to confirm your own\s+writes/i);
+  assert.match(
+    full,
+    /reuse still-valid passing results and\s+rerun failed or invalidated checks, reading failure logs in full first;\s+never read back your own writes/i
+  );
   assert.doesNotMatch(full, /Verify once after all edits/i);
   assert.match(full, /Generated data is not evidence/i);
   assert.match(
@@ -213,10 +226,10 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
   assert.doesNotMatch(full, /UI\/edit sites/i);
   assert.match(
     full,
-    /After all edits, cover each required check once: one runner per runtime,\s+independent checks in parallel/i
+    /Verify once, at the end, before reporting: each required check once,\s+independent checks in parallel/i
   );
   assert.match(full, /no\s+stricter flags or unrequested suites/i);
-  assert.match(full, /rerun only failed or invalidated checks/i);
+  assert.match(full, /reuse still-valid passing results/i);
   assert.doesNotMatch(full, /Collect failures, finish fixes/i);
   // Goal lifecycle and completion policy live in the goal tool description and skill.
   assert.doesNotMatch(full, /Completion means the verified objective/i);
@@ -270,7 +283,8 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
 test('agent common policy has workers verify their own changes and leaves review to Lead', () => {
   const rules = buildAgentRoleContent({ PLUGIN_ROOT: join(process.cwd(), 'src') });
   assert.match(rules, /^# Agent$/m);
-  assert.match(rules, /the tests and checks you ran for your\s+own changes and their result/i);
+  assert.match(rules, /Start with `Status: done\|partial\|blocked`/);
+  assert.match(rules, /checks run \(failures: decisive error only\)/i);
   assert.match(rules, /Lead owns the independent review/i);
   assert.match(rules, /Lead's latest brief is your request and overrides\s+any internal rule/i);
   // The retrieval profile shares the same contract plus its read-only line.
@@ -302,8 +316,9 @@ test('toSessionWorkflowMeta keeps delegatesAgents for Solo packs', () => {
     delegatesAgents: false,
   });
   assert.equal(meta.delegatesAgents, false);
-  assert.equal(workflowDisallowsAgentTool(meta), true);
-  assert.equal(workflowDisallowsAgentTool({ id: 'solo' }), false);
+  assert.equal(workflowDisallowsAgentTool(meta, { agentMode: true }), true, 'an agent-mode Lead without agents');
+  assert.equal(workflowDisallowsAgentTool(meta), false, 'a coding Lead keeps `agent` without agents');
+  assert.equal(workflowDisallowsAgentTool({ id: 'solo' }, { agentMode: true }), false);
 });
 
 function surfaceFor({
@@ -330,6 +345,33 @@ function surfaceFor({
   });
 }
 
+test('the preview before a session exists keeps `agent` for a coding Lead without agents', () => {
+  const standalone = [{ name: 'read' }, { name: 'agent' }];
+  const surface = (session) =>
+    createToolSurface({
+      mgr: { previewSessionTools: () => standalone },
+      mode: 'full',
+      standaloneTools: standalone,
+      agentToolNames: new Set(['agent']),
+      getSession: () => session,
+      getRoute: () => ({ provider: 'grok-oauth' }),
+      getConfig: () => ({ workflow: { active: 'default' } }),
+      cfgMod: { getPluginData: () => '' },
+      delegatableAgentIds: () => [],
+      dataDir: '',
+    });
+  const preview = surface(null).activeToolSurface();
+  const names = [...preview.tools, ...(preview.deferredToolCatalog || [])].map((tool) => tool.name);
+  assert.ok(names.includes('agent'), 'the coding preview offers it');
+  // A new agent-mode Lead still gets it only with agents.
+  assert.deepEqual(
+    surface({ ownerAgentId: 'poet' })
+      .modelStandaloneTools()
+      .map((tool) => tool.name),
+    ['read']
+  );
+});
+
 test('modelStandaloneTools hides agent and disabled first-party feature tools', () => {
   const standalone = [
     { name: 'read' },
@@ -343,14 +385,21 @@ test('modelStandaloneTools hides agent and disabled first-party feature tools', 
     { name: 'office' },
     { name: 'tidy' },
   ];
+  const denied = ['git', 'github', 'web_search', 'web_fetch', 'memory', 'recall', 'office', 'tidy'];
   const { modelStandaloneTools } = surfaceFor({
-    session: { workflow: { id: 'solo', delegatesAgents: false } },
-    denied: ['git', 'github', 'web_search', 'web_fetch', 'memory', 'recall', 'office', 'tidy'],
+    session: { workflow: { id: 'solo', delegatesAgents: false }, sessionMode: 'agent' },
+    denied,
     standalone,
   });
   assert.deepEqual(
     modelStandaloneTools().map((tool) => tool.name),
     ['read']
+  );
+  // A coding Lead keeps `agent` without agents (they reach it as a listing reminder).
+  const coding = surfaceFor({ session: { workflow: { id: 'solo', delegatesAgents: false } }, denied, standalone });
+  assert.deepEqual(
+    coding.modelStandaloneTools().map((tool) => tool.name),
+    ['read', 'agent']
   );
 });
 
@@ -444,7 +493,17 @@ test('headless tool profile keeps task-scoped tools and removes persistent or in
   assert.equal(activeNames.has('office'), false);
   assert.equal(activeNames.has('tidy'), false);
   assert.equal(activeNames.has('git'), true);
-  for (const name of ['goal', 'agent', 'memory', 'recall', 'session', 'Skill', 'browser', 'browser_devtools', 'computer']) {
+  for (const name of [
+    'goal',
+    'agent',
+    'memory',
+    'recall',
+    'session',
+    'Skill',
+    'browser',
+    'browser_devtools',
+    'computer',
+  ]) {
     assert.equal(catalogNames.has(name), false, `${name} should be absent`);
     assert.equal(activeNames.has(name), false, `${name} should not be active`);
   }
@@ -466,14 +525,23 @@ test('Goal stays active while legacy Goal schemas are removed from restored sess
   const surface = surfaceFor({ session, standalone: [read, goal] });
   const result = surface.activateTools(['goal']);
   assert.deepEqual(result.missing, []);
-  const visible = new Set([...session.tools.map((tool) => tool.name), ...(session.deferredCallableTools || [])]);
+  // grok-oauth uses the bridge: goal is callable through call_tool from the
+  // scoped catalog, and the legacy schema is gone from every surface.
+  assert.deepEqual(result.already, ['goal']);
+  const visible = new Set([
+    ...session.tools.map((tool) => tool.name),
+    ...session.deferredToolCatalog.map((tool) => tool.name),
+  ]);
   assert.equal(visible.has('goal'), true);
   assert.equal(visible.has('update_goal'), false);
+  assert.ok(session.tools.some((tool) => tool.name === 'call_tool'));
 });
 
 test('empty session refresh strips denied tools and BP1 routes', async () => {
   const session = {
     id: 'sess_empty',
+    promptIdentity: { systemPrompt: '', profileSkip: {}, agent: null, skipAgentRules: false },
+    callerDisallowedTools: [],
     schemaAllowedTools: modelToolSchemaAllowlist('headless'),
     messages: [
       {
@@ -507,7 +575,8 @@ test('empty session refresh strips denied tools and BP1 routes', async () => {
         source: 'built-in',
         delegatesAgents: false,
       },
-      context: '# Active Workflow: Solo — Lead works alone.',
+      packContext: '# Active Workflow: Solo — Lead works alone.',
+      leadPromptParts: () => ({}),
     }),
     invalidatePreSessionToolSurface: () => {},
   });
@@ -518,7 +587,8 @@ test('empty session refresh strips denied tools and BP1 routes', async () => {
   assert.equal(session.workflow.delegatesAgents, false);
   assert.deepEqual(
     session.tools.map((tool) => tool.name),
-    ['read']
+    ['read', 'agent', 'load_tool', 'call_tool'],
+    'a coding Lead keeps `agent` without agents'
   );
   const bp1 = session.messages[0].content;
   assert.equal(bp1.includes('`web_search`'), false);
@@ -529,6 +599,103 @@ test('empty session refresh strips denied tools and BP1 routes', async () => {
   assert.match(session.messages[2].content, /# Active Workflow: Solo/);
   // Denying the memory tools leaves user-curated core memory in the prompt.
   assert.match(session.messages[2].content, /# Core Memory[\s\S]*- Keep honorific speech\./);
+});
+
+test('policy refresh preserves serialized role identity, custom instructions and caller restrictions', async () => {
+  for (const [owner, agent, schemaAllowedTools] of [
+    ['user', 'lead', null],
+    ['agent', 'worker', null],
+    ['agent', 'title-agent', []],
+  ]) {
+    const toolFree = Array.isArray(schemaAllowedTools) && schemaAllowedTools.length === 0;
+    const custom = 'CUSTOM ROLE: preserve this exact instruction.';
+    const opts = {
+      owner,
+      systemPrompt: custom,
+      workflow: { delegatesAgents: false },
+      workflowContext: '# Active Workflow: Old',
+    };
+    const prompt = composeSessionSystem(opts, {
+      profile: { skip: { memory: true, claudemd: !toolFree, skills: true } },
+      providerName: 'openai',
+      modelName: 'test',
+      surface: {
+        ownerIsAgent: owner === 'agent',
+        resolvedAgent: agent,
+        skills: [],
+        toolsForRouting: [],
+        ruleOmitTools: [],
+        schemaAllowedTools,
+      },
+    });
+    const session = JSON.parse(
+      JSON.stringify({
+        id: `role_${agent}`,
+        owner,
+        agent,
+        schemaAllowedTools,
+        promptIdentity: prompt.promptIdentity,
+        callerDisallowedTools: ['write'],
+        disallowedTools: ['write'],
+        permission: 'read-only',
+        toolPermission: 'read-only',
+        messages: seedSessionMessages(prompt, []),
+        tools: [{ name: 'read' }, { name: 'write' }],
+        bp3CoreContext: prompt.sessionMarkerCore,
+        bp3EnvSplit: true,
+        bp3EnvironmentContext: prompt.environmentTailContext,
+      })
+    );
+    const environment = session.messages.filter((message) => message.cacheTier === 'env');
+    let instructionReads = 0;
+    const refresh = createToolPolicyRefresh({
+      getSession: () => session,
+      getRoute: () => ({ provider: 'openai' }),
+      getMode: () => 'full',
+      getConfig: () => ({}),
+      getDataDir: () => '',
+      modelStandaloneTools: () => [{ name: 'read' }, { name: 'write' }, { name: 'agent' }],
+      featureDisallowedTools: () => [],
+      loadCoreMemoryContext: async () => 'EXCLUDED MEMORY',
+      loadInstructionFilesContext: () => {
+        instructionReads += 1;
+        return 'EXCLUDED PROJECT';
+      },
+      activeWorkflowContext: () => ({
+        summary: { id: 'solo', delegatesAgents: false },
+        packContext: '# Active Workflow: New',
+        leadPromptParts: () => ({}),
+      }),
+    });
+    assert.equal((await refresh.refreshEmptySessionToolPolicy()).appliedToCurrentSession, true);
+    assert.equal(session.bp3CoreContext.split(custom).length, 2);
+    assert.match(session.bp3CoreContext, /# Active Workflow: New/);
+    assert.doesNotMatch(session.bp3CoreContext, /EXCLUDED MEMORY/);
+    assert.doesNotMatch(session.bp3CoreContext, /EXCLUDED PROJECT/);
+    if (toolFree) {
+      assert.equal(instructionReads, 0);
+      assert.equal(session.tools.length, 0);
+    }
+    if (owner === 'agent' && !toolFree) assert.match(session.bp3CoreContext, /^# Agent$/m);
+    assert.equal(session.permission, 'read-only');
+    assert.equal(session.toolPermission, 'read-only');
+    assert.ok(session.disallowedTools.includes('write'));
+    assert.equal(
+      session.tools.some((tool) => tool.name === 'write'),
+      false
+    );
+    assert.deepEqual(
+      session.messages.filter((message) => message.cacheTier === 'env'),
+      environment
+    );
+    delete session.promptIdentity;
+    const before = JSON.stringify(session);
+    assert.deepEqual(await refresh.refreshEmptySessionToolPolicy(), {
+      appliedToCurrentSession: false,
+      reason: 'missing-prompt-identity',
+    });
+    assert.equal(JSON.stringify(session), before, 'legacy opaque role content is never guessed away');
+  }
 });
 
 test('refresh leaves a conversation session frozen', async () => {
@@ -552,7 +719,8 @@ test('refresh leaves a conversation session frozen', async () => {
     loadCoreMemoryContext: async () => '',
     activeWorkflowContext: () => ({
       summary: { id: 'solo', delegatesAgents: false },
-      context: '# Active Workflow: Solo',
+      packContext: '# Active Workflow: Solo',
+      leadPromptParts: () => ({}),
     }),
     invalidatePreSessionToolSurface: () => {},
   });
@@ -562,4 +730,93 @@ test('refresh leaves a conversation session frozen', async () => {
     session.tools.map((tool) => tool.name),
     ['agent', 'web_search']
   );
+});
+
+function notificationOnlySession() {
+  return {
+    id: 'sess_notify',
+    promptIdentity: { systemPrompt: '', profileSkip: {}, agent: null, skipAgentRules: false },
+    callerDisallowedTools: [],
+    messages: [
+      { role: 'system', content: '# Tool Use\nweb/current→`web_search`;\n' },
+      { role: 'system', content: '# Active Workflow: Cowork\n\n---\n\n# Lead Tools\n', cacheTier: 'tier3' },
+    ],
+    tools: [{ name: 'read' }, { name: 'web_search' }],
+    deferredCallableTools: ['read', 'web_search'],
+    workflow: { id: 'default', delegatesAgents: true },
+  };
+}
+
+function notificationRefresh(session, { activeTurns = () => 0, loadCoreMemoryContext = async () => '' } = {}) {
+  return createToolPolicyRefresh({
+    getSession: () => session,
+    getRoute: () => ({ provider: 'grok-oauth' }),
+    getMode: () => 'full',
+    getConfig: () => ({}),
+    getDataDir: () => '',
+    getActiveTurnCount: activeTurns,
+    modelStandaloneTools: () => [{ name: 'read' }],
+    featureDisallowedTools: () => ['web_search'],
+    loadCoreMemoryContext,
+    activeWorkflowContext: () => ({
+      summary: { id: 'solo', delegatesAgents: false },
+      packContext: '# Active Workflow: Solo',
+      leadPromptParts: () => ({}),
+    }),
+    invalidatePreSessionToolSurface: () => {},
+  }).refreshEmptySessionToolPolicy;
+}
+
+const NOTIFICATION = { role: 'user', content: '[mixdog-runtime] background task finished' };
+
+test('refresh keeps the tools of an in-flight turn that holds only notifications', async () => {
+  const active = notificationOnlySession();
+  active.liveTurnMessages = [NOTIFICATION];
+  const byLiveTranscript = await notificationRefresh(active)();
+  assert.equal(byLiveTranscript.appliedToCurrentSession, false);
+
+  const counted = notificationOnlySession();
+  counted.messages.push(NOTIFICATION);
+  const byTurnCount = await notificationRefresh(counted, { activeTurns: () => 1 })();
+  assert.equal(byTurnCount.appliedToCurrentSession, false);
+
+  for (const session of [active, counted]) {
+    assert.deepEqual(
+      session.tools.map((tool) => tool.name),
+      ['read', 'web_search']
+    );
+    assert.equal(session.workflow.delegatesAgents, true);
+  }
+});
+
+test('a turn that opens during the async prompt rebuild keeps its tools', async () => {
+  const session = notificationOnlySession();
+  let turns = 0;
+  const refresh = notificationRefresh(session, {
+    activeTurns: () => turns,
+    loadCoreMemoryContext: async () => {
+      turns = 1;
+      return '';
+    },
+  });
+  const result = await refresh();
+  assert.equal(result.appliedToCurrentSession, false);
+  assert.deepEqual(
+    session.tools.map((tool) => tool.name),
+    ['read', 'web_search']
+  );
+  assert.equal(session.workflow.delegatesAgents, true);
+  assert.match(session.messages[0].content, /`web_search`/);
+});
+
+test('a truly idle empty session with only notifications still refreshes', async () => {
+  const session = notificationOnlySession();
+  session.messages.push(NOTIFICATION);
+  const result = await notificationRefresh(session)();
+  assert.equal(result.appliedToCurrentSession, true);
+  assert.equal(
+    session.tools.some((tool) => tool.name === 'web_search'),
+    false
+  );
+  assert.equal(session.workflow.delegatesAgents, false);
 });

@@ -77,9 +77,13 @@ test('desktop settings read the canonical agent section and desktop defaults', (
     notificationVolume: 100,
     usagePinned: true,
     usageRailShortLong: false,
+    usageAccountsExpanded: false,
+    usageRailSlotsThree: false,
+    usageRailSlotsAll: false,
     computerControl: false,
     computerObserveOnly: false,
     browserControl: false,
+    browserAutoSignIn: true,
     computerInstalled: false,
     browserInstalled: false,
   });
@@ -106,13 +110,23 @@ test('desktop settings read the canonical agent section and desktop defaults', (
       notificationVolume: 250,
       usagePinned: false,
       usageRailShortLong: false,
+      usageAccountsExpanded: false,
+      usageRailSlotsThree: false,
+      usageRailSlotsAll: false,
       computerControl: false,
       computerObserveOnly: false,
       browserControl: false,
+      browserAutoSignIn: true,
       computerInstalled: false,
       browserInstalled: false,
     }
   );
+});
+
+test('saved-login sign-in is on by default and an explicit off is kept', () => {
+  assert.equal(desktopSettingsFromConfig({}).browserAutoSignIn, true);
+  assert.equal(desktopSettingsFromConfig({ desktop: { browserAutoSignIn: false } }).browserAutoSignIn, false);
+  assert.equal(requiredDesktopSettingKey('browserAutoSignIn'), 'browserAutoSignIn');
 });
 
 test('notification volume stores only a non-default percent and rejects invalid values', async () => {
@@ -210,9 +224,13 @@ test('writes are atomic core updates that retain unrelated config and nested fie
     notificationVolume: 100,
     usagePinned: true,
     usageRailShortLong: false,
+    usageAccountsExpanded: false,
+    usageRailSlotsThree: false,
+    usageRailSlotsAll: false,
     computerControl: false,
     computerObserveOnly: false,
     browserControl: false,
+    browserAutoSignIn: true,
     computerInstalled: false,
     browserInstalled: false,
   });
@@ -322,6 +340,8 @@ test('updateSetting IPC enforces sender, key, boolean, success, and store reject
     mainFrame,
     isDestroyed: () => false,
     send() {},
+    on() {},
+    removeListener() {},
   };
   const window = { webContents, isDestroyed: () => false };
   const writes = [];
@@ -472,7 +492,7 @@ test('defaults separation removes the current default pin list and keeps a custo
 
 test('saving the default pin list stores only the revision and still reads back the default', async () => {
   const { state, store } = memoryStore({});
-  const defaults = ['sessions', 'agents', 'schedules', 'workflows', 'projects', 'extensions'];
+  const defaults = ['sessions', 'agents', 'schedules', 'workflows', 'projects', 'extensions', 'skills'];
   assert.deepEqual(await store.updateActivityRailPins(defaults), { pins: defaults, revision: 1 });
   assert.deepEqual(state.value.desktop.activityRailPins, { revision: 1 });
   assert.deepEqual(await store.readActivityRailPins(), { pins: defaults, revision: 1 });

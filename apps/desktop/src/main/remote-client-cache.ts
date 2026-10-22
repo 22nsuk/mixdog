@@ -4,14 +4,22 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import {
+  parseJsonText,
+  quarantinePath,
+  writeFileAtomicAsync,
+  writeJsonAtomicAsync,
+} from '../../../../src/runtime/shared/atomic-file.mjs';
 import type { DesktopRemoteClientInfo } from '../shared/contract';
-import { writeSecretFile } from './secret-file';
 
 const CLIENTS_FILE = 'remote-clients.json';
 
 interface Stored {
   clients: DesktopRemoteClientInfo[];
   pendingRevokes: string[];
+  /** The file was damaged (or unreadable) when it was loaded, so the revocations
+   *  it held are unknown. Kept in the file until `clear()` answers it. */
+  repairRequired: boolean;
 }
 
 export interface RemoteClientCache {
@@ -20,13 +28,17 @@ export interface RemoteClientCache {
   list(): DesktopRemoteClientInfo[];
   /** Revocations still to be applied at the relay. */
   pending(): string[];
+  /** The stored revocations were lost to damage: no paired device can be
+   *  trusted as un-revoked until the pairing is reset and `clear()` is called. */
+  repairRequired(): boolean;
   /** Records what the relay reported. */
   remember(clients: DesktopRemoteClientInfo[]): Promise<void>;
   /** Queues the revocation for the next relay leg; the client stays listed as pending. */
   queueRevoke(clientId: string): Promise<void>;
   /** The relay confirmed the revocation. */
   applied(clientId: string): Promise<void>;
-  /** The device identity changed: nothing earlier applies any more. */
+  /** The device identity changed: nothing earlier applies any more, and a
+   *  damaged record is answered. */
   clear(): Promise<void>;
 }
 
@@ -47,29 +59,84 @@ const entry = (value: unknown): DesktopRemoteClientInfo | null => {
   };
 };
 
+function storedOf(value: unknown): Stored {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('The client cache is not an object.');
+  }
+  const parsed = value as Partial<Stored>;
+  // The revocation record is checked strictly: a wrong shape is damage, never an empty list.
+  if (!Array.isArray(parsed.pendingRevokes) || !parsed.pendingRevokes.every((id) => typeof id === 'string')) {
+    throw new TypeError('The pending revocations are not a list of ids.');
+  }
+  if (parsed.repairRequired !== undefined && typeof parsed.repairRequired !== 'boolean') {
+    throw new TypeError('The repair flag is not a boolean.');
+  }
+  return {
+    clients: (Array.isArray(parsed.clients) ? parsed.clients : []).flatMap((row) => entry(row) ?? []),
+    pendingRevokes: [...parsed.pendingRevokes],
+    repairRequired: parsed.repairRequired === true,
+  };
+}
+
+/** What the file holds: its record, nothing (`stored: null`, it was never
+ *  written), or damage — which is not the same as nothing. `damaged` carries
+ *  the bytes that could be read, null when none could. */
+async function readStored(file: string): Promise<{ stored: Stored | null } | { damaged: Buffer | null }> {
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { stored: null };
+    return { damaged: null };
+  }
+  try {
+    return { stored: storedOf(parseJsonText(bytes.toString('utf8'))) };
+  } catch {
+    return { damaged: bytes };
+  }
+}
+
 export async function loadRemoteClientCache(userDataPath: string): Promise<RemoteClientCache> {
   const file = join(userDataPath, CLIENTS_FILE);
-  let state: Stored = { clients: [], pendingRevokes: [] };
-  try {
-    const parsed = JSON.parse(await readFile(file, 'utf8')) as Partial<Stored>;
-    state = {
-      clients: (Array.isArray(parsed.clients) ? parsed.clients : []).flatMap((row) => entry(row) ?? []),
-      pendingRevokes: (Array.isArray(parsed.pendingRevokes) ? parsed.pendingRevokes : []).filter(
-        (id): id is string => typeof id === 'string'
-      ),
-    };
-  } catch {
-    /* first run or unreadable: start empty */
+  let state: Stored = { clients: [], pendingRevokes: [], repairRequired: false };
+  let writes: Promise<void> = Promise.resolve();
+  // One write at a time, in order, each of the state as it stands when its turn comes.
+  const persist = (): Promise<void> => {
+    writes = writes
+      .catch(() => undefined)
+      .then(async () => {
+        await writeJsonAtomicAsync(file, state, { secret: true, fsyncDir: true, compact: true });
+      });
+    return writes;
+  };
+  const read = await readStored(file);
+  if ('stored' in read) {
+    if (read.stored) state = read.stored;
+  } else {
+    // The pending revocations are unknown, and no older copy can say they were
+    // all in it (it may predate the latest one), so none is consulted: every
+    // paired device is revoked by the pairing reset this flag asks for. The
+    // damaged bytes are copied aside and the flag written over them, so a crash
+    // before either finishes finds the damage again instead of an empty file.
+    state.repairRequired = true;
+    if (read.damaged) {
+      await writeFileAtomicAsync(quarantinePath(file), read.damaged, { secret: true }).catch(() => undefined);
+    }
+    await persist().catch(() => undefined);
   }
-  const persist = (): Promise<void> => writeSecretFile(file, JSON.stringify(state));
   return {
     list: () =>
       state.clients.map((client) =>
         state.pendingRevokes.includes(client.id) ? { ...client, pendingRemoval: true } : { ...client }
       ),
     pending: () => [...state.pendingRevokes],
+    repairRequired: () => state.repairRequired,
     async remember(clients) {
-      state.clients = clients.flatMap((row) => entry(row) ?? []);
+      const next = clients.flatMap((row) => entry(row) ?? []);
+      // Each remote-access read reports the list; rewriting an unchanged one
+      // cost an owner-only ACL process and two fsyncs per poll.
+      if (JSON.stringify(next) === JSON.stringify(state.clients)) return;
+      state.clients = next;
       await persist();
     },
     async queueRevoke(clientId) {
@@ -82,7 +149,7 @@ export async function loadRemoteClientCache(userDataPath: string): Promise<Remot
       await persist();
     },
     async clear() {
-      state = { clients: [], pendingRevokes: [] };
+      state = { clients: [], pendingRevokes: [], repairRequired: false };
       await persist();
     },
   };

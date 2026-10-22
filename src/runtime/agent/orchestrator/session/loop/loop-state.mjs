@@ -3,12 +3,12 @@
  * request-loop bookkeeping, plus the
  * helpers every phase shares (abort check, steering drain, no-tool resolver).
  */
-import { isAgentOwner } from '../../agent-owner.mjs';
 import { SessionClosedError } from '../manager/session-errors.mjs';
 import { resolveLiveToolCwd } from './tool-exec.mjs';
 import { createSteeringDrain } from './steering.mjs';
 import { createNoToolTurnResolver } from './no-tool-turn.mjs';
 import { classifyTerminationReason } from './termination.mjs';
+import { routeUsageSegments } from './usage.mjs';
 
 // Consecutive identical-AND-failing tool calls (same name+args, error result)
 // tolerated across iterations before the loop refuses to re-execute and steers
@@ -19,19 +19,6 @@ export const REPEAT_FAIL_LIMIT = 3;
 // Cross-turn identical read-only call dedup is bounded to this many entries
 // (drop-oldest / insertion order).
 export const CROSS_TURN_CAP = 500;
-
-// Agent mid-turn text is suppressed unless THIS send explicitly requested a
-// live projection. The request is a send-opt (`liveProjection`) — never a
-// durable session field — so a transient Agent pane cannot leak into later
-// silent dispatches or stored session JSON. The standalone surface still
-// flips `interactiveSessionSurface` on the in-memory session; honor that
-// in-process hint without treating it as something dispatch should persist.
-export function shouldSuppressAgentMidTurnText(sessionRef, opts = {}) {
-  if (!isAgentOwner(sessionRef)) return false;
-  if (opts?.liveProjection === true) return false;
-  if (sessionRef?.interactiveSessionSurface === true) return false;
-  return true;
-}
 
 export function createLoopState({ provider, messages, model, tools, cwd, sendOpts }) {
   const opts = sendOpts || {};
@@ -44,17 +31,6 @@ export function createLoopState({ provider, messages, model, tools, cwd, sendOpt
   if (sessionRef && Object.hasOwn(sessionRef, '_providerToolSurfaceSnapshot')) {
     delete sessionRef._providerToolSurfaceSnapshot;
   }
-  // Sub-agent (worker/heavy-worker/reviewer/…) sessions drop mid-turn
-  // assistant preamble text outright. Only the final <final-answer> reply is
-  // consumed by Lead, so any "Now let me…" prose that precedes a tool call is
-  // pure noise — for live surfacing AND for the agent's own history (where it
-  // re-enters context as input tokens on every later turn):
-  //   - streaming  : opts.onTextDelta suppressed (token-by-token preamble)
-  //   - buffered   : opts.onAssistantText skipped (response.content)
-  //   - history    : tool-call turn content blanked before messages.push
-  // Reasoning/thinking deltas, tool calls, and the final answer are kept.
-  const suppressMidTurnText = shouldSuppressAgentMidTurnText(sessionRef, opts);
-  if (suppressMidTurnText) opts.onTextDelta = undefined;
   // Out-of-loop transcript mutations (post-turn/manual compaction in
   // manager/compaction-runner.mjs) run where no send opts exist; they park a
   // one-shot intent on the session so the FIRST send of the next turn tags
@@ -74,7 +50,6 @@ export function createLoopState({ provider, messages, model, tools, cwd, sendOpt
     sessionRef,
     sessionAgent: opts.session?.agent,
     forcedFirstTool: opts.forcedFirstTool ?? null,
-    suppressMidTurnText,
     // sessionRef.cwd is the live SSOT. The legacy positional cwd is only the
     // turn-start snapshot and becomes stale after an in-turn cwd tool call.
     cwd: resolveLiveToolCwd(cwd, sessionRef),
@@ -83,6 +58,7 @@ export function createLoopState({ provider, messages, model, tools, cwd, sendOpt
     lastUsage: undefined,
     firstTurnUsage: undefined,
     response: undefined,
+    lastStreamedChars: 0,
     lastSendTools: tools,
     contextOverflowRetryUsed: false,
     // Set when a provider context-overflow refusal triggers the in-turn
@@ -114,6 +90,7 @@ export function createLoopState({ provider, messages, model, tools, cwd, sendOpt
     // One-shot repair of an assistant turn whose stored reasoning replay the
     // API refuses to take back (see thinking-replay-recovery.mjs).
     thinkingReplayRepairUsed: false,
+    toolSchemaDropUsed: false,
     // Pending image-strip retry: identities of the images every attempt leaves
     // out until a send succeeds, and whether to heal them from history then.
     imageStrip: null,
@@ -156,8 +133,11 @@ export function createLoopState({ provider, messages, model, tools, cwd, sendOpt
     opts,
     sessionId,
     sessionAgent: state.sessionAgent,
-    suppressMidTurnText,
     drainSteering: state.drainSteering,
+    // Only a provider that can offer a higher max_tokens implements this.
+    escalateMaxTokens: () => state.provider?.escalatedMaxTokens?.(state.model, state.opts, state.lastSendTools) ?? null,
+    // Characters the latest send put on screen through the live text stream.
+    streamedChars: () => state.lastStreamedChars,
   });
   return state;
 }
@@ -179,5 +159,13 @@ export function finishLoop(state) {
     providerStateUpdated: state.providerStateUpdated,
     terminationReason: classifyTerminationReason(response, { sessionAgent: state.sessionAgent }),
     providerContinuations: state.noToolTurn.providerContinuations,
+    ...(state.routeUsageHops?.length
+      ? {
+          usageSegments: routeUsageSegments(state.routeUsageHops, state.lastUsage, {
+            provider: state.sessionRef?.provider,
+            model: state.sessionRef?.model,
+          }),
+        }
+      : {}),
   };
 }

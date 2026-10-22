@@ -1,59 +1,19 @@
 import type { DesktopSessionStateUpdate } from '../shared/contract';
+import { isStreamingTextAppend } from '../shared/streaming-text-append';
 import { createLatestStateMailbox, type LatestStateMailbox } from './desktop-service-protocol';
 
-export const REMOTE_STREAM_BATCH_MS = 16;
+/** A phone repaints a whole markdown tail per frame it receives. At 16ms
+ *  nearly every desktop update became its own socket frame (168 frames for
+ *  173 updates) and a throttled phone missed half its vsyncs; ~90ms keeps
+ *  text visibly flowing at ~11 paints a second. The window opens with the
+ *  append that ends a quiet spell, which travels at once: the first words of
+ *  a reply never wait for it. */
+export const REMOTE_STREAM_BATCH_MS = 90;
 
 type Timers = {
   setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
   clearTimeout(handle: ReturnType<typeof setTimeout>): void;
 };
-
-function sameFields(before: Record<string, unknown>, after: Record<string, unknown>, omitted: string): boolean {
-  const left = Object.keys(before).filter((key) => key !== omitted);
-  const right = Object.keys(after).filter((key) => key !== omitted);
-  return (
-    left.length === right.length &&
-    left.every(
-      (key) =>
-        Object.hasOwn(after, key) &&
-        (Object.is(before[key], after[key]) || JSON.stringify(before[key]) === JSON.stringify(after[key]))
-    )
-  );
-}
-
-/** Batch only a proved text append. Every other state transition — including
- *  unknown future approval fields — bypasses the timer without an allowlist. */
-function isTextAppend(before: DesktopSessionStateUpdate | null, after: DesktopSessionStateUpdate): boolean {
-  const old = before?.snapshot;
-  const next = after.snapshot;
-  if (
-    before?.frameSource !== 'live' ||
-    after.frameSource !== 'live' ||
-    before.sessionId !== after.sessionId ||
-    after.laneEnd ||
-    !old ||
-    !next ||
-    old.busy !== true ||
-    next.busy !== true ||
-    old.items !== next.items
-  )
-    return false;
-  const left = old.streamingTail;
-  const right = next.streamingTail;
-  if (
-    !left ||
-    !right ||
-    left.id == null ||
-    left.id !== right.id ||
-    right.kind !== 'assistant' ||
-    typeof left.text !== 'string' ||
-    typeof right.text !== 'string' ||
-    right.text.length <= left.text.length ||
-    !right.text.startsWith(left.text)
-  )
-    return false;
-  return sameFields(left, right, 'text') && sameFields(old, next, 'streamingTail');
-}
 
 /** One latest snapshot and one timer per session, before delta encoding.
  *  Non-text transitions remain non-droppable even if a later text append
@@ -76,9 +36,22 @@ export function createRemoteStreamingMailbox(
     timer = null;
     delayed = null;
   };
+  // An append sent now holds the appends after it for one window; the
+  // window's latest append ends it and opens the next one.
+  const sendAndHold = (update: DesktopSessionStateUpdate): void => {
+    mailbox.publish(update);
+    timer = timers.setTimeout(() => {
+      timer = null;
+      const latest = delayed;
+      delayed = null;
+      if (latest) sendAndHold(latest);
+    }, REMOTE_STREAM_BATCH_MS);
+    timer.unref?.();
+  };
   return {
     publish(update): void {
-      const append = isTextAppend(previous, update);
+      // Batch only a proved text append; every other transition bypasses the timer.
+      const append = isStreamingTextAppend(previous, update);
       previous = update;
       if (!append) {
         cancelDelay();
@@ -86,15 +59,11 @@ export function createRemoteStreamingMailbox(
         mailbox.publish(update);
         return;
       }
-      delayed = update;
-      if (timer !== null) return;
-      timer = timers.setTimeout(() => {
-        timer = null;
-        const latest = delayed;
-        delayed = null;
-        if (latest) mailbox.publish(latest);
-      }, REMOTE_STREAM_BATCH_MS);
-      timer.unref?.();
+      if (timer !== null) {
+        delayed = update;
+        return;
+      }
+      sendAndHold(update);
     },
     acknowledge: mailbox.acknowledge,
     reset(update): void {

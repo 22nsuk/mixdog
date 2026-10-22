@@ -16,10 +16,11 @@ const tag = { [VISUALIZE_FEEDBACK_TAG]: 1 };
 
 /** A page with the feedback script installed, posting to a recorder. The
  *  overlay's shadow root is opened (test only) so its marks can be read. */
-function page(t, body) {
+function page(t, body, url = undefined) {
   const dom = new JSDOM(`<!doctype html><html><head><title>x</title></head><body>${body}</body></html>`, {
     runScripts: 'outside-only',
     pretendToBeVisual: true,
+    ...(url ? { url } : {}),
   });
   t.after(() => dom.window.close());
   const { window } = dom;
@@ -68,6 +69,65 @@ test('the page script announces itself and stays out of a top-level window', asy
   const top = new JSDOM('<p>x</p>', { runScripts: 'outside-only' });
   t.after(() => top.window.close());
   assert.equal(top.window.eval(visualizeFeedbackScriptFor('window')), false);
+});
+
+test('a press on the page focuses its frame, also when the page cancels the press', (t) => {
+  const { window, document } = page(t, '<canvas id="game"></canvas>');
+  const game = document.getElementById('game');
+  // A game cancels the press (no selection, no drag): the browser's own focus move goes with it.
+  game.addEventListener('pointerdown', (event) => event.preventDefault());
+  let focused = false;
+  let calls = 0;
+  window.document.hasFocus = () => focused;
+  window.focus = () => {
+    calls += 1;
+    focused = true;
+  };
+  const press = () => game.dispatchEvent(new window.Event('pointerdown', { bubbles: true, cancelable: true }));
+  assert.equal(press(), false, 'the page still cancels its own press');
+  assert.equal(calls, 1, 'the frame takes the keyboard');
+  press();
+  assert.equal(calls, 1, 'a frame that has the keyboard is left alone');
+});
+
+test('a web link the frame may not show is handed to the panel instead of navigating the pane', async (t) => {
+  const { document, sent, api, frames } = page(
+    t,
+    `<a id="web" href="https://example.com/">web</a>
+     <a id="blank" href="next.html" target="_blank">new window</a>
+     <a id="own" href="next.html">own page</a>
+     <a id="mail" href="mailto:a@example.com">mail</a>
+     <a id="handled" href="https://example.org/">handled</a>`,
+    'http://127.0.0.1:5000/tok/index.html'
+  );
+  await frames();
+  sent.length = 0;
+  document.getElementById('handled').addEventListener('click', (event) => event.preventDefault());
+  const press = (id, init = {}) =>
+    document
+      .getElementById(id)
+      .dispatchEvent(new document.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, ...init }));
+  assert.equal(press('web'), false, 'the navigation is cancelled');
+  assert.equal(press('blank', { ctrlKey: true }), false);
+  assert.equal(press('own'), true, 'its own pages still navigate in place');
+  assert.equal(press('mail'), true);
+  press('handled');
+  assert.deepEqual(sent, [
+    { type: 'link', url: 'https://example.com/', external: false, ...tag },
+    { type: 'link', url: 'http://127.0.0.1:5000/tok/next.html', external: true, ...tag },
+  ]);
+  sent.length = 0;
+  api.apply({ type: 'state', comment: true, markers: [] });
+  assert.equal(press('web'), true, 'Comment mode leaves the click to the pin layer');
+  assert.deepEqual(sent, []);
+
+  assert.deepEqual(visualizeFeedbackPageMessage({ type: 'link', url: 'https://example.com/a', external: 1, ...tag }), {
+    type: 'link',
+    url: 'https://example.com/a',
+    external: false,
+  });
+  assert.equal(visualizeFeedbackPageMessage({ type: 'link', url: 'javascript:alert(1)', ...tag }), null);
+  assert.equal(visualizeFeedbackPageMessage({ type: 'link', url: 'file:///C:/secret.txt', ...tag }), null);
 });
 
 test('the page never makes a pin: it only describes the element under a pick point, redacted', async (t) => {
@@ -493,6 +553,16 @@ test('page messages are shape-checked, bounded, and fail closed on masks', () =>
     assert.equal(result.masksOverflow, true);
     assert.deepEqual(result.masks, []);
   }
+});
+
+test('the page scrolls over nested boxes: their overscroll containment is released', async (t) => {
+  const { document, frames } = page(
+    t,
+    '<div class="dialog-body" style="overflow:auto;overscroll-behavior:contain">x</div>'
+  );
+  await frames();
+  const css = [...document.querySelectorAll('style[data-mixdog-visualize]')].map((node) => node.textContent).join('\n');
+  assert.match(css, /@layer mixdog-visualize-scroll\{body \*\{overscroll-behavior:auto!important\}\}/);
 });
 
 test('a remote pane page carries the script first in its head', () => {

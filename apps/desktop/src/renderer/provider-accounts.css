@@ -359,12 +359,16 @@
 /* Usage, in the sidebar usage flyout's grammar: label | meter | % | reset,
    one line per quota window the account carries. */
 .provider-account-usage {
-  flex: 0 0 240px;
+  flex: 0 0 264px;
   display: grid;
-  grid-template-columns: fit-content(84px) minmax(48px, 1fr) 38px minmax(52px, max-content);
+  grid-template-columns: fit-content(108px) minmax(48px, 1fr) 38px minmax(52px, max-content);
   column-gap: 6px;
   row-gap: 4px;
   align-items: center;
+  align-content: start;
+  /* Reserve the meters' height (JS sets --usage-rows) so the usage read
+     landing after the roster moves nothing below it. */
+  min-height: calc(var(--usage-rows, 1) * 16px + (var(--usage-rows, 1) - 1) * 4px);
 }
 .provider-account-usage > span {
   display: contents;
@@ -511,7 +515,7 @@
   position: fixed;
   z-index: var(--mx-menu-z-index);
   width: 260px;
-  max-height: min(360px, calc(100vh - 16px));
+  max-height: min(360px, calc(var(--vvh, 100dvh) - 16px));
   overflow: auto;
   padding: 4px;
   border: var(--mx-popup-border);

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { runRead, setGitProcessRunner } from './git-runner.ts';
 import { SessionHost } from './session-host.ts';
 import { SessionTransport } from './session-transport.ts';
 
@@ -201,6 +202,111 @@ test('a transient pooled-socket reset retries one desktop request with the same 
   assert.equal(invocations[0].callId, invocations[1].callId);
   assert.match(invocations[0].callId, /^desktop-invoke:/);
   await transport.close();
+});
+
+test('a slow desktop request waits once more on the same call id without reattaching', async () => {
+  const invocations = [];
+  const diagnostics = [];
+  let attachCount = 0;
+  const transport = new SessionTransport('file:///C:/tmp/daemon.cjs', process.cwd(), async () => ({
+    ensureDaemon: async () => ({ pid: process.pid, port: 1, token: 'test' }),
+    attachSession: async () => {
+      attachCount += 1;
+      return {
+        async call(name, args, callOptions) {
+          if (name === 'desktop.init') return { desktopId: 'desktop_slow' };
+          if (name === 'desktop.invoke') {
+            invocations.push({ args, callId: callOptions?.callId });
+            if (invocations.length === 1) {
+              throw Object.assign(new Error('session timeout: POST /call'), {
+                code: 'ESESSIONTIMEOUT',
+                daemonTransportError: true,
+              });
+            }
+            return 'joined';
+          }
+          return { ok: true };
+        },
+        async close() {},
+      };
+    },
+  }));
+  const messages = [];
+  transport.on('message', (message) => messages.push(message));
+  transport.on('diagnostic', (event, details) => diagnostics.push({ event, details }));
+  transport.postMessage({ kind: 'init', options });
+  await waitFor(() => messages.some((message) => message.kind === 'ready'));
+  transport.postMessage({ kind: 'request', id: 44, method: 'invokeDesktopOperation', args: ['gitReview', []] });
+
+  const response = await waitFor(() => messages.find((message) => message.kind === 'response' && message.id === 44));
+  assert.equal(response.ok, true);
+  assert.equal(response.value, 'joined');
+  assert.equal(attachCount, 1);
+  assert.equal(invocations.length, 2);
+  assert.equal(invocations[0].callId, invocations[1].callId);
+  assert.deepEqual(
+    diagnostics.filter((entry) => entry.event !== 'desktop-boot-phase'),
+    [{ event: 'session-call-timeout', details: { method: 'invokeDesktopOperation', target: 'gitReview' } }]
+  );
+  assert.equal(messages.filter((message) => message.kind === 'daemon-replaced').length, 0);
+  await transport.close();
+});
+
+async function invokeOnce(failWith) {
+  let attachCount = 0;
+  const invocations = [];
+  const transport = new SessionTransport('file:///C:/tmp/daemon.cjs', process.cwd(), async () => ({
+    ensureDaemon: async () => ({ pid: process.pid, port: 1, token: 'test' }),
+    attachSession: async () => {
+      attachCount += 1;
+      return {
+        async call(name) {
+          if (name === 'desktop.init') return { desktopId: 'desktop_git' };
+          if (name === 'desktop.invoke') {
+            invocations.push(name);
+            if (invocations.length === 1) throw await failWith();
+            return 'second';
+          }
+          return { ok: true };
+        },
+        async close() {},
+      };
+    },
+  }));
+  const messages = [];
+  transport.on('message', (message) => messages.push(message));
+  transport.postMessage({ kind: 'init', options });
+  await waitFor(() => messages.some((message) => message.kind === 'ready'));
+  transport.postMessage({ kind: 'request', id: 50, method: 'invokeDesktopOperation', args: ['gitStatus', []] });
+  const response = await waitFor(() => messages.find((message) => message.kind === 'response' && message.id === 50));
+  await transport.close();
+  return { response, attachCount, invocations: invocations.length };
+}
+
+test('a git read timeout does not make the transport re-attach a healthy daemon', async (t) => {
+  // The error the daemon sends back is the one the real git runner produced.
+  setGitProcessRunner(() =>
+    Promise.reject(
+      Object.assign(new Error('git rev-parse --verify HEAD timed out after 60000ms'), { code: 'ETIMEDOUT' })
+    )
+  );
+  t.after(() => setGitProcessRunner(null));
+  const result = await invokeOnce(() =>
+    runRead(process.cwd(), ['rev-parse', '--verify', 'HEAD']).catch((error) => error)
+  );
+  assert.equal(result.response.ok, false);
+  assert.equal(result.attachCount, 1);
+  assert.equal(result.invocations, 1);
+});
+
+test('a real daemon ETIMEDOUT still re-attaches and replays the request', async () => {
+  const result = await invokeOnce(() =>
+    Object.assign(new Error('connect ETIMEDOUT 127.0.0.1:1'), { code: 'ETIMEDOUT' })
+  );
+  assert.equal(result.response.ok, true);
+  assert.equal(result.response.value, 'second');
+  assert.equal(result.attachCount, 2);
+  assert.equal(result.invocations, 2);
 });
 
 test('a dead daemon is reattached internally and replays an in-flight request once', async () => {

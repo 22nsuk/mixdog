@@ -15,7 +15,7 @@ import { JSDOM } from 'jsdom';
 import { installTestDom } from './test-support/test-dom.mjs';
 
 import { parseMarkdownToHast } from './markdown-ast';
-import { parseStreamingMarkdownAst } from './markdown-worker-client';
+import { parseStreamingMarkdownAst, preloadSyncMarkdownParser } from './markdown-worker-client';
 import MarkdownBody from './MarkdownBody';
 import MarkdownAstBody from './MarkdownAstBody';
 import { MarkdownSourceFallback } from './MarkdownSourceFallback';
@@ -58,9 +58,10 @@ for (const [name, render] of Object.entries(strongRenderers)) {
     const cases = [
       {
         source: '네, 재영님. **`src/workflows/default/`가 코워크(Cowork)**입니다.',
-        text: '네, 재영님. default/가 코워크(Cowork)입니다.',
-        strong: ['default/가 코워크(Cowork)'],
-        code: [],
+        // The folder mention keeps its inline code as written.
+        text: '네, 재영님. src/workflows/default/가 코워크(Cowork)입니다.',
+        strong: ['src/workflows/default/가 코워크(Cowork)'],
+        code: ['src/workflows/default/'],
       },
       {
         source: '**앞 `코드` 뒤(설명)**입니다.',
@@ -224,6 +225,30 @@ test('a partially arrived closing fence never parses as a code line', () => {
   assert.equal(code(`${body.replaceAll('```', '~~~')}~`), settled);
 });
 
+test('a streaming tail never shows syntax that is about to become something else', () => {
+  const heal = (text) => healStreamingMarkdownTail(text);
+  // Closers go before trailing whitespace, where they can still close.
+  assert.equal(heal('a **compact '), 'a **compact** ');
+  assert.equal(heal('a ~~strike~'), 'a ~~strike~~');
+  // An opener with nothing after it yet is held back.
+  assert.equal(heal('Here is a **'), 'Here is a ');
+  assert.equal(heal('with `'), 'with ');
+  assert.equal(heal('and ~'), 'and ');
+  // A line holding only a block marker: setext underline, lazy digit,
+  // growing heading, half a fence.
+  assert.equal(heal('Keys map to values.\n-'), 'Keys map to values.\n');
+  assert.equal(heal('A line\n= '), 'A line\n');
+  assert.equal(heal('1. One\n2'), '1. One\n');
+  assert.equal(heal('Intro\n\n##'), 'Intro\n\n');
+  assert.equal(heal('Intro\n\n``'), 'Intro\n\n');
+  // The code card waits for its opening line, then streams as code.
+  assert.equal(heal('Intro\n\n```pyt'), 'Intro\n\n');
+  assert.equal(heal('Intro\n\n```python\nx = 1'), 'Intro\n\n```python\nx = 1');
+  // Content after the marker shows at once.
+  assert.equal(heal('Intro\n- F'), 'Intro\n- F');
+  assert.equal(heal('Intro\n2. T'), 'Intro\n2. T');
+});
+
 test('a streaming table appears only once its delimiter row is complete', () => {
   const render = (text) => {
     const markup = renderToStaticMarkup(
@@ -236,7 +261,13 @@ test('a streaming table appears only once its delimiter row is complete', () => 
     return { table: document.querySelector('table') !== null, text: document.body.textContent };
   };
   const lead = '정리하면 다음과 같습니다.\n\n';
-  for (const partial of ['| 항목 | 값 | 비', '| 항목 | 값 | 비고 |', '| 항목 | 값 | 비고 |\n', '| 항목 | 값 | 비고 |\n|---|--', '| 항목 | 값 | 비고 |\n|---|---|']) {
+  for (const partial of [
+    '| 항목 | 값 | 비',
+    '| 항목 | 값 | 비고 |',
+    '| 항목 | 값 | 비고 |\n',
+    '| 항목 | 값 | 비고 |\n|---|--',
+    '| 항목 | 값 | 비고 |\n|---|---|',
+  ]) {
     const shown = render(lead + partial);
     assert.equal(shown.table, false, partial);
     assert.equal(shown.text.includes('|'), false, `raw pipes stay hidden: ${partial}`);
@@ -246,8 +277,22 @@ test('a streaming table appears only once its delimiter row is complete', () => 
   assert.equal(render(`${lead}| 항목 | 값 | 비고 |\n|---|---|---|\n| A | 1 |`).table, true);
   // Inside an open fence pipes are code, never held back.
   assert.match(render('```\n| a | b |').text, /\| a \| b \|/);
-  // A pipe inside prose is not a table head.
-  assert.match(render('use a | b here').text, /a \| b/);
+  // A line with a pipe may still head a table while it is the block's last
+  // line; once the next line shows it is prose, it paints.
+  assert.equal(render('use a | b here').text.includes('|'), false);
+  assert.match(render('use a | b here\nand more').text, /a \| b/);
+  // A head directly under a paragraph line, or without a leading pipe, is
+  // held too, with the paragraph above it shown.
+  const caption = 'The surfaces compare like this:\n';
+  for (const partial of ['| A | B', '| A | B |\n', '| A | B |\n|--', 'A | B', 'A | B\n---', 'A | B\n---|']) {
+    const shown = render(caption + partial);
+    assert.equal(shown.table, false, partial);
+    assert.equal(shown.text.includes('|'), false, `raw pipes stay hidden: ${partial}`);
+    assert.match(shown.text, /compare like this/);
+  }
+  assert.equal(render(`${caption}| A | B |\n|---|---|`).table, true);
+  assert.equal(render(`${caption}| A | B |\n|---|---|\n`).table, true, 'a delimiter row ended by its newline');
+  assert.equal(render(`${caption}A | B\n---|---\n1 | 2`).table, true);
 });
 
 test('a block cut from the live tail keeps its last parse until its own parse lands', async () => {
@@ -291,6 +336,7 @@ test('streaming fenced scripts keep final card geometry while their first AST is
         React.createElement(StreamingMarkdownBody, {
           text: '```ts',
           parse: false,
+          sync: true,
           copyControl: CopyControl,
         })
       );
@@ -306,6 +352,7 @@ test('streaming fenced scripts keep final card geometry while their first AST is
         React.createElement(StreamingMarkdownBody, {
           text: '```ts\nconst answer = 42;',
           parse: false,
+          sync: true,
           copyControl: CopyControl,
         })
       );
@@ -317,21 +364,17 @@ test('streaming fenced scripts keep final card geometry while their first AST is
   }
 });
 
-test('a fenced source projection holds the transcript entry until its AST lands', async () => {
+test('a settled fence commits its code card in the first render once the parser is loaded', async () => {
   const { dom, restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' } });
   const host = dom.window.document.getElementById('root');
   const root = createRoot(host);
   const text = 'Run this:\n\n```ts\nconst held = true;\n```';
   try {
+    await preloadSyncMarkdownParser();
     act(() => {
       root.render(React.createElement(StreamingMarkdownBody, { text, copyControl: () => null }));
     });
-    assert.ok(host.querySelector('.markdown-code-fallback'));
-    assert.ok(host.querySelector('[data-transcript-pending]'), 'the projection is not settled content');
-    await act(async () => {
-      await parseStreamingMarkdownAst(text);
-    });
-    await act(async () => {});
+    // No source projection first: it painted at another height than the card.
     assert.equal(host.querySelector('.markdown-code-fallback'), null);
     assert.equal(host.querySelector('[data-transcript-pending]'), null);
     assert.match(host.textContent, /const held = true;/);

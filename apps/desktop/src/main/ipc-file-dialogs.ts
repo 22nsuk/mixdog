@@ -1,8 +1,7 @@
 // Native file/folder pickers and the local-file reads the renderer may ask for.
 import type { App, BrowserWindow, Dialog } from 'electron';
-import { createWriteStream } from 'node:fs';
-import { randomUUID } from 'node:crypto';
-import { rename, rm, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { open, rename, rm } from 'node:fs/promises';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { dirname, join, isAbsolute as pathIsAbsolute, resolve as resolvePath } from 'node:path';
@@ -14,6 +13,7 @@ import { requiredSaveSource, requiredString, requiredWorkspaceFolders, sanitized
 import type { ConnectionKind } from './connections/contract';
 import { remotePickerRequired } from './connections/feature-gates';
 import { absoluteServerPath } from './server-file-access';
+import { writeUserFile } from './user-file-write';
 
 interface FileDialogIpcOptions {
   window: BrowserWindow;
@@ -39,10 +39,14 @@ export async function downloadToFile(
   { maxBytes = SAVE_DOWNLOAD_MAX_BYTES, timeoutMs = SAVE_DOWNLOAD_TIMEOUT_MS } = {}
 ): Promise<void> {
   // A short sibling name: appending to a long destination name could exceed
-  // the filesystem's per-component limit.
-  const temp = join(dirname(file), `.${randomUUID()}.part`);
+  // the filesystem's per-component limit. Not dot-prefixed: Windows cloud-sync
+  // folders (Naver MYBOX, #138) refuse to create such names.
+  const temp = join(dirname(file), `mixdog-tmp-${randomBytes(8).toString('hex')}`);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('Download timed out.')), timeoutMs);
+  // Only a temp file this call created is ever removed: a pre-existing file
+  // of the same name is never opened for writing (`wx`) nor deleted.
+  let created = false;
   try {
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok || !response.body) throw new Error(`Download failed: HTTP ${response.status}`);
@@ -56,15 +60,19 @@ export async function downloadToFile(
         else callback(null, chunk);
       },
     });
+    const handle = await open(temp, 'wx');
+    created = true;
     await pipeline(
       Readable.fromWeb(response.body as import('node:stream/web').ReadableStream),
       limit,
-      createWriteStream(temp),
+      // Flushed before the rename publishes it, so a crash cannot leave the
+      // destination holding a NUL-filled download.
+      handle.createWriteStream({ flush: true }),
       { signal: controller.signal }
     );
     await rename(temp, file);
   } catch (error) {
-    await rm(temp, { force: true }).catch(() => undefined);
+    if (created) await rm(temp, { force: true }).catch(() => undefined);
     throw controller.signal.aborted && controller.signal.reason instanceof Error ? controller.signal.reason : error;
   } finally {
     clearTimeout(timer);
@@ -105,7 +113,7 @@ export function registerFileDialogIpc({
     });
     if (result.canceled || !result.filePath) return false;
     if (target.kind === 'data') {
-      await writeFile(result.filePath, target.bytes);
+      await writeUserFile(result.filePath, target.bytes);
       return true;
     }
     await downloadToFile(target.url, result.filePath);

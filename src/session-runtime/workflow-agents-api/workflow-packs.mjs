@@ -1,5 +1,6 @@
 import { join } from 'node:path';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileAtomicSync } from '../../runtime/shared/atomic-file.mjs';
 import { serializeFrontmatterDoc } from '../../runtime/shared/markdown-frontmatter.mjs';
 import {
   normalizeWorkflowId,
@@ -44,15 +45,26 @@ export function createWorkflowPacksApi(deps) {
       name: workflow.name,
       description: workflow.description,
       source: workflow.source,
+      ...(workflow.overridesBuiltIn ? { overridesBuiltIn: true } : {}),
       active: workflow.id === active,
     }));
   }
 
-  async function setWorkflow(workflowId) {
+  // `{ scope: 'session' }` (the composer's selector in a session): a session
+  // with a conversation switches alone from its next turn
+  // (switchSessionWorkflow) and the configured workflow — the default for new
+  // sessions — stays as it is. Without a conversation, and without the
+  // scope, the choice becomes the configured workflow and an empty session
+  // picks it up in place, as before.
+  async function setWorkflow(workflowId, options = {}) {
     const requested = normalizeWorkflowId(workflowId, DEFAULT_WORKFLOW_ID);
     const id = requested === 'solo' ? DEFAULT_WORKFLOW_ID : requested;
     const pack = loadWorkflowPack(resolveDataDir(deps), id);
     if (!pack || pack.id !== id) throw new Error(`workflow "${workflowId}" not found`);
+    if (options?.scope === 'session') {
+      const switched = await deps.switchSessionWorkflow?.(id);
+      if (switched) return { ...switched.workflow, ...switched };
+    }
     saveActiveWorkflow(id);
     const applied = await deps.refreshEmptySessionToolPolicy?.();
     deps.invalidatePreSessionToolSurface?.();
@@ -96,9 +108,10 @@ export function createWorkflowPacksApi(deps) {
     if (!absorbed) {
       const dir = join(dataDir, 'workflows', id);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(
+      writeFileAtomicSync(
         join(dir, 'WORKFLOW.md'),
-        serializeFrontmatterDoc({ id, name, ...(description ? { description } : {}) }, body)
+        serializeFrontmatterDoc({ id, name, ...(description ? { description } : {}) }, body),
+        { backup: true, mode: 0o644 }
       );
     }
     return getWorkflowPack(id);

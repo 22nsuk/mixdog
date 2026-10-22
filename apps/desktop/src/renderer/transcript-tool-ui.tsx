@@ -28,6 +28,7 @@ import React, {
   type ReactNode,
 } from 'react';
 import type { TranscriptItem } from './desktop-types';
+import { BrowserPeekLine, SavedSignInLines, toolActivityUsesBrowser } from './browser-peek-line';
 import { t } from './i18n';
 import { preloadMarkdownBody } from './markdown-body-loader';
 import { LocalPathMention, openWebLinkInSystemBrowser, webLinkMenu } from './MarkdownLink';
@@ -44,11 +45,14 @@ import { rememberVisualizeTabTitles, visualizeCallTabTitle } from './visualize-c
 import { useToolOutcomeUnknown } from './connection-link-store';
 import { MxIcon } from './MxIcon';
 import { formatElapsed } from './text-format';
+import { toolActivityBackgroundTask } from './transcript-tool-result';
+import { useClock } from './use-clock';
 import { CodeDiff } from './transcript-diff';
 import { TurnChangesContext } from './TurnChangesCard';
 import { requestSessionDiffFile } from './session-diff-focus';
 import { capPatchLines } from './renderer-logic.mjs';
 import { CopyControl } from './transcript-primitives';
+import { FullToolOutputButton, useFullToolOutput } from './tool-full-output';
 import { TranscriptArtifacts } from './transcript-artifacts-ui';
 import { browserPageRequestsAvailable, requestBrowserPage } from './browser-page-request';
 import { useBrowserPageIdentity } from './browser-page-identity';
@@ -75,6 +79,7 @@ import {
   TOOL_DETAIL_LABELS,
   toolActivityIsCompleted,
   toolItemDone,
+  toolItemHasDiff,
   type ToolActivityBrowserPage,
   type ToolCardModel,
 } from './transcript-tool-model';
@@ -192,22 +197,6 @@ function sameToolActivityGroupProps(previous: ToolActivityGroupProps, next: Tool
   );
 }
 
-/** The tool-group sparkle (4-point star) path, centred on (cx, cy). */
-function sparklePath(cx: number, cy: number, r: number): string {
-  const k = (value: number) => Math.round(value * 100) / 100;
-  return `M${cx} ${cy - r}Q${k(cx + r * 0.16)} ${k(cy - r * 0.16)} ${cx + r} ${cy} ${k(cx + r * 0.16)} ${k(cy + r * 0.16)} ${cx} ${cy + r} ${k(cx - r * 0.16)} ${k(cy + r * 0.16)} ${cx - r} ${cy} ${k(cx - r * 0.16)} ${k(cy - r * 0.16)} ${cx} ${cy - r}Z`;
-}
-
-/** Running mark of a call row (which has no leading icon): the group icon's
- *  sparkle, twinkling until the result lands. */
-function ToolWorkingSpark() {
-  return (
-    <svg className="tool-working-spark" width={12} height={12} viewBox="0 0 12 12" aria-hidden="true">
-      <path className="tool-group-icon-star" d={sparklePath(6, 6, 5)} fill="currentColor" />
-    </svg>
-  );
-}
-
 /** When a tool call started (epoch ms). Transcript items carry their start as
  *  `at`; `startedAt` wins where a projection provides one. */
 function toolItemStartedAt(item: { startedAt?: unknown; at?: unknown }): number {
@@ -216,22 +205,14 @@ function toolItemStartedAt(item: { startedAt?: unknown; at?: unknown }): number 
 }
 
 /** Elapsed (from 5s) while the work is pending, so the one-second tick stops
- *  with it. A group header animates its leading icon instead; a call row,
- *  which has none, carries the twinkling sparkle here (`spark`). */
-function ToolWorkingStatus({ startedAt, spark = false }: { startedAt: number; spark?: boolean }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!startedAt) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [startedAt]);
+ *  with it. */
+function ToolWorkingStatus({ startedAt }: { startedAt: number }) {
+  const now = useClock(startedAt > 0);
   const elapsedMs = startedAt ? now - startedAt : 0;
-  const showElapsed = elapsedMs >= 5_000;
-  if (!showElapsed && !spark) return null;
+  if (elapsedMs < 5_000) return null;
   return (
     <span className="tool-working">
-      {showElapsed && <span className="tool-working-elapsed">{formatElapsed(elapsedMs)}</span>}
-      {spark && <ToolWorkingSpark />}
+      <span className="tool-working-elapsed">{formatElapsed(elapsedMs)}</span>
     </span>
   );
 }
@@ -247,13 +228,7 @@ const Elapsed = React.memo(function Elapsed({
   prefix?: string;
   minMs?: number;
 }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [startedAt]);
-  const elapsedMs = Math.max(0, now - startedAt);
+  const elapsedMs = Math.max(0, useClock(true) - startedAt);
   return elapsedMs >= minMs ? (
     <>
       {prefix}
@@ -301,6 +276,7 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
   turnKey = '',
 }: ToolActivityGroupProps) {
   const { mode, key: viewKey } = useToolActivityView();
+  void warmToolMarkdownBody();
   const disclosureKey = toolActivityDisclosureKey(items, disclosureScope, viewKey);
   const calls = useMemo(() => flattenedToolActivityItems(items), [items]);
   // Before the rows render: they name a visualize tab by the title it opened with.
@@ -313,7 +289,20 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
   const contentId = useId();
   const outcomeUnknown = useToolOutcomeUnknown();
   const pending = items.some((item) => !toolItemDone(item) && !outcomeUnknown(item.id));
-  const summary = useMemo(() => desktopToolActivitySummary(items), [items]);
+  // Past tense only once nothing in the group runs, a background command included.
+  const settled = useMemo(
+    () =>
+      calls.every(
+        (item) =>
+          toolItemDone(item) &&
+          !(
+            desktopToolActivityCategory(item.name, item.args) === 'Shell' &&
+            toolActivityBackgroundTask(String(item.result ?? item.rawResult ?? ''))?.running
+          )
+      ),
+    [calls]
+  );
+  const summary = useMemo(() => desktopToolActivitySummary(items, settled), [items, settled]);
   // Settled changes count as soon as they land; a call still running (or
   // failed) has no counts yet, and the running readout stays its own.
   const lineCounts = useMemo(() => groupLineCounts(calls), [calls]);
@@ -360,7 +349,12 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
           </div>
         </div>
       )}
-      {browserPage && <ToolBrowserPageCard page={browserPage} sessionId={disclosureScope} />}
+      {browserPage ? (
+        <ToolBrowserPageCard page={browserPage} sessionId={disclosureScope} />
+      ) : (
+        toolActivityUsesBrowser(items) && <BrowserPeekLine sessionId={disclosureScope} />
+      )}
+      <SavedSignInLines items={items} />
       <ToolComputerReadinessCard items={items} taskKey={`${disclosureScope}|${turnKey}`} />
       <TranscriptArtifacts items={items} />
     </article>
@@ -426,6 +420,7 @@ function ToolBrowserPageCard({ page, sessionId }: { page: ToolActivityBrowserPag
     );
   }
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: wrapper only catches context-menu requests (right-click / menu key) bubbling from its child controls.
     <div
       className={`transcript-browser-page${thumbnail ? ' has-thumbnail' : ''}`}
       onContextMenu={(event) => {
@@ -507,7 +502,29 @@ function ToolActivityDetails({
 
 const TOOL_ACTIVITY_MARKDOWN_HINT = /(?:^|\n)\s{0,3}(?:#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```)|\n\s*\|[^\n]*\|\s*(?:\n|$)/;
 const TOOL_ACTIVITY_MARKDOWN_MAX = 20_000;
-const ToolMarkdownBody = lazy(preloadMarkdownBody);
+const LazyToolMarkdownBody = lazy(preloadMarkdownBody);
+let loadedToolMarkdownBody: Awaited<ReturnType<typeof preloadMarkdownBody>>['default'] | null = null;
+let toolMarkdownWarm: Promise<void> | null = null;
+
+/** Loads the rich renderer once, when a transcript starts, and keeps the
+ *  component: a body mounted afterwards draws rendered at once instead of
+ *  showing its raw text for the first time and swapping. */
+export function warmToolMarkdownBody(): Promise<void> {
+  toolMarkdownWarm ||= preloadMarkdownBody().then(
+    (module) => {
+      loadedToolMarkdownBody = module.default;
+    },
+    () => {
+      toolMarkdownWarm = null;
+    }
+  );
+  return toolMarkdownWarm;
+}
+
+function ToolMarkdownBody(props: React.ComponentProps<typeof LazyToolMarkdownBody>) {
+  const Loaded = loadedToolMarkdownBody;
+  return Loaded ? <Loaded {...props} /> : <LazyToolMarkdownBody {...props} />;
+}
 
 function structuredKindLabel(kind: string): string {
   if (kind === 'questions') return TOOL_DETAIL_LABELS.questions;
@@ -518,7 +535,7 @@ function toolActivityLooksMarkdown(text: string): boolean {
   return text.length <= TOOL_ACTIVITY_MARKDOWN_MAX && TOOL_ACTIVITY_MARKDOWN_HINT.test(text);
 }
 
-function ToolActivityRichBody({ text, fallbackClassName }: { text: string; fallbackClassName: string }) {
+export function ToolActivityRichBody({ text, fallbackClassName }: { text: string; fallbackClassName: string }) {
   return (
     <div className="markdown tool-activity-markdown">
       <Suspense fallback={<pre className={fallbackClassName}>{text}</pre>}>
@@ -689,7 +706,7 @@ function renderToolActivityHeader({
       <ToolDiffCounts counts={presentation.diffCounts} />
       {metaLine && <span className="tool-activity-item-meta">{metaLine}</span>}
       <ToolRowOutcome presentation={presentation} />
-      {presentation.pending && <ToolWorkingStatus startedAt={startedAt} spark />}
+      {presentation.pending && <ToolWorkingStatus startedAt={startedAt} />}
       {presentation.pending && (
         <span className="sr-only" role="status">
           {t('Running')}
@@ -1096,7 +1113,7 @@ function ToolActivityPreview({
 }
 
 function ToolActivityItem({
-  item,
+  item: shownItem,
   disclosureKey,
   defaultOpen,
   contentId,
@@ -1109,6 +1126,8 @@ function ToolActivityItem({
   scope: string;
 }) {
   const [open, onToggle, chosen, keepOpen] = useRememberedDisclosure(disclosureKey, defaultOpen);
+  const fullOutput = useFullToolOutput(scope, shownItem, open);
+  const item = fullOutput.item;
   const outcomeUnknown = useToolOutcomeUnknown()(item.id);
   const visualizeTabTitle = visualizeCallTabTitle(scope, item);
   const presentation = useMemo(() => {
@@ -1123,7 +1142,11 @@ function ToolActivityItem({
   // diff pane on that file (with the way back to the list), where a session
   // has that pane.
   const turnChanges = useContext(TurnChangesContext);
-  const diffPath = presentation.diffPatch && !presentation.pending ? diffTargetPath(presentation.diffPatch) : '';
+  const diffPath = presentation.pending
+    ? ''
+    : presentation.diffPatch
+      ? diffTargetPath(presentation.diffPatch)
+      : presentation.diffDigestPath;
   const openDiff =
     diffPath && turnChanges?.sessionId && turnChanges.onOpenSessionDiff
       ? () => {
@@ -1144,6 +1167,7 @@ function ToolActivityItem({
       {rendered &&
         presentation.hasDetails &&
         renderToolActivityDetails(presentation, contentId, chosen ? null : keepOpen, openDiff)}
+      {rendered && presentation.hasDetails && <FullToolOutputButton output={fullOutput} />}
     </article>
   );
 }
@@ -1189,7 +1213,7 @@ export function ToolCard({ item, disclosureScope = '' }: { item: TranscriptItem;
   const hasResult = typeof rawResult === 'string' ? Boolean(rawResult.trim()) : rawResult != null;
   const hasDetails = Boolean(model.detailLine);
   const count = Math.max(1, Math.round(Number(item.count || 1)));
-  const partialMutation = callFailedCount > 0 && typeof item.uiDiff === 'string' && Boolean(item.uiDiff.trim());
+  const partialMutation = callFailedCount > 0 && toolItemHasDiff(item);
   const outcomeTone = deriveToolOutcomeTone({
     pending: model.pending,
     groupCount: count,

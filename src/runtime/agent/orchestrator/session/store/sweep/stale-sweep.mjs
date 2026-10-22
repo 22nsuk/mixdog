@@ -4,7 +4,7 @@
 // sidecars. The generator yields between records so cooperative hosts never
 // hold the event loop for a whole directory scan; the synchronous wrapper
 // drains it in one go.
-import { getStoreDir } from '../paths-heartbeat.mjs';
+import { getStoreDir } from '../session-paths.mjs';
 import { probePath, PROBE_PRESENT } from '../fs-probe.mjs';
 import { persistSweepRecordCache, pruneSweepRecordCache } from './sweep-record.mjs';
 import { collectSweepRows, createSweepTally, resolveSweepPlan } from './sweep-plan.mjs';
@@ -21,8 +21,8 @@ function* sweepStaleSessionSteps(ttlMs, options = {}) {
   // An unreadable store dir is not an empty one: sweeping (deleting,
   // closing, pruning) on a probe we could not make is never allowed.
   if (probePath(dir).state !== PROBE_PRESENT) {
-    const { openCandidates: _candidates, ...empty } = createSweepTally();
-    return empty;
+    const { openCandidates: _candidates, subAgents, ...empty } = createSweepTally();
+    return plan.retainSubAgents ? { ...empty, subAgents } : empty;
   }
   const rows = collectSweepRows(dir);
   pruneSweepRecordCache(new Set(rows.map((row) => row?.id).filter(Boolean)));
@@ -41,8 +41,9 @@ function* sweepStaleSessionSteps(ttlMs, options = {}) {
   yield* reapOrphanSidecars(ctx);
   queueDeletedSummaryPrune(ctx.tally);
   persistSweepRecordCache();
-  const { openCandidates: _candidates, ...result } = ctx.tally;
-  return result;
+  const { openCandidates: _candidates, subAgents, ...result } = ctx.tally;
+  // `subAgents` only for a caller that applies them (idle-cleanup.mjs).
+  return plan.retainSubAgents ? { ...result, subAgents } : result;
 }
 
 /** Synchronous compatibility surface for explicit maintenance commands/tests. */

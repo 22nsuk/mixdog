@@ -14,6 +14,7 @@ import {
   invalidateSkillsCache,
   isSkillDisabled,
   loadSkillResource,
+  skillEnabledFlags,
   skillMissingFeature,
 } from './collect.mjs';
 
@@ -412,6 +413,48 @@ test('requires a standard folder name that matches the manifest name', () => {
   }
 });
 
+test('plugin skills load by their declared name even when the folder name differs', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-plugin-skill-name-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = join(root, 'data');
+  try {
+    const pluginRoot = join(root, 'notion-plugin');
+    const writeSkill = (dir, name, description) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'SKILL.md'),
+        ['---', `name: ${name}`, `description: ${description}`, '---', '', '# Instructions', ''].join('\n')
+      );
+    };
+    writeSkill(join(pluginRoot, 'skills', 'notion', 'knowledge-capture'), 'notion-knowledge-capture', 'Nested.');
+    writeSkill(join(pluginRoot, 'skills', 'matching'), 'matching', 'Matching.');
+    // Same declared name as a user-global skill: the global one keeps precedence.
+    writeSkill(join(pluginRoot, 'skills', 'shadowed-folder'), 'shared-name', 'From plugin.');
+    writeSkill(join(process.env.MIXDOG_DATA_DIR, 'skills', 'shared-name'), 'shared-name', 'From global.');
+    const registryDir = join(process.env.MIXDOG_DATA_DIR, 'plugins');
+    mkdirSync(registryDir, { recursive: true });
+    writeFileSync(
+      join(registryDir, 'registry.json'),
+      JSON.stringify({ plugins: [{ id: 'notion', root: pluginRoot, enabled: true }] })
+    );
+
+    invalidateSkillsCache();
+    const skills = collectSkillsCached(join(root, 'any-project'));
+    const nested = skills.find((skill) => skill.name === 'notion-knowledge-capture');
+    assert.equal(nested?.plugin, 'notion');
+    assert.equal(nested?.filePath, join(pluginRoot, 'skills', 'notion', 'knowledge-capture', 'SKILL.md'));
+    assert.equal(skills.find((skill) => skill.name === 'matching')?.plugin, 'notion');
+    const shared = skills.filter((skill) => skill.name === 'shared-name');
+    assert.equal(shared.length, 1);
+    assert.equal(shared[0].source, 'global');
+  } finally {
+    invalidateSkillsCache();
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a skill that requires a built-in feature is offered only while that feature is installed and enabled', () => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-skill-requires-'));
   const previousDataDir = process.env.MIXDOG_DATA_DIR;
@@ -530,6 +573,93 @@ test('built-in package skills are discovered in place and shadowed by a user-glo
     if (previousRoot === undefined) delete process.env.MIXDOG_ROOT;
     else process.env.MIXDOG_ROOT = previousRoot;
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a quiet watched skill root is not re-walked, and an edit to it is picked up', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-skill-watch-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = join(root, 'data');
+  const skillsDir = join(root, 'data', 'skills');
+  const write = (name, description) => {
+    mkdirSync(join(skillsDir, name, 'scripts'), { recursive: true });
+    writeFileSync(
+      join(skillsDir, name, 'SKILL.md'),
+      ['---', `name: ${name}`, `description: ${description}`, '---', '', '# Body', ''].join('\n')
+    );
+    writeFileSync(join(skillsDir, name, 'scripts', 'meta.json'), '{}');
+  };
+  const turn = () => new Promise((resolve) => setTimeout(resolve, 30));
+  const describe = (name) => collectSkillsCached(null).find((skill) => skill.name === name)?.description;
+  const { default: fs } = await import('node:fs');
+  const { syncBuiltinESMExports } = await import('node:module');
+  const realStat = fs.statSync;
+  let skillStats = 0;
+  fs.statSync = (path, ...rest) => {
+    if (String(path).replace(/\\/g, '/').includes('/data/skills/')) skillStats += 1;
+    return realStat(path, ...rest);
+  };
+  syncBuiltinESMExports();
+  invalidateSkillsCache();
+  try {
+    for (let i = 0; i < 20; i += 1) write(`watched-${i}`, `Skill ${i}.`);
+    assert.equal(describe('watched-3'), 'Skill 3.');
+    // The writes and the first parse may still surface as watcher activity
+    // (macOS FSEvents delivers late, in batches); each event re-walks once.
+    // Once the watcher has gone quiet, a read reuses the last walk.
+    let quiet = false;
+    for (let i = 0; i < 50 && !quiet; i += 1) {
+      await turn();
+      describe('watched-3');
+      await turn();
+      skillStats = 0;
+      assert.equal(describe('watched-3'), 'Skill 3.');
+      quiet = skillStats === 0;
+    }
+    assert.ok(quiet, 'a quiet watched root reuses its last walk');
+
+    // An edit made after the cache settled reaches the next read once the
+    // watcher reports it (no explicit invalidation).
+    write('watched-3', 'Edited outside the app.');
+    let seen = describe('watched-3');
+    for (let i = 0; i < 100 && seen !== 'Edited outside the app.'; i += 1) {
+      await turn();
+      seen = describe('watched-3');
+    }
+    assert.equal(seen, 'Edited outside the app.');
+  } finally {
+    fs.statSync = realStat;
+    syncBuiltinESMExports();
+    invalidateSkillsCache();
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('skillEnabledFlags matches the per-skill disabled and missing-feature checks', () => {
+  const previous = process.env.MIXDOG_FEATURE_OFFICE;
+  delete process.env.MIXDOG_FEATURE_OFFICE;
+  try {
+    const skills = [
+      { name: 'plain', source: 'global', requires: [] },
+      { name: 'Switched-Off', source: 'global', requires: [] },
+      { name: 'needs-office', source: 'global', requires: ['office'] },
+      { name: 'bundled', source: 'builtin', requires: ['office'] },
+      { name: 'standalone', source: 'builtin', requires: [] },
+    ];
+    for (const config of [
+      { builtins: {}, skills: { disabled: ['switched-off', 'bundled', 'standalone'] } },
+      { builtins: { office: { installed: true } }, skills: { disabled: ['bundled', 'plain'] } },
+      { builtins: { office: { installed: true } }, modules: { office: { enabled: false } }, skills: {} },
+    ]) {
+      const expected = skills.map(
+        (skill) => !(isSkillDisabled(skill.name, config, skills) || skillMissingFeature(skill.name, config, skills))
+      );
+      assert.deepEqual(skillEnabledFlags(skills, config), expected, JSON.stringify(config));
+    }
+  } finally {
+    if (previous !== undefined) process.env.MIXDOG_FEATURE_OFFICE = previous;
   }
 });
 

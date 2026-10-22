@@ -42,7 +42,25 @@ import {
   VISUALIZE_INLINE_KINDS,
   type VisualizeInlineContent,
 } from '../shared/visualize';
-import { requiredSessionId } from './desktop-state';
+import {
+  DESKTOP_PET_COMMANDS,
+  DESKTOP_PET_MAX_LAYERS,
+  DESKTOP_PET_MAX_TEXT,
+  DESKTOP_PET_OPTIONS,
+  DESKTOP_PET_REPLY_MAX,
+  DESKTOP_PET_SCALES,
+  DESKTOP_PET_THEME_VARS,
+  type DesktopPetBubble,
+  type DesktopPetCommand,
+  type DesktopPetComposer,
+  type DesktopPetDrag,
+  type DesktopPetLayers,
+  type DesktopPetOption,
+  type DesktopPetRect,
+  type DesktopPetState,
+  type DesktopPetTheme,
+} from '../shared/desktop-pet';
+import { requiredSessionId, requiredSessionIds } from './desktop-state';
 import { hasControlCharacter } from './ipc-control-chars';
 import { isWorktreeCapability, validateWorktreeCapabilityArgs, WORKTREE_CAPABILITY_ARITY } from './worktree-validation';
 import { IMPORT_CAPABILITY_ARITY, isImportCapability, validateImportCapabilityArgs } from './import-validation';
@@ -67,11 +85,13 @@ export function requiredVisualizeTabCommand(value: unknown): DesktopVisualizeTab
     action !== 'network' &&
     action !== 'reopen' &&
     action !== 'render' &&
+    action !== 'blocked' &&
     action !== 'history' &&
-    action !== 'export'
+    action !== 'export' &&
+    action !== 'thumbnail'
   ) {
     throw new TypeError(
-      'visualize command action must be activate, close, version, restore, network, reopen, render, history, or export.'
+      'visualize command action must be activate, close, version, restore, network, reopen, render, blocked, history, export, or thumbnail.'
     );
   }
   if (action === 'history') {
@@ -94,7 +114,15 @@ export function requiredVisualizeTabCommand(value: unknown): DesktopVisualizeTab
   }
   if (action === 'version') return visualizeVersionCommand(base, command);
   if (action === 'render') return visualizeRenderCommand(base, command);
+  if (action === 'blocked') return visualizeBlockedCommand(base, command);
   if (action === 'restore') return visualizeRestoreCommand(base, command);
+  if (action === 'thumbnail') {
+    const { version } = command;
+    if (typeof version !== 'number' || !Number.isInteger(version) || version < 0 || version > 1_000_000) {
+      throw new TypeError('visualize thumbnail version is invalid.');
+    }
+    return { ...base, action, version };
+  }
   return { ...base, action };
 }
 
@@ -189,6 +217,22 @@ function visualizeRenderCommand(base: VisualizeTabBase, command: VisualizeComman
   };
 }
 
+/** A refused outside request of a remote page frame: the address and the kind of request. */
+function visualizeBlockedCommand(base: VisualizeTabBase, command: VisualizeCommandInput): DesktopVisualizeTabCommand {
+  const { pane, resource } = command;
+  if (!isVisualizePaneIndex(pane)) throw new TypeError('visualize pane index is invalid.');
+  if (typeof resource !== 'string' || !/^[A-Za-z]{1,24}$/.test(resource)) {
+    throw new TypeError('visualize blocked resource is invalid.');
+  }
+  return {
+    ...base,
+    action: 'blocked',
+    pane,
+    url: requiredString(command.url, 'visualize blocked url', 2048),
+    resource,
+  };
+}
+
 /** The page assets the user confirmed the restore may also overwrite. */
 function visualizeRestoreCommand(base: VisualizeTabBase, command: VisualizeCommandInput): DesktopVisualizeTabCommand {
   const assets = command.assets;
@@ -237,6 +281,19 @@ export function requiredVisualizeCaptureRect(value: unknown): { x: number; y: nu
   };
 }
 
+/** The visualize panel's content size: `{ width, height }` in CSS px. */
+export function requiredVisualizePanelSize(value: unknown): { width: number; height: number } {
+  const size = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const side = (key: 'width' | 'height'): number => {
+    const number = size[key];
+    if (typeof number !== 'number' || !Number.isFinite(number) || number < 1 || number > 100_000) {
+      throw new TypeError(`visualize panel ${key} is invalid.`);
+    }
+    return Math.round(number);
+  };
+  return { width: side('width'), height: side('height') };
+}
+
 const MAX_PROMPT_LENGTH = 1_000_000;
 const MAX_STRUCTURED_STRING_TOTAL = 32_000_000;
 
@@ -267,6 +324,7 @@ const SUBMIT_OPTION_KEYS = new Set([
   'priority',
   'pastedImages',
   'pastedTexts',
+  'kickoff',
 ]);
 const ABORT_OPTION_KEYS = new Set(['restorePrompt', 'submissionId']);
 const NEW_TASK_DRAFT_KEYS = new Set(['projectPath', 'route', 'workflowId', 'orchestrationMode', 'worktree']);
@@ -280,18 +338,47 @@ const MODEL_SELECTION_KEYS = new Set([
   'modelParameters',
   'contextPercent',
   'contextTokens',
+  'fallbacks',
+  'onlyIfEmpty',
 ]);
 const MODEL_CATALOG_OPTION_KEYS = new Set(['force', 'refresh', 'quick']);
 const PROVIDER_SETUP_OPTION_KEYS = new Set(['force', 'refresh', 'unlockKeychain', 'recheckKeychain']);
 const SKILLS_STATUS_OPTION_KEYS = new Set(['projectPath']);
-const TOOL_APPROVAL_KEYS = new Set(['approved', 'reason', 'answers']);
-const TOGGLEABLE_BUILTIN_TOOLS = new Set(['git', 'office', 'localProvider', 'tidy', 'autoEffort', 'visualize']);
+// A secret value has no key here: it travels only through provideSecretInput.
+const TOOL_APPROVAL_KEYS = new Set([
+  'approved',
+  'reason',
+  'answers',
+  'reply',
+  'response',
+  'editedArgs',
+  'remember',
+  'scope',
+]);
+const TOOL_APPROVAL_RESPONSES = new Set<string>([
+  'approve',
+  'deny',
+  'edit-and-approve',
+  'provide-secret',
+  'skip',
+  'done',
+]);
+const TOGGLEABLE_BUILTIN_TOOLS = new Set([
+  'git',
+  'office',
+  'localProvider',
+  'tidy',
+  'autoEffort',
+  'visualize',
+  'media',
+]);
 const INSTALLABLE_BUILTIN_FEATURES = new Set(['git', 'memory', 'office', 'localProvider', 'tidy', 'autoEffort']);
 
 const CAPABILITY_ARITY = {
   prioritizeQueued: [1, 1],
   restoreQueued: [0, 2],
   rewindToItem: [1, 1],
+  retryFailedTurn: [2, 2],
   setEffort: [1, 1],
   setToolMode: [1, 1],
   getAutoClear: [0, 0],
@@ -312,11 +399,12 @@ const CAPABILITY_ARITY = {
   getToolModuleSettings: [0, 0],
   setWebSearchEnabled: [1, 1],
   setInstructionFiles: [1, 1],
+  setAutoEffortBase: [1, 1],
   setMemoryToolsEnabled: [1, 1],
   getDeveloperSettings: [0, 0],
   setDeveloperOption: [2, 2],
   setBuiltinToolEnabled: [2, 2],
-  installBuiltinFeature: [1, 1],
+  installBuiltinFeature: [1, 2],
   getTidyEngineStatus: [0, 0],
   getTidyInstallStatus: [0, 0],
   installLocalProviderModel: [1, 1],
@@ -348,7 +436,7 @@ const CAPABILITY_ARITY = {
   removeMcpServer: [1, 1],
   setMcpServerEnabled: [2, 2],
   beginMcpOAuthLogin: [1, 2],
-  getMcpOAuthLoginStatus: [1, 1],
+  getMcpOAuthLoginStatus: [1, 2],
   cancelMcpOAuthLogin: [1, 1],
   completeMcpOAuthLogin: [2, 2],
   signOutMcpServer: [1, 1],
@@ -360,6 +448,7 @@ const CAPABILITY_ARITY = {
   skillContent: [1, 1],
   addSkill: [1, 1],
   saveSkill: [1, 1],
+  removeSkill: [1, 1],
   reloadSkills: [0, 0],
   pluginsStatus: [0, 0],
   reloadPlugins: [0, 0],
@@ -374,6 +463,8 @@ const CAPABILITY_ARITY = {
   recall: [1, 2],
   runDoctor: [0, 0],
   compact: [0, 0],
+  askSide: [1, 1],
+  cancelSide: [0, 0],
   listPresets: [0, 0],
   setModel: [1, 1],
   getWebSearchRoute: [0, 0],
@@ -384,16 +475,42 @@ const CAPABILITY_ARITY = {
   getOutputStyle: [0, 0],
   listOutputStyles: [0, 0],
   setOutputStyle: [1, 1],
-  setWorkflow: [1, 1],
+  setWorkflow: [1, 2],
   getOrchestrationMode: [0, 0],
-  setOrchestrationMode: [1, 1],
+  setOrchestrationMode: [1, 2],
   getWorkflowPack: [1, 1],
   saveWorkflowPack: [1, 1],
   createWorkflow: [1, 1],
   deleteWorkflow: [1, 1],
   getAgentDefinition: [1, 1],
+  getAgentAvatarImage: [1, 1],
+  archivedAgentIdentities: [1, 1],
+  getAgentConnectors: [1, 1],
+  listConnectors: [0, 0],
+  listConnectorTools: [1, 1],
+  setAgentConnectors: [2, 2],
+  setAgentConnectorEnabled: [3, 3],
+  getProjectConnectors: [1, 1],
+  setProjectConnectorEnabled: [3, 3],
+  setAgentConnectorToolPermission: [4, 4],
+  getAgentAlwaysAllowedTools: [1, 1],
+  getAgentPermissions: [1, 1],
+  setAgentPermission: [3, 3],
+  recordAgentApprovalAudit: [3, 3],
+  getLeadPersona: [0, 0],
+  saveLeadPersona: [1, 1],
+  getLeadAgentBody: [0, 0],
+  saveLeadAgentBody: [1, 1],
+  getLeadStatus: [0, 0],
+  getLeadAppearance: [0, 0],
+  setLeadAppearance: [1, 1],
+  getBotOrder: [0, 0],
+  setBotOrder: [1, 1],
+  setLeadCreated: [1, 2],
+  saveLeadIdentity: [1, 1],
   saveAgentDefinition: [1, 1],
   deleteAgentDefinition: [1, 1],
+  restoreAgentDefinition: [1, 1],
   listThemes: [0, 0],
   getTheme: [0, 0],
   setTheme: [1, 2],
@@ -406,10 +523,12 @@ const CAPABILITY_ARITY = {
   getUsageDashboard: [0, 1],
   getUsageStats: [0, 1],
   getQuotaHistory: [0, 1],
-  getSessionUsage: [0, 0],
+  getSessionUsage: [0, 1],
   consumeCodexRateLimitResetCredit: [1, 1],
   getSessionReviewDiff: [0, 0],
+  getSessionReviewFilePatch: [1, 2],
   getTurnReviewDiff: [0, 1],
+  getTurnReviewFilePatch: [1, 1],
   revertTurnReview: [0, 1],
   revertTurnReviewFile: [1, 2],
   getTurnChanges: [1, 1],
@@ -429,10 +548,10 @@ const CAPABILITY_ARITY = {
   saveCustomProvider: [1, 1],
   removeCustomProvider: [1, 1],
   updateCustomProviderModel: [3, 3],
+  setModelPreferences: [2, 2],
   testCustomProvider: [1, 1],
   checkCustomProviderKeyEnv: [1, 1],
   discoverCustomProviderModels: [1, 1],
-  saveOpenCodeGoUsageAuth: [1, 1],
   saveOpenAIUsageSessionKey: [1, 1],
   authenticateProvider: [2, 2],
   forgetProviderAuth: [1, 2],
@@ -442,6 +561,8 @@ const CAPABILITY_ARITY = {
   deleteSchedule: [1, 1],
   setScheduleEnabled: [2, 2],
   runScheduleNow: [1, 1],
+  runWebhookNow: [1, 1],
+  retryRoutineDelivery: [2, 2],
   testWebhook: [1, 1],
   saveWebhook: [1, 1],
   deleteWebhook: [1, 1],
@@ -450,7 +571,7 @@ const CAPABILITY_ARITY = {
   transcribeAudio: [1, 1],
   prepareTranscription: [0, 0],
   resizeImage: [1, 1],
-  listMediaLanes: [0, 0],
+  listMediaLanes: [0, 1],
   listMediaAssets: [0, 1],
   readMediaAsset: [1, 2],
   cacheMediaThumbnail: [2, 2],
@@ -458,6 +579,8 @@ const CAPABILITY_ARITY = {
   getMediaJob: [1, 1],
   getMediaDefault: [1, 1],
   setMediaDefault: [1, 1],
+  getMediaPins: [0, 0],
+  setMediaPin: [1, 1],
   startMediaJob: [1, 1],
   cancelMediaJob: [1, 1],
   deleteMediaAsset: [1, 1],
@@ -511,12 +634,24 @@ const CUSTOM_PROVIDER_KEYS = new Set([
   'auth',
   'discovery',
   'modelOverrides',
+  'wires',
+  'modelWires',
   'type',
 ]);
+// Wires a custom OpenAI-compatible endpoint can serve (custom-provider-config.mjs).
+const CUSTOM_WIRES = new Set(['chat', 'responses', 'messages']);
 const CUSTOM_MODEL_KEYS = new Set(['id', 'name', 'contextWindow', 'maxOutputTokens']);
 const CUSTOM_PROTOCOLS = new Set(['openai-chat', 'openai-responses', 'anthropic']);
 const CUSTOM_DISCOVERY_KEYS = new Set(['newModelsHidden']);
-const CUSTOM_OVERRIDE_KEYS = new Set(['manual', 'hidden', 'name', 'contextWindow', 'maxOutputTokens', 'reasoning']);
+const CUSTOM_OVERRIDE_KEYS = new Set([
+  'manual',
+  'hidden',
+  'name',
+  'contextWindow',
+  'maxOutputTokens',
+  'supportsVision',
+  'reasoning',
+]);
 const CUSTOM_REASONING_KEYS = new Set(['levels', 'wireFormat', 'wireValues', 'replay']);
 // Mirror the runtime normalizer (custom-provider-config.mjs): the same level
 // list (CUSTOM_REASONING_LEVELS, kept identical by custom-provider-validation
@@ -589,8 +724,37 @@ export function requiredCustomProviderInput(value: unknown, modelsOptional = fal
   if (input.type !== undefined && input.type !== 'custom') {
     throw new TypeError('custom provider type is invalid.');
   }
-  if ((input.discovery !== undefined || input.modelOverrides !== undefined) && input.schemaVersion !== 2) {
+  if (
+    (input.discovery !== undefined ||
+      input.modelOverrides !== undefined ||
+      input.wires !== undefined ||
+      input.modelWires !== undefined) &&
+    input.schemaVersion !== 2
+  ) {
     throw new TypeError('custom provider schemaVersion is invalid.');
+  }
+  // Shape only; the runtime ties them to the protocol and to each other.
+  if (input.wires !== undefined) {
+    if (
+      !Array.isArray(input.wires) ||
+      input.wires.length === 0 ||
+      input.wires.length > CUSTOM_WIRES.size ||
+      input.wires.some((wire) => typeof wire !== 'string' || !CUSTOM_WIRES.has(wire))
+    ) {
+      throw new TypeError('custom provider wires are invalid.');
+    }
+  }
+  if (input.modelWires !== undefined) {
+    const modelWires = plainRecord(input.modelWires, 'custom provider modelWires');
+    const ids = Object.keys(modelWires);
+    if (ids.length > CUSTOM_MAX_OVERRIDES) throw new TypeError('custom provider modelWires are too large.');
+    for (const modelId of ids) {
+      requireSafeModelId(modelId);
+      const wire = modelWires[modelId];
+      if (typeof wire !== 'string' || !CUSTOM_WIRES.has(wire)) {
+        throw new TypeError('custom provider modelWires are invalid.');
+      }
+    }
   }
   // v2 states models as modelOverrides; a legacy `models` list is unversioned only.
   if (input.schemaVersion === 2 && input.models !== undefined) {
@@ -653,7 +817,7 @@ function validateCustomModelOverride(value: unknown, patch: boolean, protocol?: 
   const row = plainRecord(value, 'custom provider model override');
   requireAllowedKeys(row, CUSTOM_OVERRIDE_KEYS, 'custom provider model override');
   const nullable = (v: unknown) => patch && v === null;
-  for (const key of ['manual', 'hidden']) {
+  for (const key of ['manual', 'hidden', 'supportsVision']) {
     if (row[key] !== undefined && !nullable(row[key]) && typeof row[key] !== 'boolean') {
       throw new TypeError(`custom provider model ${key} is invalid.`);
     }
@@ -720,6 +884,27 @@ export function requiredCustomModelPatch(id: unknown, modelId: unknown, patch: u
   requiredString(id, 'custom provider id', 128);
   requireSafeModelId(requiredString(modelId, 'custom provider model id', CUSTOM_MAX_MODEL_ID));
   if (patch !== null) validateCustomModelOverride(patch, true);
+}
+
+const MODEL_PREFERENCE_KEYS: ReadonlySet<string> = new Set(['model', 'hidden', 'favorite']);
+export const MODEL_PREFERENCE_CHANGES_MAX = 5_000;
+
+/** Shape check for setModelPreferences(provider, [{ model, hidden?, favorite? }]). */
+function requiredModelPreferences(provider: unknown, changes: unknown): void {
+  requiredString(provider, 'provider id', 128);
+  if (!Array.isArray(changes) || changes.length > MODEL_PREFERENCE_CHANGES_MAX) {
+    throw new TypeError('model preference changes are invalid.');
+  }
+  for (const raw of changes) {
+    const change = plainRecord(raw, 'model preference change');
+    requireAllowedKeys(change, MODEL_PREFERENCE_KEYS, 'model preference change');
+    requireSafeModelId(requiredString(change.model, 'model id', CUSTOM_MAX_MODEL_ID));
+    for (const key of ['hidden', 'favorite']) {
+      if (change[key] !== undefined && typeof change[key] !== 'boolean') {
+        throw new TypeError(`model preference ${key} is invalid.`);
+      }
+    }
+  }
 }
 
 export function requiredGitGlobalConfigKey(value: unknown): DesktopGitGlobalConfigKey {
@@ -911,6 +1096,9 @@ export function requiredSubmitOptions(value: unknown): DesktopSubmitOptions {
   if (input.retryFailedTurn !== undefined && typeof input.retryFailedTurn !== 'boolean') {
     throw new TypeError('submit retryFailedTurn is invalid.');
   }
+  if (input.kickoff !== undefined && typeof input.kickoff !== 'boolean') {
+    throw new TypeError('submit kickoff is invalid.');
+  }
   const priority = input.priority;
   if (priority !== undefined && priority !== 'now' && priority !== 'next' && priority !== 'later') {
     throw new TypeError('submit priority is invalid.');
@@ -966,11 +1154,18 @@ export function requiredNewTaskDraft(value: unknown): DesktopNewTaskDraft {
     const value = input.worktree;
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('worktree is invalid.');
     const record = value as Record<string, unknown>;
-    requireAllowedKeys(record, new Set(['confirmLarge']), 'new task worktree');
+    requireAllowedKeys(record, new Set(['confirmLarge', 'branch', 'create']), 'new task worktree');
     if (record.confirmLarge !== undefined && typeof record.confirmLarge !== 'boolean') {
       throw new TypeError('worktree.confirmLarge must be a boolean.');
     }
     worktree = record.confirmLarge === true ? { confirmLarge: true } : {};
+    if (record.branch !== undefined) worktree.branch = requiredString(record.branch, 'worktree.branch');
+    if (record.create !== undefined) {
+      if (typeof record.create !== 'boolean' || !worktree.branch) {
+        throw new TypeError('worktree.create requires a branch and must be a boolean.');
+      }
+      worktree.create = record.create;
+    }
   }
   return {
     ...(projectPath ? { projectPath } : {}),
@@ -1019,9 +1214,15 @@ export function requiredDesktopCapabilityRequest(value: unknown): DesktopCapabil
     throw new TypeError(`capability ${capability} received an invalid number of arguments.`);
   }
   validateStructuredValue(args);
+  if (capability === 'retryFailedTurn') {
+    const target = requiredSessionId(args[0]);
+    requiredString(args[1], 'turn key', 512);
+    if (input.sessionId !== target) throw new TypeError('retry session must match the addressed session.');
+  }
   if (isWorktreeCapability(capability)) validateWorktreeCapabilityArgs(capability, args);
   if (isImportCapability(capability)) validateImportCapabilityArgs(capability, args);
   if (capability === 'contextStatus' && args.length) validateContextStatusArgs(args[0]);
+  if (capability === 'getSessionUsage' && args.length) validateSessionUsageArgs(args[0]);
   validateSettingCapabilityArgs(capability, args);
   validateLocalProviderCapabilityArgs(capability, args);
   validateCredentialCapabilityArgs(capability, args);
@@ -1072,6 +1273,18 @@ function validateContextStatusArgs(options: unknown): void {
   }
 }
 
+/** The agent sessions whose ledger totals the composer island reads beside its own. */
+const MAX_SESSION_USAGE_IDS = 64;
+function validateSessionUsageArgs(options: unknown): void {
+  const request = optionalPlainRecord(options);
+  if (!request) throw new TypeError('session usage options must be an object.');
+  requireAllowedKeys(request, new Set(['sessionIds', 'agents']), 'session usage options');
+  if (request.sessionIds !== undefined) requiredSessionIds(request.sessionIds, MAX_SESSION_USAGE_IDS);
+  if (request.agents !== undefined && typeof request.agents !== 'boolean') {
+    throw new TypeError('session usage agents must be a boolean.');
+  }
+}
+
 function validateSettingCapabilityArgs(capability: DesktopCapability, args: readonly unknown[]): void {
   if (BOOLEAN_FIRST_CAPABILITIES.has(capability) && typeof args[0] !== 'boolean') {
     throw new TypeError(`${capability} requires a boolean value.`);
@@ -1079,15 +1292,32 @@ function validateSettingCapabilityArgs(capability: DesktopCapability, args: read
   if (capability === 'setInstructionFiles' && !['all', 'agents', 'claude', 'off'].includes(args[0] as string)) {
     throw new TypeError('setInstructionFiles requires all, agents, claude, or off.');
   }
+  if (capability === 'setAutoEffortBase' && !['low', 'medium', 'high'].includes(args[0] as string)) {
+    throw new TypeError('setAutoEffortBase requires low, medium, or high.');
+  }
   if (BOOLEAN_SECOND_CAPABILITIES.has(capability) && typeof args[1] !== 'boolean') {
     throw new TypeError(`${capability} requires a boolean value.`);
   }
   if (capability === 'setBuiltinToolEnabled' && !TOGGLEABLE_BUILTIN_TOOLS.has(args[0] as string)) {
-    throw new TypeError('setBuiltinToolEnabled requires git, office, localProvider, tidy, autoEffort, or visualize.');
+    throw new TypeError(
+      'setBuiltinToolEnabled requires git, office, localProvider, tidy, autoEffort, visualize, or media.'
+    );
   }
   if (capability === 'setDeveloperOption') requiredString(args[0], 'developer option id', 128);
   if (capability === 'installBuiltinFeature' && !INSTALLABLE_BUILTIN_FEATURES.has(args[0] as string)) {
     throw new TypeError('installBuiltinFeature requires git, memory, office, localProvider, or tidy.');
+  }
+  if (capability === 'installBuiltinFeature' && args[1] !== undefined) {
+    const engines = (args[1] as { engines?: unknown } | null)?.engines;
+    if (
+      args[0] !== 'tidy' ||
+      !Array.isArray(engines) ||
+      engines.length === 0 ||
+      engines.length > 16 ||
+      !engines.every((id) => typeof id === 'string' && /^[a-z0-9_-]{1,64}$/.test(id))
+    ) {
+      throw new TypeError('installBuiltinFeature options accept only engines:[ids] for tidy.');
+    }
   }
   if (capability === 'setModel') requiredString(args[0], 'model selector', 512);
 }
@@ -1145,18 +1375,16 @@ function validateCredentialCapabilityArgs(capability: DesktopCapability, args: r
   if (capability === 'checkCustomProviderKeyEnv') requiredString(args[0], 'environment variable name', 128);
   if (capability === 'saveStarterGuideState') requiredStarterGuideState(args[0]);
   if (capability === 'updateCustomProviderModel') requiredCustomModelPatch(args[0], args[1], args[2]);
+  if (capability === 'setModelPreferences') requiredModelPreferences(args[0], args[1]);
   if (capability === 'removeCustomProvider') requiredString(args[0], 'custom provider id', 128);
   if (capability === 'saveOpenAIUsageSessionKey') {
     validateSecret(args[0], 'secret');
   }
-  if (capability === 'saveOpenCodeGoUsageAuth') {
-    const options = optionalPlainRecord(args[0]);
-    if (!options) throw new TypeError('OpenCode Go usage auth is invalid.');
-    validateSecret(options.apiKey, 'OpenCode console API key');
-  }
 }
 
 function validateTurnCapabilityArgs(capability: DesktopCapability, args: readonly unknown[]): void {
+  // A /btw side question: one non-empty question text.
+  if (capability === 'askSide') requiredString(args[0], 'side question', MAX_PROMPT_LENGTH);
   if (capability === 'getTurnReviewDiff' && args[0] !== undefined) {
     // The turn review bar asks for `{ refresh, known, summary, poll }`: whether
     // to re-read the worktree before diffing, the tag of the review it already
@@ -1174,6 +1402,11 @@ function validateTurnCapabilityArgs(capability: DesktopCapability, args: readonl
     ) {
       throw new TypeError('turn review options are invalid.');
     }
+  }
+  if (capability === 'getSessionReviewFilePatch' || capability === 'getTurnReviewFilePatch') {
+    // `[file, oldPath?]`: one listed file (and a rename's source) of a review.
+    requiredString(args[0], 'file', 4_096);
+    if (args[1] !== undefined) requiredString(args[1], 'oldPath', 4_096);
   }
   if (capability === 'getTurnChanges') {
     // `{ checkpointId, patch?, file? }`: one turn's recorded changes.
@@ -1222,6 +1455,10 @@ export function requiredModelSelection(value: unknown): DesktopModelSelection {
   const modelParameters = selection.modelParameters;
   const contextPercent = selection.contextPercent;
   const contextTokens = selection.contextTokens;
+  const onlyIfEmpty = selection.onlyIfEmpty;
+  if (onlyIfEmpty !== undefined && typeof onlyIfEmpty !== 'boolean') {
+    throw new TypeError('selection.onlyIfEmpty must be a boolean.');
+  }
   if (
     contextTokens !== undefined &&
     (typeof contextTokens !== 'number' || !Number.isSafeInteger(contextTokens) || contextTokens < 1)
@@ -1256,8 +1493,20 @@ export function requiredModelSelection(value: unknown): DesktopModelSelection {
   ) {
     throw new TypeError('selection.contextPercent must be a 10-point percentage from 10 to 100.');
   }
+  // The Lead's fallback chain: leaf selections only (the runtime checks providers).
+  const fallbacks = selection.fallbacks;
+  if (fallbacks !== undefined && (!Array.isArray(fallbacks) || fallbacks.length > 16)) {
+    throw new TypeError('selection.fallbacks must be an array of model selections.');
+  }
+  const fallbackSelections = (fallbacks as unknown[] | undefined)?.map((entry) => {
+    if (entry && typeof entry === 'object' && Object.hasOwn(entry, 'fallbacks')) {
+      throw new TypeError('fallback selections must be leaf selections.');
+    }
+    return requiredModelSelection(entry);
+  });
   return {
     provider: requiredString(selection.provider, 'selection.provider', 256),
+    ...(fallbackSelections === undefined ? {} : { fallbacks: fallbackSelections }),
     model: requiredString(selection.model, 'selection.model', 512),
     ...(effort === undefined ? {} : { effort: requiredString(effort, 'selection.effort', 64) }),
     ...(fast === undefined ? {} : { fast }),
@@ -1265,6 +1514,7 @@ export function requiredModelSelection(value: unknown): DesktopModelSelection {
     ...(modelParameters === undefined ? {} : { modelParameters: { ...(modelParameters as Record<string, string>) } }),
     ...(contextPercent === undefined ? {} : { contextPercent }),
     ...(contextTokens === undefined ? {} : { contextTokens }),
+    ...(onlyIfEmpty === true ? { onlyIfEmpty } : {}),
   };
 }
 
@@ -1298,6 +1548,39 @@ export function requiredToolApprovalDecision(value: unknown): ToolApprovalDecisi
   }
   const result: ToolApprovalDecision = { approved: decision.approved, reason: decision.reason };
   if (decision.answers !== undefined) result.answers = requiredQuestionAnswers(decision.answers);
+  if (decision.reply !== undefined) {
+    if (typeof decision.reply !== 'string' || decision.reply.trim().length > 4_000) {
+      throw new TypeError('decision.reply is invalid.');
+    }
+    result.reply = decision.reply.trim();
+  }
+  if (decision.response !== undefined) {
+    if (!TOOL_APPROVAL_RESPONSES.has(decision.response)) throw new TypeError('decision.response is invalid.');
+    result.response = decision.response;
+  }
+  if (decision.remember !== undefined) {
+    if (!['once', 'agent', 'always'].includes(decision.remember)) throw new TypeError('decision.remember is invalid.');
+    result.remember = decision.remember;
+  }
+  if (decision.scope !== undefined) {
+    if (typeof decision.scope !== 'string' || decision.scope.length > 200) {
+      throw new TypeError('decision.scope is invalid.');
+    }
+    result.scope = decision.scope;
+  }
+  if (decision.editedArgs !== undefined) {
+    const edited = decision.editedArgs as unknown;
+    if (
+      !edited ||
+      typeof edited !== 'object' ||
+      Array.isArray(edited) ||
+      Object.keys(edited).length > 8 ||
+      Object.values(edited).some((value) => typeof value !== 'string' || value.length > 40_000)
+    ) {
+      throw new TypeError('decision.editedArgs is invalid.');
+    }
+    result.editedArgs = { ...(edited as Record<string, string>) };
+  }
   return result;
 }
 
@@ -1305,7 +1588,8 @@ function requiredQuestionAnswers(value: unknown): NonNullable<ToolApprovalDecisi
   if (!Array.isArray(value) || value.length > 4) throw new TypeError('decision.answers is invalid.');
   return value.map((entry) => {
     if (entry === null) return null;
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new TypeError('decision.answers is invalid.');
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+      throw new TypeError('decision.answers is invalid.');
     requireAllowedKeys(entry as Record<string, unknown>, new Set(['selected', 'text']), 'decision.answers');
     const { selected, text } = entry as { selected?: unknown; text?: unknown };
     if (
@@ -1327,6 +1611,26 @@ export function requiredGitPaths(value: unknown): string[] {
     throw new TypeError('git paths are invalid.');
   }
   return value.map(requiredGitPath);
+}
+
+/** Island Git request: the listed files (may be empty) and an optional base branch. */
+export function requiredGitRequestContextInput(value: unknown): { paths: string[]; base: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('git request input is invalid.');
+  const { paths, base } = value as Record<string, unknown>;
+  if (!Array.isArray(paths) || paths.length > 500) throw new TypeError('git paths are invalid.');
+  return {
+    paths: paths.map(requiredGitPath),
+    base: base === undefined || base === '' ? '' : requiredGitBranchName(base),
+  };
+}
+
+export function requiredReviewDiffFiles(value: unknown): { path: string; untracked: boolean }[] {
+  if (!Array.isArray(value) || value.length > 512) throw new TypeError('git review files are invalid.');
+  return value.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) throw new TypeError('git review file is invalid.');
+    const { path, untracked } = entry as { path?: unknown; untracked?: unknown };
+    return { path: requiredGitPath(path), untracked: untracked === true };
+  });
 }
 
 export function requiredGitPath(value: unknown): string {
@@ -1484,7 +1788,7 @@ const OPENABLE_ATTACHMENT_EXTENSIONS = new Set([
 ]);
 
 /** Decodes a base64 or percent-encoded `data:` URL. */
-export function decodeDataUrl(value: unknown): { mime: string; bytes: Buffer } {
+function decodeDataUrl(value: unknown): { mime: string; bytes: Buffer } {
   if (typeof value !== 'string') throw new TypeError('data URL must be a string.');
   const match = /^data:([^,]*),([\s\S]*)$/i.exec(value.trim());
   if (!match) throw new TypeError('data URL is invalid.');
@@ -1575,9 +1879,13 @@ export function requiredDesktopSettingKey(value: unknown): DesktopSettingKey {
     value === 'turnNotifications' ||
     value === 'usagePinned' ||
     value === 'usageRailShortLong' ||
+    value === 'usageAccountsExpanded' ||
+    value === 'usageRailSlotsThree' ||
+    value === 'usageRailSlotsAll' ||
     value === 'computerControl' ||
     value === 'computerObserveOnly' ||
     value === 'browserControl' ||
+    value === 'browserAutoSignIn' ||
     value === 'computerInstalled' ||
     value === 'browserInstalled'
   )
@@ -1732,4 +2040,218 @@ export function requiredWorkspaceFolders(value: unknown): DesktopWorkspaceFolder
       ...(typeof record.name === 'string' && record.name.trim() ? { name: record.name.trim().slice(0, 200) } : {}),
     };
   });
+}
+
+// ---- Desktop pet (main/desktop-pet-window.ts) --------------------------------
+
+const PET_KEY_MAX = 256;
+const PET_NAME_MAX = 200;
+const PET_AVATAR_MAX = 4_096;
+const PET_MEMBERS_MAX = 4;
+
+function petObject(value: unknown, name: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${name} must be an object.`);
+  return value as Record<string, unknown>;
+}
+
+function petText(value: unknown, name: string, maximum: number): string {
+  if (typeof value !== 'string' || value.length > maximum || hasControlCharacter(value)) {
+    throw new TypeError(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requiredDesktopPetBubble(value: unknown): DesktopPetBubble {
+  const bubble = petObject(value, 'pet bubble');
+  const kind = bubble.kind;
+  if (kind === 'idle' || kind === 'working' || kind === 'approval') return { kind };
+  if (kind !== 'reply') throw new TypeError('pet bubble kind is invalid.');
+  const key = petText(bubble.key, 'pet bubble key', PET_KEY_MAX);
+  // Markdown source: line breaks, no other control characters.
+  if (typeof bubble.text !== 'string' || bubble.text.length > DESKTOP_PET_REPLY_MAX) {
+    throw new TypeError('pet bubble text is invalid.');
+  }
+  for (const line of bubble.text.split('\n')) petText(line, 'pet bubble text', DESKTOP_PET_REPLY_MAX);
+  return { kind, key, text: bubble.text };
+}
+
+/** A plain JSON look (mascot picks or custom file names), bounded. */
+function petAvatar(value: unknown): unknown {
+  if (value === null || value === undefined) return null;
+  const text = JSON.stringify(petObject(value, 'pet avatar'));
+  if (text.length > PET_AVATAR_MAX) throw new TypeError('pet avatar is too large.');
+  return JSON.parse(text);
+}
+
+/** The app window's published state for Mixy's chat: no field
+ *  beyond the session id, the bubble and the face is kept. */
+export function requiredDesktopPetState(value: unknown): DesktopPetState {
+  const state = petObject(value, 'pet state');
+  const sessionId = state.sessionId === '' ? '' : requiredSessionId(state.sessionId);
+  const face = petObject(state.face, 'pet face');
+  if (!Array.isArray(face.members) || face.members.length > PET_MEMBERS_MAX) {
+    throw new TypeError('pet face members are invalid.');
+  }
+  return {
+    sessionId,
+    bubble: requiredDesktopPetBubble(state.bubble),
+    face: {
+      room: face.room === true,
+      members: face.members.map((entry) => {
+        const member = petObject(entry, 'pet member');
+        return {
+          id: requiredString(member.id, 'pet member id', PET_KEY_MAX),
+          name: petText(member.name, 'pet member name', PET_NAME_MAX),
+          avatar: petAvatar(member.avatar),
+        };
+      }),
+    },
+    quiet: state.quiet === true,
+  };
+}
+
+/** A quick message: plain text, trimmed, within the send limit. */
+export function requiredDesktopPetText(value: unknown): string {
+  return requiredString(value, 'pet message', DESKTOP_PET_MAX_TEXT);
+}
+
+export function requiredDesktopPetDrag(value: unknown): DesktopPetDrag {
+  const drag = petObject(value, 'pet drag');
+  const { phase, screenX, screenY } = drag;
+  if (phase !== 'start' && phase !== 'move' && phase !== 'end') throw new TypeError('pet drag phase is invalid.');
+  if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) throw new TypeError('pet drag point is invalid.');
+  return { phase, screenX: Math.round(screenX as number), screenY: Math.round(screenY as number) };
+}
+
+/** The app window's composer card (CSS px), or null when none shows. */
+export function requiredDesktopPetComposerRect(value: unknown): DesktopPetRect | null {
+  if (value === null) return null;
+  const rect = petObject(value, 'pet composer rect');
+  const out = { x: 0, y: 0, width: 0, height: 0 };
+  for (const key of ['x', 'y', 'width', 'height'] as const) {
+    const number = rect[key];
+    if (typeof number !== 'number' || !Number.isFinite(number) || Math.abs(number) > 100_000) {
+      throw new TypeError('pet composer rect is invalid.');
+    }
+    out[key] = Math.round(number);
+  }
+  if (out.width < 0 || out.height < 0) throw new TypeError('pet composer rect is invalid.');
+  return out;
+}
+
+/** The composer card plus its island pill's centre line (CSS px; null when
+ *  no pill shows), or null when no card shows. */
+export function requiredDesktopPetComposer(value: unknown): DesktopPetComposer | null {
+  const rect = requiredDesktopPetComposerRect(value);
+  if (!rect) return null;
+  const { transcript } = value as { transcript?: unknown };
+  const column = requiredDesktopPetTranscriptColumn(transcript);
+  return { ...requiredDesktopPetIsland(rect, value), ...(column ? { transcript: column } : {}) };
+}
+
+function petCoordinate(number: unknown, what: string): number {
+  if (typeof number !== 'number' || !Number.isFinite(number) || Math.abs(number) > 100_000) {
+    throw new TypeError(`pet composer ${what} is invalid.`);
+  }
+  return Math.round(number);
+}
+
+/** The transcript column beside the card (left ≤ right), or none. */
+function requiredDesktopPetTranscriptColumn(value: unknown): DesktopPetComposer['transcript'] {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object') throw new TypeError('pet composer transcript is invalid.');
+  const { left, right, bottom } = value as { left?: unknown; right?: unknown; bottom?: unknown };
+  const column = {
+    left: petCoordinate(left, 'transcript'),
+    right: petCoordinate(right, 'transcript'),
+    bottom: petCoordinate(bottom, 'transcript'),
+  };
+  if (column.right < column.left) throw new TypeError('pet composer transcript is invalid.');
+  return column;
+}
+
+function requiredDesktopPetIsland(rect: DesktopPetRect, value: unknown): DesktopPetComposer {
+  const { island, islandSpan } = value as { island?: unknown; islandSpan?: unknown };
+  if (island === undefined || island === null) return { ...rect, island: null };
+  const line = petCoordinate(island, 'island');
+  if (islandSpan === undefined || islandSpan === null) return { ...rect, island: line };
+  if (typeof islandSpan !== 'object') throw new TypeError('pet composer island is invalid.');
+  const span = islandSpan as { left?: unknown; right?: unknown; top?: unknown };
+  const left = petCoordinate(span.left, 'island');
+  const right = petCoordinate(span.right, 'island');
+  const top = petCoordinate(span.top, 'island');
+  if (right < left || top > line) throw new TypeError('pet composer island is invalid.');
+  return { ...rect, island: line, islandSpan: { left, right, top } };
+}
+
+/** The bot's size: one of the offered percentages (50–200, step 10). */
+export function requiredDesktopPetScale(value: unknown): number {
+  if (typeof value !== 'number' || !DESKTOP_PET_SCALES.includes(value)) {
+    throw new TypeError('pet scale is invalid.');
+  }
+  return value;
+}
+
+/** One overlay option Settings sets by name, with its on/off value. */
+export function requiredDesktopPetOption(name: unknown, value: unknown): { name: DesktopPetOption; value: boolean } {
+  if (typeof name !== 'string' || !(DESKTOP_PET_OPTIONS as readonly string[]).includes(name)) {
+    throw new TypeError('pet option is invalid.');
+  }
+  if (typeof value !== 'boolean') throw new TypeError('pet option value must be a boolean.');
+  return { name: name as DesktopPetOption, value };
+}
+
+/** The app's open floating layers: the backdrop flag and at most
+ *  DESKTOP_PET_MAX_LAYERS transient rects (CSS px). */
+export function requiredDesktopPetLayers(value: unknown): DesktopPetLayers {
+  const { backdrop, rects } = petObject(value, 'pet layers');
+  if (typeof backdrop !== 'boolean') throw new TypeError('pet layers backdrop must be a boolean.');
+  if (!Array.isArray(rects) || rects.length > DESKTOP_PET_MAX_LAYERS) throw new TypeError('pet layers are invalid.');
+  return {
+    backdrop,
+    rects: rects.map((rect) => {
+      const checked = requiredDesktopPetComposerRect(rect);
+      if (!checked) throw new TypeError('pet layer is invalid.');
+      return checked;
+    }),
+  };
+}
+
+const PET_THEME_VALUE_MAX = 400;
+
+/** The app's chat look for the pet: only the listed tokens, plain values
+ *  (no url(), no rule breaks). */
+export function requiredDesktopPetTheme(value: unknown): DesktopPetTheme {
+  const theme = petObject(value, 'pet theme');
+  if (theme.scheme !== 'light' && theme.scheme !== 'dark') throw new TypeError('pet theme scheme is invalid.');
+  const raw = petObject(theme.vars, 'pet theme vars');
+  const vars: Record<string, string> = {};
+  for (const name of DESKTOP_PET_THEME_VARS) {
+    const entry = raw[name];
+    if (entry === undefined) continue;
+    if (
+      typeof entry !== 'string' ||
+      entry.length > PET_THEME_VALUE_MAX ||
+      /[;{}<>\\\u0000-\u001f]/.test(entry) ||
+      /url\s*\(/i.test(entry)
+    ) {
+      throw new TypeError(`pet theme value ${name} is invalid.`);
+    }
+    vars[name] = entry.trim();
+  }
+  return { scheme: theme.scheme, vars };
+}
+
+export function requiredDesktopPetCommand(value: unknown): DesktopPetCommand {
+  if (typeof value !== 'string' || !(DESKTOP_PET_COMMANDS as readonly string[]).includes(value)) {
+    throw new TypeError('pet command is invalid.');
+  }
+  return value as DesktopPetCommand;
+}
+
+/** An arrow-key nudge: at most 64px on each axis. */
+export function requiredDesktopPetNudge(dx: unknown, dy: unknown): { dx: number; dy: number } {
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw new TypeError('pet nudge is invalid.');
+  const bound = (value: number) => Math.max(-64, Math.min(64, Math.round(value)));
+  return { dx: bound(dx as number), dy: bound(dy as number) };
 }

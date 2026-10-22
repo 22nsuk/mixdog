@@ -26,6 +26,7 @@ export const SETUP_EXTENDED_ACTION_FIELDS = Object.freeze({
   save_automation: 'automationKind entry',
   delete_automation: 'automationKind name',
   set_automation_enabled: 'automationKind name enabled',
+  run_automation: 'automationKind name',
   set_webhook_config: 'webhook',
   set_desktop_settings: 'desktop',
   set_appearance: 'appearance',
@@ -51,6 +52,7 @@ export const SETUP_ACTIVITY_RAIL_PIN_IDS = Object.freeze([
   'workflows',
   'projects',
   'extensions',
+  'skills',
   'source-control',
   'search',
   'webhooks',
@@ -114,9 +116,24 @@ export const SETUP_MCP_SCHEMA = object({
 
 export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
   catalog: object({
-    provider: text,
-    webSearch: boolean,
-    refresh: boolean,
+    provider: {
+      ...text,
+      description: "list_models: omit for the provider index; set for that provider's compact model rows.",
+    },
+    model: {
+      ...text,
+      description:
+        'list_models: one model id; returns its full options (efforts, fast, service tiers, modelParameterOptions, parameterVariants) for set_route. Add provider when several offer the id.',
+    },
+    page: { type: 'integer', minimum: 1, description: 'list_models with provider: 1-based page; default 1.' },
+    limit: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 100,
+      description: 'list_models with provider: rows per page; default 25.',
+    },
+    webSearch: { ...boolean, description: 'list_models: native-search capable models only.' },
+    refresh: { ...boolean, description: 'list_models: refresh the catalog first.' },
   }),
   localContextWindow: {
     type: ['integer', 'null'],
@@ -140,7 +157,17 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
     name: text,
     description: text,
     body: text,
-    whenToUse: text,
+    kind: {
+      type: 'string',
+      enum: ['bot', 'agent'],
+      description:
+        'Agent create only: "bot" (a contact the user chats with) or "agent" (a workflow sub-agent). Omitted: a bot when created from the representative bot\'s chat, else a workflow agent. Fixed after creation.',
+    },
+    whenToUse: {
+      ...text,
+      description:
+        'Skill only: the SKILL.md when_to_use trigger line shown in the model\'s skill listing; "" clears it.',
+    },
     toolDependencies: {
       type: ['array', 'null'],
       items: object({ type: { type: 'string', enum: ['tool', 'mcp'] }, value: text }, ['type', 'value']),
@@ -157,13 +184,7 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
       timezone: text,
       days: { ...text, description: 'Schedule day selector, e.g. weekdays or mon,wed,fri.' },
       parser: { type: 'string', enum: ['github', 'generic', 'stripe', 'sentry'] },
-      model: {
-        ...text,
-        description:
-          'Required for new schedules; no default-model fallback. Use provider/model[@effort][+fast][+noauto][?parameter=value] (+noauto: Auto reasoning off; absent = on) or an existing preset name. On overwrite, omission preserves the saved model, which must be non-empty.',
-      },
       cwd: text,
-      workflow: text,
       attachments: {
         type: 'array',
         maxItems: 8,
@@ -182,6 +203,11 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
         ),
       },
       enabled: boolean,
+      owner: {
+        ...text,
+        description:
+          "The bot id that owns the schedule or webhook; each run is a turn in that bot's chat, where it replies with the result. The bot must exist (no representative bot yet = refused). New entries default to the bot of the calling thread (the representative bot = lead); on overwrite, omission keeps the owner.",
+      },
       overwrite: { ...boolean, description: 'Explicitly update an existing entry; omitted fields are preserved.' },
     },
     ['name']
@@ -197,7 +223,11 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
     turnNotifications: boolean,
     usagePinned: boolean,
     usageRailShortLong: boolean,
+    usageAccountsExpanded: boolean,
+    usageRailSlotsThree: boolean,
+    usageRailSlotsAll: boolean,
     computerObserveOnly: boolean,
+    browserAutoSignIn: boolean,
     notificationVolume: {
       type: 'integer',
       minimum: 0,
@@ -215,6 +245,32 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
     markdownDefaultView: { type: 'string', enum: ['preview', 'rich', 'source'] },
     linkPreview: boolean,
     toolActivityExpansion: { type: 'string', enum: ['collapsed', 'commands', 'all'] },
+    uiFont: { ...text, description: 'Installed font family for the UI; "" restores the built-in font.' },
+    codeFont: { ...text, description: 'Installed font family for code; "" restores the built-in font.' },
+    skinTransparency: {
+      type: 'integer',
+      minimum: 0,
+      maximum: 100,
+      description: 'Sets both skin transparency sliders at once, 0-100 (defaults: outer 20, main 40).',
+    },
+    skinOuterTransparency: {
+      type: 'integer',
+      minimum: 0,
+      maximum: 100,
+      description:
+        'How much of the skin picture shows through the outer panels (window frame, titlebar, rail, sidebar, side dock), 0-100 (default 20).',
+    },
+    skinMainTransparency: {
+      type: 'integer',
+      minimum: 0,
+      maximum: 100,
+      description:
+        'How much of the skin picture shows through the main panel (conversation area, composer card, status island), 0-100 (default 40).',
+    },
+    colorTheme: {
+      ...text,
+      description: 'Imported JSON color theme id from status appearance colorThemes; "builtin" turns themes off.',
+    },
   }),
   hookRule: object(
     {

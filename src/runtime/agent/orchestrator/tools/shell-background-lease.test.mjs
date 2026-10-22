@@ -7,6 +7,8 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { ResourceAdmissionController, resourceAdmission } from '../../../shared/resource-admission.mjs';
+import { holdWorkspaceActivity } from '../../../shared/worktrees/activity-gate.mjs';
+import { cleanupTempDirs, makeRepo } from '../../../shared/worktrees/test-support.mjs';
 import { cancelBackgroundTask, getBackgroundTask, registerBackgroundTask } from '../../../shared/background-tasks.mjs';
 import { execShellCommand } from './shell-command.mjs';
 import { shutdownShellJobs } from './builtin/shell-jobs.mjs';
@@ -74,6 +76,7 @@ const keepAlive = setInterval(() => {}, 1_000);
 if (hasBinary) _setNativeSpawnBinaryForTest(binary);
 test.after(async () => {
   clearInterval(keepAlive);
+  cleanupTempDirs();
   if (!hasBinary) return;
   await stopAll();
   await shutdownNativeSpawnServer('test-finish').catch(() => {});
@@ -106,18 +109,23 @@ test('promotion releases the foreground lease: 8+ background servers leave a 9th
     assert.equal(admission.snapshot().activeLeases.length, 0);
     for (const jobId of jobIds) assert.equal(getNativeTask(jobId)?.status, 'running');
 
-    const started = Date.now();
-    const ninth = await execShellCommand(quickJob({ admission, admissionWaitMs: 2_000 }));
+    // Admission is judged by the controller's own events, never by wall time:
+    // the call also spawns and runs a node child, which a loaded host can
+    // stretch past any fixed bound. The wait budget only has to outlast that.
+    const ninth = await execShellCommand(quickJob({ admission, admissionWaitMs: 60_000, timeoutMs: 60_000 }));
     assert.equal(ninth.exitCode, 0, ninth.stderr);
     assert.match(ninth.stdout, /quick-ok/);
-    assert.ok(Date.now() - started < 2_000, 'the 9th call was admitted without waiting');
+    assert.equal(admission.waitStats.shell.admitted, 13, 'every call, the 9th included, was admitted');
+    assert.equal(admission.waitStats.shell.waited, 0, 'the 9th call was admitted without queueing');
 
     // Shutdown still kills background jobs, and nothing stays counted.
     const shutdown = await shutdownShellJobs('test');
     assert.ok(shutdown.killed >= 12);
-    assert.deepEqual(shutdown.unconfirmedJobs, []);
+    // Shutdown confirms exits within a bounded window; a loaded host may report
+    // a job as unconfirmed and confirm it moments later. Wait for the exits
+    // themselves rather than requiring them inside that window.
+    assert.ok(await until(() => runningJobs().length === 0, 50_000), 'every killed job exits');
     for (const jobId of jobIds) assert.notEqual(getNativeTask(jobId)?.status, 'running');
-    assert.deepEqual(runningJobs(), []);
     assert.equal(admission.snapshot().active.shell, 0);
     assert.equal(admission.snapshot().activeLeases.length, 0);
   } finally {
@@ -138,8 +146,8 @@ test('a scoped parent always resumes: maxHighLoad=1 with many background jobs', 
     const jobIds = [];
     await admission.runWithLease(agent, async () => {
       for (let i = 0; i < 4; i += 1) {
-        // The shell takes the only high-load slot from the suspended parent;
-        // promotion must hand it back or this call never returns.
+        // The shell runs beside the parent, which keeps the only high-load
+        // slot; the call must return through promotion.
         let timer;
         const result = await Promise.race([
           execShellCommand(longJob(`parent-${i}`, { admission, ownerSessionId: 'sess_parent' })),
@@ -193,6 +201,52 @@ test('a queued saturated command releases its lease when it is promoted', {
     assert.ok(await until(() => getNativeTask(taskId)?.status !== 'running'));
     assert.equal(admission.snapshot().active.shell, 0);
     assert.equal(admission.snapshot().activeLeases.length, 0);
+  } finally {
+    await stopAll();
+  }
+});
+
+test('cancelling a queued command still in the foreground frees its workspace once the tree is gone', {
+  skip: skipNative,
+  timeout: 60_000,
+}, async () => {
+  const admission = new ResourceAdmissionController({ env: {}, limits: { maxShells: 1, maxHighLoad: 12 } });
+  const repo = makeRepo();
+  const workspaceFree = () => {
+    try {
+      holdWorkspaceActivity([repo])();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    const holder = await admission.acquire('shell', { label: 'holder' });
+    const queued = await execShellCommand(
+      longJob('queued-foreground', {
+        cwd: repo,
+        autoBackgroundMs: 0,
+        admission,
+        admissionWaitMs: 300,
+        ownerSessionId: 'sess_queue_cancel',
+      })
+    );
+    assert.equal(queued.backgrounded, true);
+    const taskId = /task_id: (\S+?)\]/.exec(queued.backgroundMessage)?.[1];
+    assert.ok(taskId, queued.backgroundMessage);
+    await holder.release();
+    assert.ok(await until(() => getNativeTask(taskId)?.status === 'running'));
+    // Past spawn: the foreground run's abort handler owns the kill now.
+    await delay(500);
+    const task = getBackgroundTask(taskId);
+    cancelBackgroundTask(taskId, 'test');
+    await task.promise;
+    assert.equal(task.status, 'cancelled');
+    assert.ok(await until(() => getNativeTask(taskId)?.status !== 'running'));
+    // A kill sent before the pre-kill snapshot left the tree unconfirmed and
+    // the workspace held for good.
+    assert.ok(await until(workspaceFree, 15_000), 'the workspace is released after the cancelled tree ended');
+    assert.equal(admission.snapshot().active.shell, 0);
   } finally {
     await stopAll();
   }

@@ -16,6 +16,7 @@ import type {
 } from '../../shared/visualize';
 import type { VisualizeServiceContext } from './context';
 import { type HistoryEntry, historyId, historyItems, rememberHistory } from './history';
+import { noteReveal } from './turn-hold';
 import {
   paneKindOf,
   realCwdOfTab,
@@ -75,10 +76,27 @@ export function createSessionViews(
 
   /** One render instance's id: bound to this service's secret, the session,
    *  the tab, its revision (every remount bumps it), the displayed pane and
-   *  the version it shows. Issued with the tab state, never guessable. */
-  const renderIdOf = (sessionId: string, tab: TabState, index: number, pane: VisualizePaneView): string =>
+   *  the version it shows. Issued with the tab state, never guessable. A
+   *  remote client's id is signed apart, so neither audience learns the
+   *  other's. */
+  const renderIdOf = (
+    sessionId: string,
+    tab: TabState,
+    index: number,
+    pane: Pick<VisualizePaneView, 'version'>,
+    audience: 'desktop' | 'remote' = 'desktop'
+  ): string =>
     createHmac('sha256', renderSecret)
-      .update([sessionId, tab.id, tab.revision, index, pane.version ?? 'live'].join('\0'))
+      .update(
+        [
+          sessionId,
+          tab.id,
+          tab.revision,
+          index,
+          pane.version ?? 'live',
+          ...(audience === 'remote' ? ['remote'] : []),
+        ].join('\0')
+      )
       .digest('base64url');
 
   const withRenderIds = (sessionId: string, tab: TabState, tabView: VisualizeTabView): VisualizeTabView => ({
@@ -149,7 +167,12 @@ export function createSessionViews(
           ...view,
           remoteLabel: remoteLabelOf(tab, live),
           cwd: tab.cwd,
-          panes: shownLayout(tab, keptHostPanes(tab), live),
+          // Inline panes carry the remote render id their report needs.
+          panes: shownLayout(tab, keptHostPanes(tab), live).map((pane, paneIndex) =>
+            pane.kind === 'inline'
+              ? { ...pane, remoteRenderId: renderIdOf(sessionId, tab, paneIndex, pane, 'remote') }
+              : pane
+          ),
         };
       }),
     };
@@ -164,10 +187,27 @@ export type SessionViews = ReturnType<typeof createSessionViews>;
  *  (every revision change is published, so it stops mid-capture instead of
  *  running to its end), then the desktop window and the remote mirror get
  *  the session's state. */
-export function createPublish(ctx: Pick<VisualizeServiceContext, 'deps' | 'views' | 'thumbnails'>) {
-  return (sessionId: string, reveal = false): void => {
+export function createPublish(ctx: Pick<VisualizeServiceContext, 'deps' | 'views' | 'thumbnails' | 'holds'>) {
+  return (sessionId: string, revealTab?: string, updatedTab?: string): void => {
     ctx.thumbnails.cancelStale(sessionId);
-    ctx.deps.publish({ sessionId, state: ctx.views.stateOf(sessionId), ...(reveal ? { reveal: true } : {}) });
-    ctx.deps.publishHost?.({ sessionId, state: ctx.views.hostStateOf(sessionId), ...(reveal ? { reveal: true } : {}) });
+    // A running agent turn (turn-hold.ts): the reveal waits for its end, and
+    // the state goes out `held`, which the panel does not show; while the
+    // turn's end applies, nothing goes out until its one final publish.
+    const hold = ctx.holds.get(sessionId);
+    if (hold && hold.bypass === 0) {
+      if (revealTab) noteReveal(hold, revealTab);
+      hold.dirty = true;
+      if (hold.flushing) return;
+      const updated = updatedTab ? { updated: updatedTab } : {};
+      const held = { held: true, heldSince: hold.since };
+      ctx.deps.publish({ sessionId, state: ctx.views.stateOf(sessionId), ...held, ...updated });
+      ctx.deps.publishHost?.({ sessionId, state: ctx.views.hostStateOf(sessionId), ...held, ...updated });
+      return;
+    }
+    let reveal: { reveal: true; tab: string } | { updated: string } | Record<string, never> = {};
+    if (revealTab) reveal = { reveal: true, tab: revealTab };
+    else if (updatedTab) reveal = { updated: updatedTab };
+    ctx.deps.publish({ sessionId, state: ctx.views.stateOf(sessionId), ...reveal });
+    ctx.deps.publishHost?.({ sessionId, state: ctx.views.hostStateOf(sessionId), ...reveal });
   };
 }

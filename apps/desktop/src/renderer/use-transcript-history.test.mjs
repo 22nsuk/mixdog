@@ -3,7 +3,12 @@ import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { installTestDom } from './test-support/test-dom.mjs';
-import { useTranscriptHistory, useTranscriptHistoryFill } from './use-transcript-history.ts';
+import {
+  TRANSCRIPT_HISTORY_TOP_PX,
+  transcriptHistoryLead,
+  useTranscriptHistory,
+  useTranscriptHistoryFill,
+} from './use-transcript-history.ts';
 import { registerTranscriptScrollGeometry } from './use-transcript-follow.ts';
 
 /** A DOM whose desktop bridge records each `prefetchSession` request so a test
@@ -77,6 +82,15 @@ test('tail windows page older history from transcriptHasOlder, one page per publ
   }
 });
 
+test('a scroll asks for older history screens before the top, so a fling never runs out of rows first', () => {
+  // #104: a phone fling crosses hundreds of px per frame; asked for only at
+  // the old 320px band, it hit the top edge and died before the page landed.
+  assert.equal(transcriptHistoryLead(711), 7_110);
+  // An unmeasured or tiny pane still asks within the old band.
+  assert.equal(transcriptHistoryLead(0), TRANSCRIPT_HISTORY_TOP_PX);
+  assert.equal(transcriptHistoryLead(20), TRANSCRIPT_HISTORY_TOP_PX);
+});
+
 test('a first window that does not fill the pane loads older history without a scroll', async () => {
   const env = installHistoryDom();
   const { requests } = env;
@@ -121,14 +135,66 @@ test('a first window that does not fill the pane loads older history without a s
     await render(16, true);
     assert.equal(requests[1]?.limit, 80);
     await act(async () => requests[1].resolve(true));
-    // Now it overflows past the top threshold: scrolling takes over.
+    // It scrolls now, but holds less than the scroll lead (10 screens) above
+    // the tail: a fling could cross it before the next page's round trip, so
+    // the pane keeps asking before the reader can fling.
     geometry.content = 2_000;
     await render(24, true);
-    assert.equal(requests.length, 2);
+    assert.equal(requests[2]?.limit, 88);
+    await act(async () => requests[2].resolve(true));
+    // Past the lead: scrolling takes over.
+    geometry.content = 900 + 9_001;
+    await render(32, true);
+    assert.equal(requests.length, 3);
     // A short session with nothing older never pages.
     geometry.content = 300;
-    await render(30, false);
-    assert.equal(requests.length, 2);
+    await render(40, false);
+    assert.equal(requests.length, 3);
+  } finally {
+    await restoreHistoryDom(env, root);
+  }
+});
+
+test('a scrollable first window extends toward the lead by at most four pages per entry', async () => {
+  const env = installHistoryDom();
+  const { requests } = env;
+  const geometry = { content: 2_000 };
+  const root = createRoot(document.getElementById('root'));
+  const Reader = ({ count, ready }) => {
+    const viewport = React.useRef(null);
+    const requestEarlier = useTranscriptHistory('a', count, true);
+    useTranscriptHistoryFill(viewport, requestEarlier, count, ready);
+    return React.createElement('div', {
+      ref: (element) => {
+        viewport.current = element;
+        if (!element) return;
+        registerTranscriptScrollGeometry(element, {
+          viewportHeight: () => 900,
+          contentHeight: () => geometry.content,
+          scrollTop: () => 0,
+        });
+      },
+    });
+  };
+  const render = (count, ready = true) =>
+    act(async () => {
+      root.render(React.createElement(Reader, { count, ready }));
+    });
+  try {
+    // Pages of tiny rows barely grow the transcript: the lead is never
+    // reached, and an entry must not page the whole history in for it.
+    for (const count of [8, 16, 24, 32]) {
+      await render(count);
+      await act(async () => requests.at(-1).resolve(true));
+      geometry.content += 10;
+    }
+    assert.equal(requests.length, 4);
+    await render(40);
+    assert.equal(requests.length, 4, 'the fifth page waits for a scroll');
+    // Re-entry (the transcript is revealed again) earns a fresh allowance.
+    await render(40, false);
+    await render(40);
+    assert.equal(requests.length, 5);
   } finally {
     await restoreHistoryDom(env, root);
   }

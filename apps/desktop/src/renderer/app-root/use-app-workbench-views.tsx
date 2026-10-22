@@ -1,15 +1,30 @@
 import type React from 'react';
+import { useEffect } from 'react';
+import { agentIdOfHomeSession } from '../../../../../src/runtime/agent/orchestrator/session/agent-home.mjs';
 import type { DesktopProjectSummary, DesktopWorkspaceFolder } from '../../shared/contract';
 import { SessionSidebar, type NavigationSelection } from '../navigation';
 import { paneActiveSelection, type PaneLeaf } from '../pane-layout';
 import { navigationKey } from '../text-format';
+import { useStableEvent } from '../use-stable-event';
 import type { usePaneWorkspace } from '../pane-workspace-state';
 import { DEFAULT_SIDEBAR_VIEW_ORDER } from '../sidebar-view-layout';
 import type { SidebarPanelKey } from '../app-shell-components';
 import { requestPaneDockClose } from '../pane-dock-chrome';
-import { SessionDiffPane } from '../SessionDiffPane';
-import { VisualizePane } from '../VisualizePane';
-import { ServerPortsPanel } from '../ServerPortsPanel';
+import { PhoneDeferredMount } from '../phone-deferred-mount';
+import type { SessionDiffPane as SessionDiffPaneComponent } from '../SessionDiffPane';
+import type { ServerPortsPanel as ServerPortsPanelComponent } from '../ServerPortsPanel';
+import { useDeferredModule } from '../deferred-module';
+import {
+  agentRoomPanelModule,
+  routinesPaneModule,
+  serverPortsPanelModule,
+  sessionDiffPaneModule,
+  visualizePaneModule,
+} from '../first-screen-deferred';
+import type { RoutinesPane as RoutinesPaneComponent } from '../RoutinesPane';
+import type { AgentRoomPanel as AgentRoomPanelComponent } from '../AgentRoomPanel';
+import type { VisualizePane as VisualizePaneComponent } from '../VisualizePane';
+import { DesktopLoadingSurface } from '../RendererRecovery';
 import { prefetchDiffView } from '../lazy-widgets';
 import { SnapshotUtilityDock } from '../app-snapshot-views';
 import type { DesktopSnapshotStore } from '../desktop-snapshot-store';
@@ -32,7 +47,8 @@ import type { useEditorNavigation } from '../use-editor-navigation';
 import type { createSideFileGuard } from '../side-file-guard';
 import { WorkbenchProblemsPane } from '../WorkbenchProblems';
 import type { EditorSaveHandle } from '../use-pane-tab-close';
-import { cleanDiffTarget } from './workspace-targets';
+import { cleanDiffTarget, sessionChangesCwd, sessionOwnsWorkspace } from './workspace-targets';
+import { useSessionLane } from '../session-lane-store';
 import { showDesktopToast } from '../desktop-toasts';
 import { errorMessageText } from '../ErrorNotice';
 import { t } from '../i18n';
@@ -40,6 +56,53 @@ import { resolveLocalLink } from '../local-link-resolver';
 import { isAbsolutePath } from '../session-diff-model';
 import { sideFileKey } from '../side-file-tabs';
 import { closingDrawerFirst } from './drawer-navigation';
+import { isMobileRemoteSurface } from '../mobile-surface';
+
+// The Visualize panel is never part of the first screen, and its source view
+// statically pulls the whole highlight.js core and language set: kept out of
+// the startup graph, a phone cold open neither downloads nor evaluates it.
+// Rendered synchronously once loaded (the phone's lane): a React.lazy suspends
+// its first render even with the chunk in, behind a throttled reveal.
+function VisualizePane(props: React.ComponentProps<typeof VisualizePaneComponent>) {
+  const module = useDeferredModule(visualizePaneModule);
+  return module ? <module.VisualizePane {...props} /> : null;
+}
+
+// The Changes and Ports views are side views no first screen shows: their
+// chunks load on first mount (or from the idle lane), behind the shared
+// delayed loading surface, which a warm or local load never shows.
+function SessionDiffPane({
+  ownsWorkspace,
+  ...props
+}: React.ComponentProps<typeof SessionDiffPaneComponent> & { ownsWorkspace: boolean }) {
+  const module = useDeferredModule(sessionDiffPaneModule, { bootSurface: props.active ? 'session-diff' : undefined });
+  const lane = useSessionLane(ownsWorkspace ? props.sessionId : '');
+  const cwd = sessionChangesCwd(ownsWorkspace, lane?.cwd, props.cwd ?? '');
+  const loading = <DesktopLoadingSurface label={t('Loading view…')} />;
+  return module ? (
+    <PhoneDeferredMount placeholder={loading}>
+      <module.SessionDiffPane {...props} cwd={cwd} />
+    </PhoneDeferredMount>
+  ) : (
+    loading
+  );
+}
+
+function RoutinesPane(props: React.ComponentProps<typeof RoutinesPaneComponent> & { leafId?: string }) {
+  const module = useDeferredModule(routinesPaneModule, { bootSurface: props.active ? 'routines' : undefined });
+  // The home thread's agent panel: 프로필 · 루틴.
+  return module ? <module.AgentPanel {...props} /> : <DesktopLoadingSurface label={t('Loading view…')} />;
+}
+
+function AgentRoomPanel(props: React.ComponentProps<typeof AgentRoomPanelComponent>) {
+  const module = useDeferredModule(agentRoomPanelModule);
+  return module ? <module.AgentRoomPanel {...props} /> : <DesktopLoadingSurface label={t('Loading view…')} />;
+}
+
+function ServerPortsPanel(props: React.ComponentProps<typeof ServerPortsPanelComponent>) {
+  const module = useDeferredModule(serverPortsPanelModule, { bootSurface: props.active ? 'server-ports' : undefined });
+  return module ? <module.ServerPortsPanel {...props} /> : <DesktopLoadingSurface label={t('Loading view…')} />;
+}
 
 export interface UseAppWorkbenchViewsOptions {
   sessions: ReturnType<typeof useSessionCatalog>['sessions'];
@@ -87,7 +150,7 @@ export interface UseAppWorkbenchViewsOptions {
   dockOpenDiff: (project: string, rel: string, request: SourceControlDiffRequest) => void;
   dockOpenPullRequest: PullRequestOpenHandler;
   dockOpenLeadSession: (sessionId: string) => void;
-  dockOpenAgentSession: (sessionId: string, title: string, ownerSessionId: string) => void;
+  dockOpenAgentSession: (sessionId: string, title: string, ownerSessionId: string, replaceKey?: string) => void;
   /** Phone drawer close (no-op on wide layouts); left-drawer results close it. */
   closeSidebarForNavigation?: () => void;
   renameProjectEntry: (projectPath: string, relPath: string, newName: string) => Promise<void>;
@@ -207,6 +270,12 @@ export function useAppWorkbenchViews({
   setProblemsCollapseNonce,
   openProblemQuickFix,
 }: UseAppWorkbenchViewsOptions) {
+  // A bot row in the Sessions sidebar opens its chat as a tab and the
+  // Sessions view stays; the phone keeps its full-screen Bots page.
+  const sidebarOpenAgent = useStableEvent((sessionId: string, title: string) => {
+    if (isMobileRemoteSurface()) selectWorkbenchSideView('agents');
+    dockOpenAgentSession(sessionId, title, sessionId);
+  });
   const renderWorkbenchSideView = (
     side: WorkbenchSide,
     id: WorkbenchSideViewId,
@@ -240,6 +309,7 @@ export function useAppWorkbenchViews({
       onNewStudio: sidebarNewStudio,
       onPrefetchSession: window.mixdogDesktop?.prefetchSession ? prefetchSession : undefined,
       onResumeSession: sidebarResumeSession,
+      onOpenAgent: sidebarOpenAgent,
       onRenameSession: renameSession,
       onArchiveSession: archiveSession,
       onFavoriteSession: favoriteSession,
@@ -265,13 +335,18 @@ export function useAppWorkbenchViews({
       if (!pane) return null;
       const sessionId = pane.sessionId;
       const sideFiles = paneSideDocks.entryFor(pane.leafId).files ?? [];
+      const ownsWorkspace = sessionOwnsWorkspace(sessions, registeredProjectPath, sessionId);
       return (
         <SessionDiffPane
           sessionId={sessionId}
           active={active}
+          ownsWorkspace={ownsWorkspace}
           cwd={pane.projectPath}
           onClose={() => requestPaneDockClose('session-diff')}
-          onOpenFile={(path) => openSessionDiffFile(sideFileGuard, pane.leafId, pane.projectPath, sessionId, path)}
+          onOpenFile={(path) =>
+            // Its own folder's files resolve through the session, as chat links do.
+            openSessionDiffFile(sideFileGuard, pane.leafId, ownsWorkspace ? '' : pane.projectPath, sessionId, path)
+          }
           fileTabs={{
             tabs: sideFiles.map((file) => ({
               key: sideFileKey(file),
@@ -284,10 +359,21 @@ export function useAppWorkbenchViews({
         />
       );
     }
+    if (id === 'routines') {
+      if (!pane) return null;
+      // The dock draws this panel view's header (title + fold X).
+      return <RoutinesPane sessionId={pane.sessionId} active={active} leafId={pane.leafId} />;
+    }
+    if (id === 'room') {
+      if (!pane) return null;
+      return <AgentRoomPanel sessionId={pane.sessionId} active={active} leafId={pane.leafId} />;
+    }
     if (id === 'visualize') {
       if (!pane) return null;
       return (
-        <VisualizePane sessionId={pane.sessionId} active={active} onClose={() => requestPaneDockClose('visualize')} />
+        <PhoneDeferredMount>
+          <VisualizePane sessionId={pane.sessionId} active={active} onClose={() => requestPaneDockClose('visualize')} />
+        </PhoneDeferredMount>
       );
     }
     // Session-owned surfaces render in the pane dock's persistent stack.
@@ -312,6 +398,7 @@ export function useAppWorkbenchViews({
         sessions={sessions}
         sessionsReady={sessionCatalogReady}
         activeSessionIds={observedAgentSessionIds}
+        selectedSessionId={sidebarSelection.kind === 'session' ? sidebarSelection.id : ''}
         unreadSessionIds={unreadSessionIds}
         onPrefetchSession={prefetchSession}
         projectPath={pane?.projectPath || quickAccessProjectPath}
@@ -371,6 +458,18 @@ export function useAppWorkbenchViews({
     ? paneProjectPathFor(focusedPaneForDockPrewarm)
     : quickAccessProjectPath;
   const dockBodyWarm = useAppDockWarmup(desktopBootReady, focusedPaneDockProjectPath);
+  // A bot tab turning active warms its profile panel's data (and chunk), so
+  // opening the panel paints the stored profile in its first frame.
+  const focusedSelection = focusedPaneForDockPrewarm ? paneActiveSelection(focusedPaneForDockPrewarm) : null;
+  const activeBotSessionId =
+    focusedSelection?.kind === 'session' && agentIdOfHomeSession(focusedSelection.id) ? focusedSelection.id : '';
+  useEffect(() => {
+    if (!activeBotSessionId) return;
+    void routinesPaneModule
+      .load()
+      .then((module) => module.prefetchAgentProfile(window.mixdogDesktop, activeBotSessionId))
+      .catch(() => {});
+  }, [activeBotSessionId]);
 
   const renderPaneSideDock = (leaf: PaneLeaf, focused: boolean) =>
     renderPaneSideDockView(leaf, focused, {

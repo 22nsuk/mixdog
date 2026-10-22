@@ -1,7 +1,7 @@
 /* Desktop layer 15 — Prompt dock, model/effort selects, dictation.
    Loaded in fixed order from ../desktop.css; the cascade depends on that
    order, so rules must never move between layers or be re-sorted. */
-/* Prompt input: 96px resting surface and 28px controls. The composer keeps a
+/* Prompt input: 42px one-line bar (agent-chat.css) and 28px controls. The composer keeps a
    real floor gap instead of hugging the
    window edge. */
 .composer-region {
@@ -11,26 +11,27 @@
   /* Same reading frame as the rows above it — both read the pane ladder. */
   padding: 0 var(--pane-inset) 16px;
 }
+/* The dock is an ordinary layout sibling BELOW the transcript viewport: the
+   conversation column gives the transcript shell whatever the dock's
+   intrinsic height leaves, so every dock change resizes the viewport itself
+   and nothing is fed back into the transcript as padding. */
 .conversation > .composer-region {
-  position: absolute;
+  position: relative;
   z-index: 10;
-  inset-inline: 0;
-  bottom: 0;
-  pointer-events: none;
+  /* Never taller than the pane: when the dock's members need more than the
+     pane holds, the dock shrinks, and inside it only the island slot gives
+     up room (it scrolls). Composer, quota and /btw keep their size. */
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
-.conversation > .composer-region::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  /* Hard edge at the dock top:
-     the 16px fade half-erased the line resting on the input. */
-  inset: 0;
-  background: var(--mx-workspace-sheet);
+.conversation > .composer-region > :not(.composer-island-slot) {
+  flex: none;
 }
-/* Rows fade out ABOVE the dock, so nothing inside the dock is washed.
-   Keep the fade outside the scrolling layer: masking the viewport makes
-   scrolling repaint the masked content. The measured dock height includes
-   the floating island, so the fade ends at whichever sits on top. */
+/* The strip fades the last --transcript-fade of the viewport into the sheet at
+   the transcript/dock boundary. Keep it outside the scrolling layer: masking
+   the viewport makes scrolling repaint the masked content. */
 .conversation {
   --transcript-fade: 24px;
 }
@@ -40,83 +41,123 @@
   z-index: 8;
   inset-inline: 0;
   bottom: 0;
-  height: calc(var(--composer-dock-height, 0px) + var(--transcript-fade));
+  height: var(--transcript-fade);
   pointer-events: none;
   /* Mica clears workspace-sheet, but the pane beneath the rows is painted
-     with sheet-surface. Use that same opaque colour, including below the dock. */
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    var(--mx-sheet-surface, var(--mx-workspace-sheet)) var(--transcript-fade)
-  );
+     with sheet-surface: use that same opaque colour. */
+  background: linear-gradient(to bottom, transparent, var(--mx-sheet-surface, var(--mx-workspace-sheet)));
 }
-.conversation > .composer-region > :not(.composer-island-slot) {
-  pointer-events: auto;
+/* The island slot's resting height is its pill plus the stage's floor gap.
+   Pill, stage and the draft's context bar all read these properties, so the
+   bar cannot drift from the slot it stands in for (phones set the pill below). */
+.conversation {
+  /* The transcript's jump-to-latest chip reads the same stage gap. */
+  --island-stage-gap: 12px;
 }
+.composer-region {
+  --island-pill-height: 34px;
+  --island-stage-gap: 12px;
+  --island-rest-height: calc(var(--island-pill-height) + var(--island-stage-gap));
+}
+/* A draft's context bar takes the session island slot's resting height with
+   its controls centred in it: the first submit swaps bar for island without
+   moving the transcript. */
 .composer-context-bar {
-  min-height: 28px;
+  min-height: var(--island-rest-height);
   max-height: 56px;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 6px;
 }
 
 /* ── Composer island ──────────────────────────────────────────────────────
    One island above a session's composer carries every status (Goal, jobs,
    changed files, model mismatch), expands upward in place, grows into the
-   tool approval card and flashes short notices. Its slot reserves the
-   pill's 34px + 12px gap once something has shown (it then stays held open,
-   see ComposerIsland) and is 0 before that; everything taller overlays
-   upward. The slot opens in one step: the island draws at its final place at
-   once, so an animated slot let the end-pinned transcript glide up under the
-   new segment for 180ms, the segment covering the last rows meanwhile. */
+   tool approval card and flashes short notices. Its slot is in the dock's
+   flow: the island's real height plus the 12px gap above the input while it
+   carries something, and no box at all once it carries nothing. The approval
+   card takes real room (bounded below), so the transcript viewport above
+   gets shorter; expanded panels float over the transcript instead and leave
+   the slot at its collapsed height.
+   ComposerIsland owns the slot's height (--island-slot-height, px) and its
+   data-presence: "open" while something is carried, "grace" for a short
+   hold after the last content left (content returning within it moves
+   nothing), "closing" while the height eases to 0, then "closed".
+   --island-slot-height is registered in font-faces.css. */
 .composer-island-slot {
   position: relative;
   z-index: 9;
-  height: 46px;
+  /* The one dock member that yields room: slot, stage and an expanded island
+     shrink together, so the island is bounded by what the other members
+     leave in the pane. */
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* The island rests on the slot's floor, next to the input. */
+  justify-content: flex-end;
   pointer-events: none;
 }
-/* Nothing carried yet: the slot is collapsed. Same content test as the
-   island's hidden rule below; :root outranks the mobile slot height. */
-:root
-.composer-island-slot:not([data-held]):not(
-  :has(
-    .composer-island-seg,
-    .session-goal-island,
-    .composer-island-approval,
-    .composer-island-flash,
-    .composer-island-quota,
-    .turn-review-bar
-  )
-) {
-  height: 0;
+/* Owned by ComposerIsland (set before the first paint). Whole pixels on every
+   frame of the easing: a fractional dock top would leave the end-pinned tail
+   a sub-pixel off its 24px. */
+.composer-island-slot[data-presence] {
+  height: round(var(--island-slot-height), 1px);
 }
-.composer-island-stage {
+/* Closed: the slot takes no space. */
+.composer-island-slot[data-presence="closed"] {
+  display: none;
+}
+/* Opening, closing or resizing: the height eases (no overshoot, reversible
+   mid-flight) while the island keeps its own size on the slot's floor and the
+   slot clips what is not open yet. Never set under reduced motion. */
+.composer-island-slot[data-motion] {
+  overflow: clip;
+  transition: --island-slot-height 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-island-slot[data-motion] {
+    transition: none;
+  }
+}
+.composer-island-slot:is([data-motion], [data-measuring]) > .composer-island-stage {
+  flex-shrink: 0;
+}
+/* An expanded panel overlays the transcript instead of taking dock room. The
+   stage keeps its collapsed height (pill + gap) out of flow, so the slot
+   measures the same as collapsed and the transcript viewport never resizes.
+   The panel hangs down from the pill's top edge and is lifted by its own
+   height less one pill: its layout origin stays put (nothing is reported as
+   shifting) while it paints above the pill's place on the slot's floor. The
+   slot must not clip it. */
+.composer-island-slot[data-mode="panel"] {
+  overflow: visible;
+}
+.composer-island-slot[data-mode="panel"] > .composer-island-stage {
   position: absolute;
   inset-inline: 0;
+  top: 0;
+  box-sizing: border-box;
+  height: var(--island-rest-height);
+}
+.composer-island-slot[data-mode="panel"] > .composer-island-stage > .composer-island {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  margin-inline: auto;
+  width: fit-content;
+  transform: translateY(calc(-100% + var(--island-pill-height)));
+}
+.composer-island-stage {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   /* 12px above the input: close enough to read as the composer's own chrome
      while leaving it room to breathe (the mobile dock uses the same gap). */
-  bottom: 12px;
-  display: flex;
-  justify-content: center;
+  padding-bottom: var(--island-stage-gap);
   pointer-events: none;
   container: composer-island / inline-size;
-}
-/* Expanded over the transcript: a fade from the island's top down to the
-   sheet keeps rows from reading through behind it. */
-.composer-island-slot:is([data-mode="panel"], [data-mode="approval"]) > .composer-island-stage::before {
-  content: "";
-  position: absolute;
-  inset-inline: calc(-1 * var(--pane-inset, 24px));
-  top: -72px;
-  bottom: -12px;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--mx-workspace-sheet) 0%, transparent),
-    color-mix(in srgb, var(--mx-workspace-sheet) 92%, transparent) 48px,
-    var(--mx-workspace-sheet)
-  );
-  pointer-events: none;
 }
 .composer-island {
   /* The status island's frame: one opaque blend of the base and the sheet,
@@ -140,12 +181,16 @@
   font-weight: var(--mx-weight-label);
   line-height: var(--mx-line-ui);
   letter-spacing: -0.005em;
-  transform-origin: 50% 100%;
   pointer-events: auto;
-  animation: composer-island-pop 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-/* Nothing to carry: the island vanishes, its slot stays. A distinct
-   animation per mode replays the pop whenever the island changes shape. */
+/* Entry fades only for content that arrives after the island mounted
+   (ComposerIsland sets data-entry then): a mounted island — a session switch
+   remounts it — draws at its final state. */
+:where(.composer-island-slot[data-entry]) .composer-island {
+  animation: composer-island-fade 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* Nothing to carry: the island vanishes; its slot follows after the grace
+   (ComposerIsland; same content test as ISLAND_CONTENT there). */
 .composer-island:not(
   :has(
     .composer-island-seg,
@@ -159,34 +204,67 @@
   visibility: hidden;
   animation: none;
 }
-/* An approval is marked by its ring alone: a 1px amber edge in place of the
-   neutral one (no icon, no stripe). :root outranks the light-theme tokens. */
-:root .composer-island[data-mode="approval"] {
-  --composer-island-edge: 0 0 0 1px color-mix(in srgb, var(--mx-warning) 55%, transparent);
-}
-.composer-island[data-mode="approval"] {
+/* A distinct animation name per mode replays the fade whenever the island
+   changes shape. */
+:where(.composer-island-slot[data-entry]) .composer-island[data-mode="approval"] {
   animation-name: composer-island-pop-approval;
+}
+/* Expanded, the approval card takes real room in the dock and a panel floats
+   over the transcript. Neither takes the pane: past this bound it scrolls
+   inside, and in a pane too short for even that the approval card shrinks to
+   what the composer and the other dock members leave (the slot's flex bound
+   above). */
+.composer-island:is([data-mode="panel"], [data-mode="approval"]) {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: max(160px, 100cqh - 240px);
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+/* A panel floats up from the composer's floor, so it is capped to the real
+   room above that floor (measured by ComposerIsland; no minimum that could
+   exceed it) and scrolls inside past that. */
+.composer-island[data-mode="panel"] {
+  max-height: var(--island-panel-room, max(96px, 100cqh - 240px));
 }
 /* Collapsed, the island is one capsule like its pill row. */
 .composer-island:is([data-mode="pill"], [data-mode="flash"]) {
   border-radius: var(--mx-radius-pill);
 }
-.composer-island[data-mode="flash"] {
+:where(.composer-island-slot[data-entry]) .composer-island[data-mode="flash"] {
   animation-name: composer-island-pop-flash;
 }
-@keyframes composer-island-pop {
+:where(.composer-island-slot[data-entry]) .composer-island[data-mode="panel"] {
+  animation-name: composer-island-pop-panel;
+}
+/* The island fades in place; it never scales or slides, so nothing reads as
+   moving while its slot eases open. The fade also animates transform (to its
+   own resting value) so the browser leaves the island's lift between collapsed
+   and expanded (a panel is positioned by transform) out of layout-shift
+   reporting; the panel's rise below is that lift's last 12px. */
+@keyframes composer-island-fade {
   from {
-    transform: scale(0.94);
-    opacity: 0.4;
+    opacity: 0;
+    transform: translateY(0);
+  }
+}
+@keyframes composer-island-pop-panel {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-100% + var(--island-pill-height) + 12px));
   }
 }
 @keyframes composer-island-pop-approval {
   from {
-    transform: scale(0.94);
-    opacity: 0.4;
+    opacity: 0;
   }
 }
 @keyframes composer-island-pop-flash {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes composer-island-pop {
   from {
     transform: scale(0.94);
     opacity: 0.4;
@@ -199,7 +277,7 @@
 }
 .composer-island-pill {
   min-width: 0;
-  height: 34px;
+  height: var(--island-pill-height);
   display: flex;
   align-items: center;
   padding: 0 4px;
@@ -258,6 +336,172 @@
   background: var(--composer-island-rule);
   transform: translateY(-50%);
 }
+/* An undecided files segment's room (IslandFilesPending): its last advance,
+   separator margin included, so the arriving segment moves nothing. */
+.composer-island-pill > .composer-island-reserve {
+  flex: none;
+  height: 26px;
+}
+/* A segment after a reserve keeps the separator margin it has beside the
+   segment the reserve stands in for. */
+.composer-island-pill > .composer-island-reserve ~ .composer-island-seg {
+  margin-inline-start: 5px;
+}
+/* The divider between the work group (Goal, agents, shells) and the git group
+   (branch, files, git action): drawn only while both groups have something. */
+.composer-island-divider {
+  display: none;
+  width: var(--mx-hairline);
+  height: 18px;
+  flex: none;
+  margin: 0 4px;
+  background: var(--mx-border);
+}
+.composer-island-pill
+  > :is(.composer-island-seg, .session-goal-island)
+  ~ .composer-island-divider:has(~ .composer-island-seg) {
+  display: block;
+}
+.composer-island-pill > .composer-island-divider + :is(.composer-island-seg, .session-goal-island) {
+  margin-inline-start: 0;
+}
+.composer-island-pill > .composer-island-divider + :is(.composer-island-seg, .session-goal-island)::before {
+  content: none;
+}
+/* The git action ends the pill as a plain segment (same box, tone, hairline
+   and wash as branch and files): the action's icon and label, then a 13px
+   chevron. The two buttons fill the segment, so the chevron's area alone
+   toggles the tab and the rest runs; together they draw the segment's
+   0 8px 0 10px padding and 6px gaps. */
+.composer-island-pill > .composer-island-seg.composer-island-git {
+  gap: 0;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: default;
+}
+.composer-island-git[data-open] {
+  color: var(--mx-text);
+  background: var(--composer-island-wash);
+}
+.composer-island-git > button {
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  border-radius: var(--mx-radius-pill);
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.composer-island-git > button:focus-visible {
+  outline: 1px solid var(--mx-accent);
+  outline-offset: -1px;
+}
+.composer-island-git > button > svg {
+  flex: none;
+}
+.composer-island-git-main {
+  gap: 6px;
+  padding: 0 10px;
+}
+.composer-island[data-compact] .composer-island-git-main > span {
+  display: none;
+}
+.composer-island[data-compact] .composer-island-git-main {
+  padding: 0 8px;
+}
+/* The branch and git tabs expand the island upward in place, like the files
+   menu (their panels are rendered beside their segments in the pill). */
+.composer-island:is([data-expanded="branch"], [data-expanded="git"]) .composer-island-pill:not([hidden]) {
+  height: auto;
+  display: block;
+  padding: 0;
+}
+.composer-island[data-expanded="branch"] .composer-island-pill > :not(.composer-island-branch-panel),
+.composer-island[data-expanded="git"] .composer-island-pill > :not(.composer-island-git-panel) {
+  display: none;
+}
+:is(.composer-island-branch-panel, .composer-island-git-panel) {
+  white-space: normal;
+}
+.composer-island-branch-tab-name {
+  min-width: 0;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-island-git-rows {
+  display: flex;
+  flex-direction: column;
+}
+/* A row: the action's icon and label, and its own Run at the right. */
+.composer-island-git-row {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 0;
+  border-radius: var(--mx-radius-md);
+}
+.composer-island-git-row + .composer-island-git-row {
+  border-top: var(--mx-hairline) solid var(--composer-island-rule);
+}
+.composer-island-git-row:hover {
+  background: var(--composer-island-wash);
+}
+.composer-island-git-label {
+  min-width: 0;
+  min-height: 32px;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 6px;
+  color: var(--mx-text);
+  font-weight: 500;
+}
+.composer-island-git-label > svg {
+  flex: none;
+  color: var(--mx-icon-muted);
+}
+.composer-island-git-label > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-island-git-row > .composer-island-git-run {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+}
+.composer-island-git-run > svg {
+  flex: none;
+}
+.composer-island-git-foot {
+  justify-content: flex-start;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: var(--mx-hairline) solid var(--composer-island-rule);
+}
+.composer-island-git-foot > .composer-island-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* A header action beside the close button (the shells tab's Close all). */
+.composer-island-phead-action {
+  flex: none;
+  margin-inline-start: auto;
+}
+.composer-island-phead-action + .composer-island-close {
+  margin-inline-start: 4px;
+}
 /* Only text that can ellipsize gives way on a narrow island: the Goal while
    it still shows its title. Counts never shrink. */
 .composer-island-pill > .composer-island-seg,
@@ -297,6 +541,16 @@
     animation: none;
   }
 }
+.composer-island-mark-slot {
+  width: 6px;
+  height: 6px;
+  display: inline-flex;
+  flex: none;
+}
+.composer-island-seg-word,
+.composer-island-seg-num {
+  font-variant-numeric: tabular-nums;
+}
 .composer-island-seg-text {
   min-width: 0;
   max-width: 230px;
@@ -322,7 +576,8 @@
   align-items: center;
   gap: 5px;
 }
-.composer-island-seg-state[data-kind="waiting"] > .composer-island-dot {
+/* A state's dot (waiting, failed) only stands in for its words. */
+.composer-island-seg-state > .composer-island-dot {
   display: none;
 }
 .composer-island-seg-state + .composer-island-seg-state::before {
@@ -367,7 +622,7 @@
 .composer-island[data-compact] .composer-island-seg-num {
   display: inline-block;
 }
-.composer-island[data-compact] .composer-island-seg-state[data-kind="waiting"] > .composer-island-dot {
+.composer-island[data-compact] .composer-island-seg-state > .composer-island-dot {
   display: inline-block;
 }
 .composer-island[data-compact] .composer-island-seg-state + .composer-island-seg-state::before {
@@ -377,7 +632,109 @@
   gap: 5px;
   padding-inline: 8px;
 }
-/* Inline, so the literal space between +a and −b shows. */
+/* The git segment's spacing lives on its buttons, never its container. */
+.composer-island[data-compact] .composer-island-seg.composer-island-git {
+  gap: 0;
+  padding-inline: 0;
+}
+/* The branch segment (BranchIslandSegment) is the one whose text gives way
+   on a narrow island. Compact shows the short name at once (no branch
+   prefix, no base, capped), so long and short names keep one width; after
+   that useIslandFit drops the Goal's pips for a squeezed name, and below a
+   readable width keeps the glyph alone. */
+.composer-island-pill > .composer-island-seg.composer-island-seg-branch {
+  flex-shrink: 1;
+}
+.composer-island-seg-prefix {
+  color: var(--mx-text-muted);
+}
+/* A branch or worktree move is running: a spinner takes the glyph's 14px slot,
+   so the segment never narrows or shifts while it runs. */
+.composer-island-seg-branch > .progress-spinner-turn {
+  display: inline-flex;
+  flex: none;
+  color: var(--mx-accent);
+}
+.composer-island[data-compact] .composer-island-seg-branch :is(.composer-island-seg-prefix, .composer-island-seg-sub) {
+  display: none;
+}
+.composer-island[data-compact] .composer-island-seg-branch .composer-island-seg-text {
+  max-width: 104px;
+}
+/* Still overflowing once compact (useIslandFit): the running state leaves the
+   agents segment (its pulse stays) and every segment tightens. */
+.composer-island[data-fit-tight] .composer-island-seg-states {
+  display: none;
+}
+.composer-island[data-fit-tight] :is(.composer-island-seg, .session-goal-trigger) {
+  gap: 4px;
+  padding-inline: 6px;
+}
+.composer-island[data-fit-glyph] .composer-island-seg-branch .composer-island-seg-text {
+  display: none;
+}
+/* The files menu: every changed file in one scrolling list (dir muted, name,
+   +/− counts), with Delete history and View changes fixed below. */
+.turn-review-files-list {
+  max-height: min(240px, 36dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.turn-review-files-row {
+  width: 100%;
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--mx-radius-md);
+  color: var(--mx-text);
+  background: transparent;
+  font: inherit;
+  font-size: var(--mx-font-minor);
+  text-align: left;
+  cursor: pointer;
+}
+.turn-review-files-row:hover,
+.turn-review-files-row:focus-visible {
+  outline: none;
+  background: var(--composer-island-wash);
+}
+.turn-review-files-path {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.turn-review-files-dir {
+  color: var(--mx-text-muted);
+}
+.turn-review-files-row > .diff-stats {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.turn-review-files-row > .diff-stats i {
+  color: var(--mx-success);
+  font-style: normal;
+}
+.turn-review-files-row > .diff-stats em {
+  color: var(--mx-danger);
+  font-style: normal;
+}
+.turn-review-files-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 8px 2px 0;
+  border-top: var(--mx-hairline) solid var(--composer-island-rule);
+}
+.turn-review-files-foot > .composer-island-button.danger {
+  color: var(--mx-danger);
+} /* Inline, so the literal space between +a and −b shows. */
 .turn-review-segment .diff-stats {
   display: inline;
 }
@@ -396,8 +753,12 @@
   width: 560px;
   max-width: 100%;
 }
+/* The pill is nowrap; the Goal drawer's text wraps inside the panel. */
+.composer-island .session-goal-panel {
+  white-space: normal;
+}
 .composer-island-phead {
-  height: 44px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -418,20 +779,8 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-/* Agent / Shell tabs: the unselected one is a plain label. */
-button.composer-island-tab {
-  cursor: pointer;
-}
-.composer-island-tab[data-active="false"] {
-  color: var(--mx-text-muted);
-  background: transparent;
-}
-.composer-island-tab[data-active="false"]:hover,
-.composer-island-tab[data-active="false"]:focus-visible {
-  color: var(--mx-text);
-  outline: none;
-}
 .composer-island-close {
+  flex: none;
   width: 28px;
   height: 28px;
   display: grid;
@@ -510,9 +859,17 @@ button.composer-island-tab {
   flex: none;
   text-align: right;
 }
-/* A finished background shell: muted until the user dismisses it. */
+/* A finished background shell: muted until the user dismisses it (or, after
+   a clean exit, until it is dismissed on its own). Ended reads muted, failed
+   in the danger hue. */
 .composer-island-row[data-finished="true"] .agent-pool-name {
   color: var(--mx-text-muted);
+}
+.composer-island-jobs .composer-island-row .agent-activity-elapsed[data-state="done"] {
+  color: var(--mx-text-muted);
+}
+.composer-island-jobs .composer-island-row .agent-activity-elapsed[data-state="failed"] {
+  color: var(--mx-danger);
 }
 .composer-island-row-dismiss {
   flex: none;
@@ -565,8 +922,122 @@ button.composer-island-tab {
   cursor: pointer;
   user-select: none;
 }
-.composer-island-agents .agent-pool-row + .agent-pool-row {
+.composer-island-agent-item {
+  position: relative;
+}
+.composer-island-agent-item + .composer-island-agent-item {
   border-top: var(--mx-hairline) solid var(--composer-island-rule);
+}
+/* A row with its own ledger total: the state rides the name's line and the
+   total the supporting line, both at the right edge. */
+.composer-island-agent-item[data-tokens="true"] .agent-activity-status {
+  align-self: flex-start;
+  /* As wide as the total below it, so the model line ends before the total. */
+  min-width: 4.5rem;
+}
+.composer-island-agent-tokens {
+  position: absolute;
+  right: 0;
+  bottom: 6px;
+  max-width: 4.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mx-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+/* State counts beside the panel title: quiet, one line. */
+.composer-island-phead-meta {
+  min-width: 0;
+  flex: 1 1 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-inline-start: 8px;
+  color: var(--mx-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.composer-island-phead-meta b {
+  color: var(--mx-text);
+  font-weight: 500;
+}
+/* Counts wrap among themselves, never under a button. When the pane is too
+   narrow for them beside the title and the buttons (a phone, a split pane, a
+   long translation) they take their own second line. */
+@container composer-island (max-width: 559px) {
+  .composer-island-phead:has(> .composer-island-phead-meta) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: 44px auto;
+    grid-template-areas:
+      "tab action close"
+      "meta meta meta";
+    column-gap: 8px;
+    padding-bottom: 10px;
+  }
+  .composer-island-phead:has(> .composer-island-phead-meta) > .composer-island-tab {
+    grid-area: tab;
+  }
+  .composer-island-phead:has(> .composer-island-phead-meta) > .composer-island-phead-action {
+    grid-area: action;
+    justify-self: end;
+    max-width: 100%;
+    height: auto;
+    min-height: 32px;
+    margin: 0;
+    padding-block: 5px;
+    line-height: 1.2;
+    text-align: center;
+    white-space: normal;
+  }
+  .composer-island-phead:has(> .composer-island-phead-meta) > .composer-island-close {
+    grid-area: close;
+    margin-inline-start: 0;
+  }
+  .composer-island-phead:has(> .composer-island-phead-meta) > .composer-island-phead-meta {
+    grid-area: meta;
+    margin: 0 11px;
+  }
+}
+/* The session's totals below the agent rows: one quiet footer line. */
+.composer-island-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  padding: 8px 14px;
+  border-top: var(--mx-hairline) solid var(--composer-island-rule);
+  color: var(--mx-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.composer-island-summary b {
+  color: var(--mx-text);
+  font-weight: 500;
+}
+/* Each stat's box comes from its data-reserve text (the widest figures), drawn
+ * invisibly beside the live text in one grid cell: "-" and the measured value
+ * wrap and size alike, so the footer never moves when the ledger answers. */
+.composer-island-summary-stat {
+  display: inline-grid;
+  max-width: 100%;
+  min-width: 0;
+}
+.composer-island-summary-stat::after {
+  content: attr(data-reserve);
+  grid-area: 1 / 1;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+  visibility: hidden;
+  pointer-events: none;
+}
+.composer-island-summary-stat > span {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .composer-island-agents .agent-pool-row:disabled {
   cursor: default;
@@ -599,8 +1070,10 @@ button.composer-island-tab {
 }
 .composer-island-agents .agent-route-summary > .model-route-label {
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  vertical-align: top;
 }
 .composer-island-agents .agent-activity-status {
   flex: none;
@@ -732,6 +1205,31 @@ button.composer-island-tab {
 .composer-island .session-goal-control:hover:not(:disabled) {
   background: var(--mx-hover);
 }
+/* Goal drawer controls: pill buttons. Stop and Edit are quiet text; Pause /
+   Resume is the one filled button. */
+.composer-island .session-goal-control {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--mx-radius-pill);
+  box-shadow: none;
+  background: var(--mx-hover);
+}
+.composer-island .session-goal-control[data-quiet="true"] {
+  background: transparent;
+  color: var(--mx-text-muted);
+}
+.composer-island .session-goal-control:hover:not(:disabled),
+.composer-island .session-goal-control:focus-visible {
+  color: var(--mx-text);
+  background: var(--mx-hover);
+}
+.composer-island .session-goal-control[data-danger="true"] {
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 16%, transparent);
+}
+.composer-island .session-goal-control[data-primary="true"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--mx-text) 14%, transparent);
+}
 .composer-island-button:disabled {
   opacity: var(--mx-op-disabled);
   cursor: default;
@@ -742,81 +1240,125 @@ button.composer-island-tab {
 }
 .composer-island-button-primary,
 .composer-island-button-primary:hover {
-  color: var(--mx-grey-50);
+  /* A theme's accent-text (unset: the same white). */
+  color: var(--mx-accent-fg, var(--mx-grey-50));
   background: var(--mx-accent-bg);
   box-shadow: none;
 }
-/* The approval card wears the island's own material. */
-.composer-island-approval .approval-card {
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
-/* ask_user question card (design/mockups/ask-user-question): it sits in the
-   transcript where its call is, like a reply. The composer stays open; a
-   message sent from it closes the question. */
-.question-card {
+/* ask_user question card and its answered record wear the turn-changes card's
+   grammar (27-search-review.css): hairline frame on the transcript, plate
+   header with an icon plate, rows divided by hairlines, and its text action
+   and ghost button classes. Frame only; logic is in the TSX. */
+.question-card,
+.ask-user-record {
+  position: relative;
   display: block;
-  max-width: 560px;
+  width: 560px;
+  max-width: 100%;
   margin: 4px 0 12px;
-  padding: 10px;
-  border-radius: 12px;
-  background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
+  border-radius: var(--mx-radius-lg);
+  color: var(--mx-text);
   font-size: var(--mx-font-minor);
-  line-height: 20px;
+  line-height: var(--mx-line-minor);
   outline: none;
 }
+/* Drawn over the children, as on the turn-changes card, so row hover fills
+   never hide the edge. */
+.question-card::after,
+.ask-user-record::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 var(--mx-hairline) var(--mx-border);
+  pointer-events: none;
+}
 .question-head {
-  min-height: 28px;
+  min-height: 44px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-left: 4px;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  background: var(--mx-card-header-surface);
+  border-radius: var(--mx-radius-lg) var(--mx-radius-lg) 0 0;
 }
-.question-step {
+.question-head:last-child {
+  border-radius: var(--mx-radius-lg);
+}
+.question-icon {
   flex: none;
-  color: var(--mx-text-muted);
-  font: inherit;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-hover);
+  color: var(--mx-accent);
+  font-weight: var(--mx-weight-bold, 700);
+}
+.question-icon[data-tone="done"] {
+  color: var(--mx-success);
+}
+.question-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.question-title strong {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--mx-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .question-close {
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--mx-radius-md);
   background: transparent;
   color: var(--mx-text-muted);
-  font-size: 14px;
+  font: inherit;
   cursor: pointer;
 }
 .question-close:hover {
   background: var(--mx-hover);
   color: var(--mx-text);
 }
+.question-meta,
+.ask-user-record-via,
+.question-hint {
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-meta);
+  line-height: var(--mx-line-meta);
+}
+.question-meta {
+  white-space: nowrap;
+}
 .question-text {
-  flex: 1;
-  min-width: 0;
-  font-weight: 600;
+  padding: 10px 12px 6px;
+  border-top: var(--mx-hairline) solid var(--mx-border-muted);
+  font-weight: var(--mx-weight-medium);
   overflow-wrap: anywhere;
 }
-/* Options sit in one box, split by hairlines; free text gets its own box. */
 .question-options {
   display: grid;
-  margin-top: 8px;
-  border-radius: 8px;
-  background: var(--mx-bg-layer-2);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
-  overflow: hidden;
+  padding: 0 0 4px;
 }
 .question-option {
+  min-height: 36px;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-columns: 16px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  padding: 9px 12px;
+  padding: 6px 12px;
   border: 0;
   border-radius: 0;
   background: none;
@@ -825,61 +1367,65 @@ button.composer-island-tab {
   font: inherit;
   cursor: pointer;
 }
-.question-option + .question-option {
-  border-top: 0.5px solid var(--mx-border-muted);
-}
 .question-option:hover {
   background: var(--mx-hover);
 }
 .question-option[data-selected] {
-  background: color-mix(in srgb, var(--mx-accent) 12%, transparent);
+  background: color-mix(in srgb, var(--mx-accent) 10%, transparent);
 }
 .question-card :is(button, input):focus-visible {
   outline: 2px solid var(--mx-accent);
   outline-offset: -2px;
 }
+.question-box {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1.5px var(--mx-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.question-box[data-kind="radio"] {
+  border-radius: 50%;
+}
+/* Picked check and radio carry the same weight: an accent ring with an
+   accent mark, no solid fill. */
+.question-option[data-selected] .question-box {
+  box-shadow: inset 0 0 0 1.5px var(--mx-accent);
+  color: var(--mx-accent);
+}
+.question-option[data-selected] .question-box[data-kind="radio"] {
+  background: radial-gradient(circle, var(--mx-accent) 0 3.5px, transparent 4px);
+}
 .question-key {
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--mx-radius-sm);
-  background: var(--mx-chip-bg);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--mx-border-muted);
   color: var(--mx-text-muted);
-  font: 500 11px/16px var(--mx-font-mono);
+  font: 11px / 18px var(--mx-font-mono);
+  text-align: center;
 }
-.question-option[data-selected] .question-key {
-  background: var(--mx-accent);
-  box-shadow: none;
-  color: var(--mx-bg-base);
-}
-.question-card[data-multi] .question-option[data-selected] .question-key {
-  position: relative;
-  color: transparent;
-}
-.question-card[data-multi] .question-option[data-selected] .question-key::after {
-  content: "✓";
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: var(--mx-bg-base);
-  font: 700 12px/1 var(--mx-font-sans, inherit);
-}
-/* One line per option: a long label ends in an ellipsis. */
 .question-option-text {
   min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  white-space: nowrap;
+  display: grid;
+  gap: 2px;
 }
 .question-option-label {
-  flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.question-option-desc {
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-meta, 13px);
+  line-height: 16px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
 }
 .question-rec {
   margin-left: 6px;
@@ -888,17 +1434,15 @@ button.composer-island-tab {
   font-weight: 400;
 }
 .question-other {
+  min-height: 36px;
   display: flex;
-  height: 36px;
-  margin-top: 8px;
-  padding: 0 12px;
-  border-radius: 8px;
-  background: var(--mx-bg-layer-2);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
+  align-items: center;
+  padding: 6px 12px 6px 38px;
   cursor: text;
 }
+.question-other:hover,
 .question-other:focus-within {
-  box-shadow: inset 0 0 0 1px var(--mx-accent);
+  background: var(--mx-hover);
 }
 .question-other input {
   width: 100%;
@@ -917,54 +1461,131 @@ button.composer-island-tab {
 .question-other input::placeholder {
   color: var(--mx-text-muted);
 }
-/* An answered ask_user call stays in the transcript as a summary: each
-   question with only what was picked or typed, as chips. */
-.ask-user-record {
-  max-width: 560px;
-  margin: 4px 0 12px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
-  font-size: 13px;
-  line-height: 20px;
+.question-foot {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-top: var(--mx-hairline) solid var(--mx-border-muted);
 }
-.ask-user-record-question + .ask-user-record-question {
-  margin-top: 10px;
+.question-hint {
+  flex: 1;
+  min-width: 0;
 }
-.ask-user-record-title {
-  font-weight: 600;
+/* Answered record: one row per question, the question above its picks. */
+.ask-user-record-question {
+  min-height: 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-top: var(--mx-hairline) solid var(--mx-border-muted);
+}
+.ask-user-record-q {
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-meta, 13px);
   overflow-wrap: anywhere;
 }
 .ask-user-record-answers {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
+  align-items: baseline;
+  gap: 2px 6px;
 }
 .ask-user-record-chip {
   max-width: 100%;
-  padding: 2px 10px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--mx-accent) 16%, transparent);
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-accent) 50%, transparent);
-  font-weight: 500;
+  padding: 0 8px;
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-hover);
+  font-size: var(--mx-font-meta, 13px);
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+.ask-user-record-typed {
   overflow-wrap: anywhere;
 }
 .ask-user-record-none {
   color: var(--mx-text-muted);
 }
 .ask-user-record-note {
-  margin-top: 8px;
+  padding: 8px 12px;
+  border-top: var(--mx-hairline) solid var(--mx-border-muted);
   color: var(--mx-text-muted);
-  font-size: 12px;
+  font-size: var(--mx-font-meta);
 }
 .question-card :disabled {
   opacity: 0.6;
   cursor: default;
 }
+/* The "decide later" chip's need mark (a login takeover, ApprovalCard.tsx). */
+.question-chip .question-need {
+  color: var(--mx-warning);
+}
+/* ✕ = decide later: the card folds into one line that reopens it. */
+.question-chip {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin: 4px 0 12px;
+  border-radius: var(--mx-radius-pill);
+  background: var(--mx-bg-layer-1);
+  color: var(--mx-text-soft);
+  font-size: var(--mx-font-meta);
+  min-height: 36px;
+  gap: 8px;
+  padding: 0 10px;
+  border: 0;
+  box-shadow: inset 0 0 0 var(--mx-hairline) var(--mx-border-muted);
+  font-family: inherit;
+  cursor: pointer;
+}
+.question-chip:hover {
+  background: var(--mx-hover);
+}
+.question-chip:focus-visible {
+  outline: 2px solid var(--mx-accent);
+  outline-offset: 2px;
+}
+.question-chip-open {
+  margin-left: 4px;
+  color: var(--mx-accent);
+  font-weight: var(--mx-weight-medium);
+}
+/* One width for every decision card, so the question and approval cards never
+   drift apart: coding mode keeps the question card's 560px; agent mode (a home
+   thread or a room, agent-chat-mode.ts) narrows both to the bubble column, on
+   the bubbles' left edge (--mx-agent-bubble-inset, agent-chat.css) with the
+   same gutters. */
+.question-card[data-agent-mode],
+.question-chip[data-agent-mode] {
+  margin-inline-start: var(--mx-agent-bubble-inset, 0px);
+  max-width: calc(100% - var(--mx-agent-bubble-inset, 0px));
+}
+.question-card[data-agent-mode] {
+  width: min(var(--mx-agent-bubble-max, 400px), 72%);
+}
+html[data-mixdog-mobile-tabs] .question-card[data-agent-mode] {
+  width: min(var(--mx-agent-bubble-max, 100%), 86%);
+}
+html[data-mixdog-mobile-tabs] .question-option,
+html[data-mixdog-mobile-tabs] .question-other,
+html[data-mixdog-mobile-tabs] .question-chip {
+  min-height: var(--mx-touch-min);
+}
+/* A narrow card stacks the meta under the title instead of cutting the title. */
+html[data-mixdog-mobile-tabs] .question-title {
+  display: grid;
+  gap: 0;
+}
+html[data-mixdog-mobile-tabs] .question-meta {
+  white-space: normal;
+}
 .composer-island-flash {
-  height: 34px;
+  height: var(--island-pill-height);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -986,22 +1607,21 @@ button.composer-island-tab {
   opacity: 0.4;
   filter: saturate(0.6);
 }
-html[data-mixdog-mobile-tabs] .composer-island-slot {
-  height: 48px;
-}
-html[data-mixdog-mobile-tabs] .composer-island-stage {
-  bottom: 12px;
-}
 html[data-mixdog-mobile-tabs] .composer-island {
   font-size: var(--mx-font-meta);
   line-height: var(--mx-line-minor);
 }
-html[data-mixdog-mobile-tabs] .composer-island-pill {
-  height: 36px;
+/* The phone pill is 36px: slot and draft bar follow through the properties. */
+html[data-mixdog-mobile-tabs] .composer-region {
+  --island-pill-height: 36px;
 }
 html[data-mixdog-mobile-tabs] :is(.composer-island-seg, .composer-island .session-goal-trigger) {
   height: 28px;
   padding-inline: 11px;
+}
+html[data-mixdog-mobile-tabs] .composer-island .composer-island-seg.composer-island-git {
+  gap: 0;
+  padding-inline: 0;
 }
 html[data-mixdog-mobile-tabs] :is(.composer-island-dot, .composer-island-pulse) {
   width: 6px;
@@ -1010,7 +1630,7 @@ html[data-mixdog-mobile-tabs] :is(.composer-island-dot, .composer-island-pulse) 
 /* Panel controls share the Goal controls' 32px touch box; the header and
    rows are tall enough to hold it. */
 html[data-mixdog-mobile-tabs] .composer-island-phead {
-  height: 44px;
+  min-height: 44px;
   padding-inline: 8px;
 }
 html[data-mixdog-mobile-tabs] .composer-island-tab {
@@ -1018,9 +1638,21 @@ html[data-mixdog-mobile-tabs] .composer-island-tab {
   gap: 7px;
   padding-inline: 11px;
 }
+/* Header buttons: a 44px tap area. The close box is 44 with its glyph kept
+   where the 32px box put it; the header action keeps its look and grows an
+   invisible 44px pad. */
 html[data-mixdog-mobile-tabs] .composer-island-close {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
+  margin-inline-end: -6px;
+}
+html[data-mixdog-mobile-tabs] .composer-island-phead-action {
+  position: relative;
+}
+html[data-mixdog-mobile-tabs] .composer-island-phead-action::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
 }
 html[data-mixdog-mobile-tabs] :is(.composer-island-close, .composer-island-flash) > svg {
   width: 16px;
@@ -1050,7 +1682,6 @@ html[data-mixdog-mobile-tabs] .composer-island-ptitle {
   line-height: var(--mx-line-ui);
 }
 html[data-mixdog-mobile-tabs] .composer-island-flash {
-  height: 36px;
   gap: 8px;
   padding-inline: 16px;
 }
@@ -1133,12 +1764,11 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
 /* The prompt card: a rounder, one-step-raised plate with no outline — the
    shell's raised edge plus a soft drop lift it off the sheet. */
 .composer {
-  min-height: 96px;
   padding: 0;
   border: 0;
   border-radius: var(--mx-radius-sheet);
   background: var(--mx-composer-surface);
-  box-shadow: var(--mx-raised), var(--mx-composer-lift);
+  box-shadow: var(--mx-composer-edge), var(--mx-composer-lift);
   /* Keep textarea autosize layout inside the composer formatting context.
      Paint containment belongs on the textarea itself: placing it here clips
      the absolute slash/mention palettes that intentionally open above it. */
@@ -1147,7 +1777,7 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
 }
 .composer:focus-within {
   border: 0;
-  box-shadow: var(--mx-raised), var(--mx-composer-lift);
+  box-shadow: var(--mx-composer-edge), var(--mx-composer-lift);
 }
 .composer textarea:focus,
 .composer textarea:focus-visible {
@@ -1155,7 +1785,7 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
   box-shadow: none;
 }
 .composer textarea {
-  min-height: 56px;
+  min-height: 28px;
   /* A keystroke must not invalidate the virtual transcript paint, while
      sibling palettes remain free to paint outside the composer card. */
   contain: paint;
@@ -1163,7 +1793,10 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
   field-sizing: content;
   max-height: 180px;
   overflow-y: auto;
-  padding: 12px var(--composer-text-inset) 8px;
+  /* Past five lines the field scrolls (wheel, caret, keys) without painting
+     a bar inside the typing card (user: 대화창 확장시 스크롤바 생기는게 이상해). */
+  scrollbar-width: none;
+  padding: 6px var(--composer-text-inset) 2px;
   color: var(--mx-text);
   /* Same single-face rule as .message-body: typed Korean+Latin must not mix
      Geist/Pretendard ink densities inside one sentence. */
@@ -1179,12 +1812,101 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
   color: var(--mx-text-faint);
 }
 .composer-footer {
-  height: 40px;
   gap: 0;
+}
+/* The slim line under the card: the usage readout at the left end, the model
+   picker and the context gauge at the right end. Popups open upward from it. */
+.composer-model-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 36px;
+  margin-top: 4px;
   padding: 0 8px;
 }
+/* Pre-chat: project / workflow / branch pickers at the line's left end. */
+.composer-model-line > .composer-model-line-context {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+.composer-model-line-controls {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+}
+/* In the card the selector kept 56px of the footer for the actions beside it;
+   here it shares only with the gauge, and a percentage of this shrink-to-fit
+   group would cut its own label. It keeps its natural width and gives way only
+   once the readout has (the readout shrinks 1000× faster). */
+.composer-model-line .route-controls {
+  max-width: 100%;
+}
+/* The readout is muted text (no hover card) that opens the Usage view on
+   click. It never shrinks: the component measures the line and drops parts
+   (cache hit, then the token total, then the whole readout) to fit; the
+   ellipsis only catches a measuring miss. */
+.composer-model-line > .composer-usage-readout[hidden] {
+  display: none;
+}
+.composer-model-line > .composer-usage-readout {
+  display: flex;
+  align-items: center;
+  gap: 8px; /* ITEM_GAP in composer-usage-readout.tsx */
+  flex: 0 0 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--mx-radius-md);
+  background: none;
+  overflow: hidden;
+  color: var(--mx-text-faint);
+  font-family: inherit;
+  font-size: var(--mx-font-ui);
+  line-height: 28px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* One icon + value item: the icon in the readout's own muted colour (a failure
+   is the one red dot). Geometry matches ICON_WIDTH / DOT_WIDTH / ICON_GAP in
+   composer-usage-readout.tsx. */
+.composer-readout-item {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.composer-readout-item > svg {
+  flex: none;
+}
+/* The worded form's `·`: 5px + the item's 3px gap = the 8px gap after it. */
+.composer-readout-sep {
+  margin-left: 5px;
+}
+.composer-readout-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mx-danger);
+}
+/* Hover answers like the model trigger beside it: a wash and the text colour. */
+.composer-model-line > .composer-usage-readout:hover,
+.composer-model-line > .composer-usage-readout:focus-visible {
+  color: var(--mx-text);
+  background: var(--mx-hover);
+}
 /* Context gauge right after the model trigger. The gauge keeps its island slot; only its card flips UPWARD here, since
-   the footer is the last thing above the window's bottom edge. */
+   the line is the last thing above the window's bottom edge. */
 .composer-model-aside {
   display: flex;
   align-items: center;
@@ -1205,29 +1927,23 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
 .composer-model-aside .session-context-indicator[data-active="false"] {
   display: none;
 }
-.composer-model-aside .session-context-popover {
+.composer-model-line .session-context-popover {
   top: auto;
   bottom: calc(100% + 6px);
-  /* The gauge sits near the footer's LEFT end, so the card grows rightward
-     instead of hanging off the composer's left edge. */
-  left: 0;
-  right: auto;
   transform: translateY(2px);
 }
-.composer-model-aside .session-context-indicator[data-open="true"] .session-context-popover {
+/* The gauge sits at the line's RIGHT end, so its card grows leftward. */
+.composer-model-aside .session-context-popover {
+  left: auto;
+  right: 0;
+}
+.composer-model-line .session-context-indicator[data-open="true"] .session-context-popover {
   transform: translateY(0);
 }
-/* Card flipped upward, so the frame that joins it to the gauge hangs BELOW it. */
-.composer-model-aside .session-context-popover::before {
+/* Card flipped upward, so the frame that joins it to its control hangs BELOW it. */
+.composer-model-line .session-context-popover::before {
   top: auto;
   bottom: calc(-1 * var(--mx-popup-bridge-reach));
-}
-/* The composer is its own stacking context at z-index 1, so the card used to
-   slide UNDER the turn-review bar (z 6) and the goal capsule (z 9) stacked
-   above it. Only while the card is open
-   does the composer outrank them — at rest the capsule keeps its layer. */
-.composer:has(.composer-model-aside .session-context-indicator[data-open="true"]) {
-  z-index: 20;
 }
 /* This stable group owns right alignment. The mic is conditional, so making
    the mic own the auto margin pulled Send left whenever voice was unavailable. */
@@ -1338,7 +2054,7 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
   padding: 5px 6px 5px 10px;
   border: 1px solid var(--mx-border-muted);
   border-radius: var(--mx-radius-pill);
-  background: var(--mx-bg-layer-1);
+  background: var(--mx-composer-surface);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
   animation: composer-dictation-status-enter var(--mx-motion-slow) var(--mx-ease-emphasized);
 }
@@ -1421,6 +2137,12 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
 .composer-mic svg.lucide,
 .send-button svg.lucide {
   stroke-width: 1.75px;
+}
+/* The mic outline is airy at 16px next to the filled send arrow: one icon step
+   up (18px) in the same 28px box as the send disc. */
+.composer-mic:not(.is-recording) > svg.lucide {
+  width: var(--mx-icon-lg);
+  height: var(--mx-icon-lg);
 }
 .composer-mic.is-recording > svg.lucide {
   width: var(--mx-icon-xs);
@@ -2067,6 +2789,10 @@ html[data-mixdog-mobile-tabs] .composer-island-flash {
   pointer-events: none;
   user-select: none;
 }
+/* A recognised leading /command: ink only, so glyph widths never change. */
+.composer-slash-token {
+  color: var(--mx-text-accent);
+}
 .composer textarea.has-skill-mentions {
   color: transparent;
 }
@@ -2347,7 +3073,7 @@ button.attachment-card-file {
   font-family: var(--mx-font-mono);
   font-size: var(--mx-font-minor);
   line-height: var(--mx-line-ui);
-  white-space: pre;
+  white-space: pre-wrap;
 }
 .task-drop-overlay {
   position: absolute;
@@ -2365,175 +3091,6 @@ button.attachment-card-file {
   pointer-events: none;
   font-size: var(--mx-font-ui);
   font-weight: var(--mx-weight-regular);
-}
-/* Queued follow-ups: a rail inset one card radius on each side of the prompt card, with
-   rounded top corners, whose lower edge tucks one card radius under the
-   card, so the card keeps all four corners (the Codex composer rail). Rows are
-   32px; the list grows to 30% of the viewport, then scrolls with a bottom
-   fade. This is the only dock member allowed to change the dock's height. */
-.composer-queue-tray:empty {
-  display: none;
-}
-.queue-list {
-  position: relative;
-  z-index: 0;
-  /* Inset by the card's own corner radius, so the rail's sides meet the
-     card's straight top edge instead of landing inside its corner curve. */
-  margin: 0 var(--mx-radius-sheet) calc(-1 * var(--mx-radius-sheet));
-  padding-bottom: var(--mx-radius-sheet);
-  overflow: hidden;
-  border: 0;
-  border-radius: var(--mx-radius-sheet) var(--mx-radius-sheet) 0 0;
-  color: var(--mx-text);
-  background: var(--mx-bg-base);
-  /* The card's edge ink, so the seam where the rail meets the card reads as
-     one line weight. */
-  box-shadow: inset 0 0 0 var(--mx-hairline) var(--mx-border);
-  animation: queue-tray-rise 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-@keyframes queue-tray-rise {
-  from {
-    transform: translateY(8px);
-    opacity: 0.4;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .queue-list {
-    animation: none;
-  }
-}
-.composer-region:has(> .composer-queue-tray .queue-list) .composer {
-  position: relative;
-  z-index: 1;
-}
-.queue-items {
-  max-height: 30dvh;
-  padding: 2px 6px 2px 12px;
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-.queue-items::-webkit-scrollbar {
-  display: none;
-}
-.queue-items[data-more="true"] {
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
-}
-.queue-item {
-  height: 32px;
-  flex: none;
-  gap: 8px;
-  padding: 0;
-  font-size: var(--mx-font-ui);
-  line-height: var(--mx-line-ui);
-}
-.queue-item + .queue-item {
-  border-top: var(--mx-hairline) solid var(--mx-border-muted);
-}
-.queue-item-icon {
-  flex: none;
-  color: var(--mx-text-muted);
-  opacity: 0.7;
-}
-.queue-item-text {
-  color: var(--mx-text-muted);
-  border-radius: var(--mx-radius-sm);
-}
-.queue-item-text:focus-visible {
-  color: var(--mx-text);
-  background: var(--mx-hover);
-  outline: 0;
-}
-.queue-item-attachments {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-meta);
-  line-height: var(--mx-line-meta);
-}
-.queue-steer,
-.queue-remove,
-.queue-item .row-overflow-trigger {
-  height: 24px;
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text-muted);
-  background: transparent;
-  cursor: pointer;
-}
-.queue-steer {
-  padding: 0 8px;
-  color: var(--mx-accent);
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-regular);
-}
-.queue-remove,
-.queue-item .row-overflow-trigger {
-  width: 24px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-}
-.queue-item .row-overflow {
-  margin-inline-start: 0;
-}
-.queue-item .row-overflow-trigger svg {
-  width: 14px;
-  height: 14px;
-}
-.queue-remove:hover:not(:disabled),
-.queue-remove:focus-visible,
-.queue-item .row-overflow-trigger:hover,
-.queue-item .row-overflow-trigger:focus-visible {
-  color: var(--mx-text);
-  background: var(--mx-hover);
-  outline: 0;
-}
-.queue-steer:hover:not(:disabled),
-.queue-steer:focus-visible {
-  background: var(--mx-hover);
-  outline: 0;
-}
-.queue-steer:disabled,
-.queue-remove:disabled {
-  opacity: var(--mx-op-disabled);
-  cursor: default;
-}
-/* Phone: the tray's rows and their touch targets take the touch tier like
-   the island does. Rows are one step taller than the 36px row-tier targets so the hairline never clips them. */
-html[data-mixdog-mobile-tabs] .queue-items {
-  padding: 2px 6px 2px 12px;
-}
-html[data-mixdog-mobile-tabs] .queue-item {
-  height: 40px;
-  gap: 8px;
-  font-size: var(--mx-font-ui);
-  line-height: var(--mx-line-ui);
-}
-html[data-mixdog-mobile-tabs] .queue-item-icon,
-html[data-mixdog-mobile-tabs] .queue-list .queue-item :is(.queue-remove, .row-overflow-trigger) svg {
-  width: 14px;
-  height: 14px;
-}
-html[data-mixdog-mobile-tabs] .queue-item-attachments {
-  font-size: var(--mx-font-meta);
-  line-height: var(--mx-line-minor);
-}
-html[data-mixdog-mobile-tabs] .queue-list .queue-item :is(.queue-steer, .queue-remove, .row-overflow-trigger) {
-  height: var(--mx-touch-row-main);
-  min-height: var(--mx-touch-row-main);
-}
-html[data-mixdog-mobile-tabs] .queue-list .queue-item :is(.queue-remove, .row-overflow-trigger) {
-  width: var(--mx-touch-row-main);
-  min-width: var(--mx-touch-row-main);
-  flex-basis: var(--mx-touch-row-main);
-  margin: 0;
-}
-html[data-mixdog-mobile-tabs] .queue-list .queue-steer {
-  padding-inline: 8px;
-  font-size: 13px;
 }
 .composer {
   z-index: 1;
@@ -2617,4 +3174,169 @@ html[data-mixdog-mobile-tabs] .queue-list .queue-steer {
 }
 .mx-select-trigger[aria-expanded="true"] svg {
   transform: rotate(180deg);
+}
+
+/* /btw side-question tray: a rail inset one card radius on each side of the
+   prompt card, with rounded top corners, whose lower edge tucks one card
+   radius under the card, so the card keeps all four corners; never part of
+   the transcript. */
+.btw-card {
+  position: relative;
+  z-index: 0;
+  margin: 0 var(--mx-radius-sheet) calc(-1 * var(--mx-radius-sheet));
+  padding-bottom: var(--mx-radius-sheet);
+  overflow: hidden;
+  color: var(--mx-text);
+  background: var(--mx-bg-base);
+  border-radius: var(--mx-radius-sheet) var(--mx-radius-sheet) 0 0;
+  box-shadow: inset 0 0 0 var(--mx-hairline) var(--mx-border);
+  animation: btw-tray-rise 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes btw-tray-rise {
+  from {
+    transform: translateY(8px);
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btw-card {
+    animation: none;
+  }
+}
+.composer-region:has(.btw-card) .composer {
+  position: relative;
+  z-index: 1;
+}
+.btw-head {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 12px;
+}
+/* The tag trails the question; the actions sit at the far end. */
+.btw-tag {
+  flex: none;
+  margin-inline-end: auto;
+  padding: 1px 6px;
+  border-radius: var(--mx-radius-sm);
+  font-size: var(--mx-font-meta);
+  font-weight: var(--mx-weight-medium);
+  line-height: var(--mx-line-meta);
+  color: var(--mx-accent);
+  background: color-mix(in srgb, var(--mx-accent) 12%, transparent);
+}
+/* Question and answer read on the transcript's prose tier (.message-body). */
+.btw-question {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mx-font-prose);
+  font-size: var(--mx-font-body);
+  font-weight: var(--mx-weight-body);
+  line-height: var(--mx-line-prose);
+  color: var(--mx-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.btw-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  color: var(--mx-text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--mx-radius-md);
+  cursor: pointer;
+}
+.btw-icon:hover,
+.btw-icon:focus-visible {
+  color: var(--mx-text);
+  background: var(--mx-hover);
+  outline: 0;
+}
+.btw-head + .btw-body {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: var(--mx-hairline) solid var(--mx-border-muted);
+}
+html[data-mixdog-mobile-tabs] .slash-palette button,
+html[data-mixdog-mobile-tabs] .slash-palette.message-selector button {
+  min-height: var(--mx-touch, 44px);
+}
+@media (max-width: 520px) {
+  html[data-mixdog-mobile-tabs] .slash-palette button {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+  html[data-mixdog-mobile-tabs] .slash-palette.mention-palette button {
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+}
+html[data-mixdog-mobile-tabs] .btw-icon {
+  width: var(--mx-touch, 44px);
+  height: var(--mx-touch, 44px);
+}
+html[data-mixdog-mobile-tabs] .turn-review-files-row {
+  min-height: var(--mx-touch, 44px);
+}
+html[data-mixdog-mobile-tabs] .composer-paste-dialog textarea {
+  min-height: min(320px, 40dvh);
+}
+.btw-body {
+  max-height: min(40dvh, calc(var(--vvh, 100dvh) * 0.4));
+  padding: 0 14px 14px;
+  overflow: auto;
+  font-family: var(--mx-font-prose);
+  font-size: var(--mx-font-body);
+  font-weight: var(--mx-weight-body);
+  line-height: var(--mx-line-prose);
+  color: var(--mx-text);
+}
+.btw-body .markdown p {
+  margin: 0 0 12px;
+}
+/* A narrow tray: headings one step above the prose, lists on a shallow indent,
+   rules at half the transcript's spacing. */
+.btw-body .markdown :is(h1, h2, h3, h4) {
+  margin: 4px 0 8px;
+  font-size: var(--mx-font-panel-title);
+  font-weight: var(--mx-weight-semibold);
+  line-height: var(--mx-line-prose);
+}
+.btw-body .markdown :is(ul, ol) {
+  margin: 0 0 12px;
+  padding-inline-start: 20px;
+}
+.btw-body .markdown hr {
+  margin: 12px 0;
+}
+/* More answer below the fold: fade the bottom edge. */
+.btw-body[data-more="true"] {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+}
+/* The tray head already sets the answer's top edge. */
+.btw-body .markdown > :first-child {
+  margin-top: 0;
+}
+.btw-body .markdown > :last-child {
+  margin-bottom: 0;
+}
+.btw-body[data-error] {
+  color: var(--mx-danger);
+}
+.btw-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mx-font-ui);
+  font-size: var(--mx-font-ui);
+  color: var(--mx-text-muted);
+}
+
+/* In the transcript the question card and its answered record span the reply column like the turn-changes card, not a 560px strip. */
+.transcript-virtual-row-content :is(.question-card:not([data-agent-mode]), .ask-user-record) {
+  width: 100%;
 }

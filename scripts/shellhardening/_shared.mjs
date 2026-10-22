@@ -42,9 +42,19 @@ import {
   _shellFamilyForSpawn,
 } from '../../src/runtime/agent/orchestrator/tools/shell-command.mjs';
 import {
-  descendantsAlive,
+  createProcessTreeTracker,
   killShellDescendants,
 } from '../../src/runtime/agent/orchestrator/tools/lib/shell-descendants.mjs';
+
+/** Identity-aware observation of a survivor handle: 'running', 'gone' or
+ *  'unknown' (process table unreadable). Compares pid + creation token, so a
+ *  reused pid never reads as a surviving descendant. */
+function observeDescendants(handle) {
+  if (!handle) return Promise.resolve('gone');
+  return createProcessTreeTracker({ pid: handle.rootPid, members: handle.watch, exitObserved: true }).observe({
+    rootExited: true,
+  });
+}
 import {
   buildShellCompletion,
   killShellJob,
@@ -77,7 +87,6 @@ import {
   _brokerTargetsForTest,
 } from '../../src/runtime/shared/child-guardian.mjs';
 import {
-  BACKGROUND_PARTIAL_OUTPUT_MAX_BYTES,
   recordShellCaptureTelemetry,
   renderBackgroundPartialOutput,
 } from '../../src/runtime/agent/orchestrator/tools/builtin/shell-output.mjs';
@@ -315,7 +324,7 @@ export {
   ExecResult,
   execShellCommand,
   _shellFamilyForSpawn,
-  descendantsAlive,
+  observeDescendants,
   killShellDescendants,
   buildShellCompletion,
   killShellJob,
@@ -346,7 +355,6 @@ export {
   startChildGuardian,
   _sharedBrokerPidForTest,
   _brokerTargetsForTest,
-  BACKGROUND_PARTIAL_OUTPUT_MAX_BYTES,
   recordShellCaptureTelemetry,
   renderBackgroundPartialOutput,
   compactShellOutputLosslessly,

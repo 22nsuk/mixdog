@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import type { DesktopModelSelection, DesktopWorkflowState, SessionSnapshot } from '../../shared/contract';
-import { sessionSummaryTitle } from '../../shared/session-title.mjs';
+import { sessionDisplayTitle } from '../session-display-title';
 import type { NavigationSelection, WorkspaceTab } from '../navigation';
 import { canSplitPaneSize, type PaneLeaf } from '../pane-layout';
 import type { usePaneWorkspace } from '../pane-workspace-state';
@@ -9,11 +9,7 @@ import { defaultSessionLaneStore } from '../session-lane-store';
 import { t } from '../i18n';
 import { asRecord, displayProject, navigationKey, newDraftSelection } from '../text-format';
 import type { ConversationHandoff } from '../use-pane-tab-close';
-import {
-  draftModelSelectionFromSnapshot,
-  resolvedStoredProjectPath,
-  type DraftPanePrefs,
-} from '../use-draft-pane-preferences';
+import { resolvedStoredProjectPath, type DraftPanePrefs } from '../use-draft-pane-preferences';
 import { inheritSessionInPlace } from '../app-session-inheritance';
 import { useStableEvent } from '../use-stable-event';
 import { desktopFeatureEnabled } from '../desktop-feature-config';
@@ -59,7 +55,7 @@ export interface UseAppTaskLifecycleOptions {
   lastNewTaskPrefs: React.MutableRefObject<DraftPanePrefs | null>;
   effectiveDraftProjectPath: (path?: string | null) => string;
   preferredDraftProjectPath: string;
-  resetNewTaskDraft: (projectPath: string | null) => void;
+  resetNewTaskDraft: (projectPath: string | null, options?: { projectless?: boolean }) => void;
   draftPanePrefs: React.MutableRefObject<Map<string, DraftPanePrefs>>;
   inheritedDraftPrefs: () => DraftPanePrefs;
   persistDraftPanePrefs: () => void;
@@ -205,7 +201,7 @@ export function useAppTaskLifecycle({
   }, [pendingConversationHandoff, setConversationHandoff]);
 
   const startTask = useCallback(
-    (draft?: NavigationSelection, requestComposerFocus = true) => {
+    (draft?: NavigationSelection, requestComposerFocus = true, projectless = false) => {
       closeSidebarForNavigation();
       navigationEpoch.current += 1;
       setRequestedSessionId('');
@@ -215,6 +211,10 @@ export function useAppTaskLifecycle({
       const nextSelection = revisit && draft ? draft : newDraftSelection();
       activateSelection(nextSelection, t('New task'));
       if (requestComposerFocus) setComposerFocusRequest((value) => value + 1);
+      if (projectless) {
+        resetNewTaskDraft(null, { projectless: true });
+        return;
+      }
       if (revisit || alreadyActive) return;
       if (newTaskDeferred && tabs.some((tab) => tab.selection.kind === 'new')) return;
       const cachedProjectPath = lastNewTaskPrefs.current?.projectPath ?? null;
@@ -241,6 +241,8 @@ export function useAppTaskLifecycle({
     ]
   );
 
+  const startProjectlessTask = useCallback(() => startTask(undefined, true, true), [startTask]);
+
   const clearSessionToNewTask = useCallback(
     (sessionId: string) => {
       const sessionKey = navigationKey({ kind: 'session', id: sessionId });
@@ -255,7 +257,10 @@ export function useAppTaskLifecycle({
         projectPath: effectiveDraftProjectPath(
           String(source?.currentProject || source?.project || '') || inherited.projectPath
         ),
-        modelSelection: (source ? draftModelSelectionFromSnapshot(source) : null) ?? inherited.modelSelection,
+        // The cleared session's model is not a pick made in the new draft: the
+        // draft inherits the host's Main route (a session's own effort may be
+        // older than a Lead edit and must not be written back over it).
+        modelSelection: null,
         workflow:
           (asRecord(source?.workflow) ? (source?.workflow as unknown as DesktopWorkflowState) : null) ??
           inherited.workflow,
@@ -264,7 +269,7 @@ export function useAppTaskLifecycle({
       const draftSelection = newDraftSelection();
       const draftPrefsKey = draftSelection.kind === 'new' ? draftSelection.draftId || 'default' : 'default';
       draftPanePrefs.current.set(draftPrefsKey, seeded);
-      lastNewTaskPrefs.current = seeded;
+      lastNewTaskPrefs.current = { ...seeded, modelSelection: lastNewTaskPrefs.current?.modelSelection ?? null };
       persistDraftPanePrefs();
       setDraftPrefsVersion((value) => value + 1);
       navigationEpoch.current += 1;
@@ -307,7 +312,7 @@ export function useAppTaskLifecycle({
     if (actualSession) {
       activateSelection(
         { kind: 'session', id: actualSessionId },
-        sessionSummaryTitle(actualSession, t('Untitled session'))
+        sessionDisplayTitle(actualSession, t('Untitled session'))
       );
     } else if (actualProject) {
       const project = projects.find((item) => item.path === actualProject);
@@ -354,7 +359,7 @@ export function useAppTaskLifecycle({
           sourceTitle: () => {
             const row = sessions.find((entry) => entry?.id === sourceSessionId);
             return row
-              ? sessionSummaryTitle(row, t('Untitled session'))
+              ? sessionDisplayTitle(row, t('Untitled session'))
               : tabs.find((tab) => tab.key === `session:${sourceSessionId}`)?.title || '';
           },
           refreshSessions,
@@ -390,6 +395,7 @@ export function useAppTaskLifecycle({
     activateSelection,
     finishPendingConversationHandoff,
     startTask,
+    startProjectlessTask,
     clearSessionToNewTask,
     synchronizeActualHost,
     conversationNewTask,

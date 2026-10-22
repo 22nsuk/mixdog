@@ -5,20 +5,51 @@ import { createPortal } from 'react-dom';
 import { useComposerIslandTab } from './composer-island-state';
 import { ErrorNotice } from './ErrorNotice';
 import { t } from './i18n';
+import { scrimDismiss } from './scrim-dismiss';
 import { trappedTabIndex } from './list-navigation';
 import { MxIcon } from './MxIcon';
 import { useMobileBack } from './mobile-back';
 import { acquireModalLayer } from './modal-layer';
+import { RowOverflowMenu } from './RowOverflowMenu';
+import {
+  SESSION_CHANGES_SOURCES,
+  sessionChangesSourceLabel,
+  setSessionChangesSource,
+  useSessionChangesSource,
+} from './session-changes-store';
 import { acquireTitleBarDim } from './titlebar-dim';
 import { bumpTurnChangesEpoch } from './turn-changes-model';
+import type { TurnReviewFileEntry } from './turn-review-model';
 
 const MENU_ITEM = "[role='menuitem']:not(:disabled)";
 const runningTurnNotice = () =>
   new Error(t("Change history can't be deleted while a response is running. Try again after it finishes."));
+/** The source picker's menu is a body portal: presses and keys there belong to it. */
+const inSourceMenu = (target: EventTarget | null) =>
+  target instanceof Element && Boolean(target.closest('.row-overflow-menu'));
 
-/** The island's "Files N +a −b" segment as a menu trigger: View changes
- *  (what the segment used to do on click) and, after a separator, Delete
- *  history behind a confirmation. The menu is an island tab like Goal and
+/** The panel header's Changes source picker (shared with the Changes pane). */
+function ChangesSourceMenu() {
+  const source = useSessionChangesSource();
+  return (
+    <RowOverflowMenu
+      label={t('Changes source')}
+      tooltip={t('Changes source')}
+      items={SESSION_CHANGES_SOURCES.map((value) => ({
+        id: value,
+        label: sessionChangesSourceLabel(value),
+        checked: value === source,
+        // The conversation's own sources stand apart from Git's.
+        separatorBefore: value === 'branch',
+        onSelect: () => setSessionChangesSource(value),
+      }))}
+    />
+  );
+}
+
+/** The island's "Files N +a −b" segment as a menu trigger: every changed file
+ *  in one scrolling list (a row opens that file's diff), with Delete history
+ *  (behind a confirmation) and View changes fixed below it. The menu is an island tab like Goal and
  *  the jobs: the island expands upward in place into its panel. Roving focus
  *  and Escape/Tab dismissal follow RowOverflowMenu and SidebarUsageMenu. */
 export function TurnReviewFilesMenu({
@@ -27,7 +58,12 @@ export function TurnReviewFilesMenu({
   busy = false,
   label,
   title,
+  files,
+  sourcePicker = false,
+  emptyText = '',
+  ready = true,
   onViewChanges,
+  onOpenFile,
   children,
 }: {
   sessionId: string | undefined;
@@ -37,7 +73,17 @@ export function TurnReviewFilesMenu({
   busy?: boolean;
   label: string;
   title: string;
+  /** Every changed file with its line counts. */
+  files: ReadonlyMap<string, TurnReviewFileEntry>;
+  /** A Git root: the header names the source (`label`) and offers its picker. */
+  sourcePicker?: boolean;
+  /** Shown while the open menu's source has no files. */
+  emptyText?: string;
+  /** The source has answered once; before that an empty list says nothing. */
+  ready?: boolean;
   onViewChanges(): void;
+  /** Opens one file's diff. */
+  onOpenFile(path: string): void;
   children: ReactNode;
 }) {
   // The island owns the open tab (one at a time); alone, it is local state.
@@ -73,18 +119,25 @@ export function TurnReviewFilesMenu({
     const dismiss = (event: PointerEvent) => {
       const island = panel.current?.closest('.composer-island') ?? panel.current;
       if (island && event.target instanceof Node && island.contains(event.target)) return;
+      if (inSourceMenu(event.target)) return;
       setOpen(false);
     };
     const keydown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') return;
+      // Escape while the source picker is open closes only the picker. This
+      // capture listener runs before the picker's own (registered later), so
+      // the picker is still open here.
+      if (inSourceMenu(event.target) || panel.current?.querySelector('.row-overflow-trigger[aria-expanded="true"]')) {
+        return;
+      }
       refocus.current = true;
       setOpen(false);
     };
     document.addEventListener('pointerdown', dismiss, true);
-    document.addEventListener('keydown', keydown);
+    document.addEventListener('keydown', keydown, true);
     return () => {
       document.removeEventListener('pointerdown', dismiss, true);
-      document.removeEventListener('keydown', keydown);
+      document.removeEventListener('keydown', keydown, true);
     };
   }, [open]);
 
@@ -106,8 +159,12 @@ export function TurnReviewFilesMenu({
     entries[next]?.focus();
   };
   const deleteHistory = async () => {
-    // The segment hides once the history is gone, so typing continues in this
-    // pane's composer instead of focus falling to the document.
+    // The segment counts the selected Changes source. A Git root's sources
+    // (uncommitted, branch, staged…) read the working tree, which deleting
+    // history leaves untouched, so the segment stays; the Last turn source
+    // and a non-Git root's session diff empty, and the segment hides. Either
+    // way typing continues in this pane's composer instead of focus falling
+    // to the document.
     let scope = trigger.current?.parentElement ?? null;
     while (scope && !scope.querySelector('.composer textarea')) scope = scope.parentElement;
     const composer = scope?.querySelector<HTMLTextAreaElement>('.composer textarea') ?? null;
@@ -123,8 +180,8 @@ export function TurnReviewFilesMenu({
       setError(/running a turn/.test(String(reason)) ? runningTurnNotice() : reason);
       return;
     }
-    // Every turn card and session diff of the session re-reads: the island
-    // segment hides and the Changes list empties.
+    // Every turn card and session diff of the session re-reads: retained
+    // turn records (and Undo/Reapply) are gone; working-tree files are not.
     if (sessionId) bumpTurnChangesEpoch(sessionId);
     composer?.focus({ preventScroll: true });
   };
@@ -149,6 +206,12 @@ export function TurnReviewFilesMenu({
             <span className="composer-island-tab turn-review-files-tab" data-active="true">
               {children}
             </span>
+            {sourcePicker && (
+              <>
+                <span className="composer-island-phead-meta turn-review-files-source">{label}</span>
+                <ChangesSourceMenu />
+              </>
+            )}
             <button
               type="button"
               className="composer-island-close"
@@ -165,35 +228,70 @@ export function TurnReviewFilesMenu({
             aria-label={t('Files menu')}
             onKeyDown={onKeyDown}
           >
-            <button
-              type="button"
-              role="menuitem"
-              className="mx-menu-item"
-              onClick={() => {
-                close(false);
-                onViewChanges();
-              }}
-            >
-              {t('Island: View changes')}
-            </button>
-            <div className="usage-menu-separator" role="separator" />
-            <button
-              type="button"
-              role="menuitem"
-              className="mx-menu-item danger"
-              onClick={() => {
-                // The runtime refuses deletion mid-turn: say so here instead of confirming.
-                if (busy) {
-                  setError(runningTurnNotice());
-                  return;
-                }
-                close(false);
-                setConfirming(true);
-              }}
-            >
-              {t('Delete history')}
-            </button>
+            {/* A source picked here with no files keeps the menu, saying so. */}
+            {files.size === 0 && <p className="turn-review-files-empty">{ready ? emptyText : ''}</p>}
+            {/* Every changed file in one scrolling list; a row opens its diff. */}
+            <div className="turn-review-files-list">
+              {[...files.entries()].map(([path, entry]) => {
+                const clean = path.replace(/\\/g, '/');
+                const slash = clean.lastIndexOf('/');
+                return (
+                  <button
+                    key={path}
+                    type="button"
+                    role="menuitem"
+                    className="turn-review-files-row"
+                    title={clean}
+                    onClick={() => {
+                      close(false);
+                      onOpenFile(path);
+                    }}
+                  >
+                    <span className="turn-review-files-path">
+                      {slash >= 0 && <span className="turn-review-files-dir">{clean.slice(0, slash + 1)}</span>}
+                      {clean.slice(slash + 1)}
+                    </span>
+                    {entry.lineStats && (
+                      <span className="diff-stats">
+                        {entry.additions > 0 && <i>+{entry.additions}</i>}
+                        {entry.additions > 0 && entry.deletions > 0 && ' '}
+                        {entry.deletions > 0 && <em>−{entry.deletions}</em>}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
             {error !== null && <ErrorNotice error={error} />}
+            <div className="turn-review-files-foot" role="none" hidden={files.size === 0}>
+              <button
+                type="button"
+                role="menuitem"
+                className="composer-island-button danger"
+                onClick={() => {
+                  // The runtime refuses deletion mid-turn: say so here instead of confirming.
+                  if (busy) {
+                    setError(runningTurnNotice());
+                    return;
+                  }
+                  close(false);
+                  setConfirming(true);
+                }}
+              >
+                {t('Delete history')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="composer-island-button"
+                onClick={() => {
+                  close(false);
+                  onViewChanges();
+                }}
+              >
+                {t('Island: View changes')}
+              </button>
+            </div>
           </div>
         </section>
       )}
@@ -267,14 +365,8 @@ function DeleteHistoryDialog({
     };
   }, [returnFocus]);
   return createPortal(
-    // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-dismiss; keyboard dismissal is handled by the Escape listener above.
-    <div
-      ref={surfaceRef}
-      className="settings-confirm-layer"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onCancel();
-      }}
-    >
+    // Backdrop click-to-dismiss; keyboard dismissal is handled by the Escape listener above.
+    <div ref={surfaceRef} className="settings-confirm-layer" {...scrimDismiss(onCancel)}>
       <section
         ref={dialogRef}
         className="settings-confirm-dialog"

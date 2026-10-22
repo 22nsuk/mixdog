@@ -62,10 +62,10 @@ export interface DesktopBranchMenu {
   warnings?: string[];
 }
 
-/** Pick an existing branch: the session runs in the project folder on it. */
+/** Pick a branch's existing checkout, or create its separate worktree. */
 export interface DesktopSelectBranchInput {
   branch: string;
-  /** Create `branch` from the current branch first ("New branch"). */
+  /** Create `branch` in a separate worktree ("New branch"). */
   create?: boolean;
   expectedRevision?: number;
   /** Acknowledges WORKTREE_LARGE_REPO_CONFIRM (resend after the user agreed). */
@@ -79,11 +79,19 @@ export interface DesktopRequestWorktreeInput {
   expectedRevision?: number;
   /** Acknowledges WORKTREE_LARGE_REPO_CONFIRM (resend after the user agreed). */
   confirmLarge?: boolean;
+  /** Create and enter the worktree now instead of at the next send. */
+  provision?: boolean;
+  /** Answers WORKTREE_DIRTY_CHOICE: `leave` keeps the project folder's
+   *  uncommitted changes where they are (the worktree starts at the current
+   *  commit); `carry` moves them into the worktree. */
+  carryChanges?: 'leave' | 'carry';
 }
 
 /** A New Task's "Worktree" choice, sent with its first prompt: the host
  *  creates and enters the worktree before the prompt is submitted. */
 export interface DesktopNewTaskWorktree {
+  branch?: string;
+  create?: boolean;
   /** Acknowledges WORKTREE_LARGE_REPO_CONFIRM (resend after the user agreed). */
   confirmLarge?: boolean;
 }
@@ -97,7 +105,10 @@ export interface DesktopMergeWorkspaceInput {
   target: string;
   expectedRevision?: number;
   /** Merge and clean up: with autoCleanup on, the merged worktree is removed
-   *  right after (a dirty one is kept and reported in `cleanup`). */
+   *  right after unless a session still uses it (the session is never moved).
+   *  A cleanup that is refused or fails (in use, dirty, retained file
+   *  recovery data, ...) keeps the worktree and is reported in `cleanup`;
+   *  the merge itself still succeeded. */
   cleanup?: boolean;
 }
 
@@ -114,10 +125,21 @@ export interface DesktopWorkspaceTransitionResult {
   warnings?: string[];
 }
 
-export interface DesktopMergeWorkspaceResult extends DesktopWorkspaceTransitionResult {
+/** mergeWorkspace's answer: a conflicting preflight changes nothing and
+ *  returns `merged: false` with the files; a cleanup that ran adds the
+ *  workspace as it is now (the session never moves). */
+export interface DesktopMergeWorkspaceResult {
+  merged: boolean;
   target: string;
-  /** The merge commit created on `target`. */
-  commit: string;
+  /** The merge commit created on `target` (its HEAD when already up to date). */
+  commit: string | null;
+  upToDate?: boolean;
+  conflicts?: string[];
+  revision?: number;
+  workspace?: DesktopSessionWorkspace;
+  /** The cleanup after a successful merge: `removed: false` keeps the
+   *  worktree (a refusal such as WORKTREE_DIRTY in `code`); the merge stands. */
+  cleanup?: { removed: boolean; code?: string; message?: string };
 }
 
 export const DESKTOP_WORKTREE_NEW_TASK_DEFAULTS = ['branch', 'worktree'] as const;
@@ -140,6 +162,9 @@ export const DESKTOP_WORKTREE_ERROR_CODES = [
   'WORKTREE_DISK_INSUFFICIENT',
   'WORKTREE_LARGE_REPO_CONFIRM',
   'WORKTREE_DIRTY',
+  /** requestWorktree with `provision` found uncommitted project-folder files
+   *  (`details.count`): resend with `carryChanges`. */
+  'WORKTREE_DIRTY_CHOICE',
   'WORKTREE_FILE_RECOVERY',
   'WORKTREE_UNMERGED',
   'WORKTREE_MISSING',
@@ -159,6 +184,18 @@ export const DESKTOP_WORKTREE_ERROR_CODES = [
 ] as const;
 
 export type DesktopWorktreeErrorCode = (typeof DESKTOP_WORKTREE_ERROR_CODES)[number];
+
+/** `details.reason` of a WORKTREE_BUSY_JOBS refusal whose meaning every
+ *  surface shares (runtime WORKTREE_REFUSAL_REASONS). */
+export const DESKTOP_WORKTREE_REFUSAL_REASONS = [
+  'workspace-retained',
+  'workspace-lease',
+  'folder-in-use',
+  'folder-shell-jobs',
+  'workspace-admission-unreadable',
+] as const;
+
+export type DesktopWorktreeRefusalReason = (typeof DESKTOP_WORKTREE_REFUSAL_REASONS)[number];
 
 /** A Project's branch menu before any session exists (a New Task draft, the
  *  source-control dock): the real occupancy of the project folder. */
@@ -243,6 +280,8 @@ export interface DesktopManagedWorktreeRow extends DesktopRetainedWorktree {
  *  getWorktreeSettings() → DesktopWorktreeSettings
  *  setWorktreeSettings(Partial<DesktopWorktreeSettings>) → DesktopWorktreeSettings */
 export const DESKTOP_WORKTREE_CAPABILITIES = [
+  'inspectProjectBranch',
+  'manageProjectBranch',
   'getBranchMenu',
   'getProjectBranchMenu',
   'selectBranch',
@@ -258,10 +297,23 @@ export const DESKTOP_WORKTREE_CAPABILITIES = [
 ] as const;
 
 export const DESKTOP_WORKTREE_READ_CAPABILITIES = [
+  'inspectProjectBranch',
   'getBranchMenu',
   'getProjectBranchMenu',
   'listWorktrees',
   'getWorktreeSettings',
 ] as const;
+
+export interface DesktopBranchActionState {
+  branch: string;
+  commit: string;
+  target: string | null;
+  targetCommit: string | null;
+  path: string | null;
+  worktreeId: string | null;
+  kind: 'project' | 'managed' | 'external' | 'free';
+}
+
+export type DesktopBranchManagementAction = 'merge' | 'remove-worktree' | 'delete-branch';
 
 export type DesktopWorktreeCapability = (typeof DESKTOP_WORKTREE_CAPABILITIES)[number];

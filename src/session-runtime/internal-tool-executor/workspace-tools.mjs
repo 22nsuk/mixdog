@@ -5,8 +5,35 @@ import { resolve } from 'node:path';
 import { listProjects } from '../../runtime/shared/projects.mjs';
 import { applySessionSidebarChange } from '../../runtime/shared/session-sidebar-host.mjs';
 import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { AGENT_MODE, resolveSessionMode } from '../../runtime/agent/orchestrator/session/agent-mode.mjs';
+import { agentIdOfHomeSession } from '../../runtime/agent/orchestrator/session/agent-home.mjs';
+import { turnHopOf } from '../../runtime/shared/bot-hops.mjs';
+import { scheduleCallerScope } from '../services/schedule-access.mjs';
+import { worktreeCallerScope } from '../services/worktree-access.mjs';
+import { resolveHandoffAttachments, sessionRoots } from '../handoff-attachments.mjs';
 
 const USER_TITLE_ERROR = 'session: the user already titled this session; the title was not changed';
+
+/** The agent an attended agent conversation (an agent's home thread, or its
+ *  member session in a group room, where the user is present too) acts as;
+ *  '' for every other caller: delegated workers, coding sessions (task
+ *  sessions included) and unattended schedule/webhook runs. */
+function attendedAgentOf(session) {
+  const { mode, agentId } = resolveSessionMode({ session });
+  const { kind } = scheduleCallerScope(session);
+  return mode === AGENT_MODE && (kind === 'human' || kind === 'agent' || kind === 'room-member') ? agentId : '';
+}
+
+/** The caller's `attachments` as stored prompt parts, resolved against its own
+ *  conversation and folders (handoff-attachments.mjs). */
+function callerAttachmentParts(rt, args, callerCwd, surface) {
+  return resolveHandoffAttachments(args?.attachments, {
+    messages: rt.session?.messages,
+    roots: sessionRoots(rt.session, callerCwd),
+    cwd: callerCwd,
+    surface,
+  }).parts;
+}
 
 export function createWorkspaceToolHandlers({
   rt,
@@ -16,10 +43,8 @@ export function createWorkspaceToolHandlers({
   getWorkspaceApi = () => null,
   getSessionManager = () => null,
   getLifecycleApi = () => null,
+  executeSessionControl = null,
 }) {
-  // The Lead's own worktree, on the user's request: the same authority the
-  // branch chip menu drives, tolerating the calling turn but nothing else
-  // running (workers, background shells).
   const assertLead = (action, callerCtx) => {
     const callerSessionId = callerCtx?.callerSessionId || rt.session?.id || null;
     if (!rt.session?.id || callerSessionId !== rt.session.id) {
@@ -28,22 +53,6 @@ export function createWorkspaceToolHandlers({
     return rt.session.id;
   };
 
-  const worktreeAction = async (action, args, callerCtx) => {
-    const workspace = getWorkspaceApi();
-    if (!workspace) throw new Error(`session: ${action} is unavailable in this runtime`);
-    assertLead(action, callerCtx);
-    const result =
-      action === 'merge-worktree'
-        ? await workspace.mergeWorkspace({ confirmed: true }, { ownTurn: true })
-        : action === 'remove-worktree'
-          ? await workspace.removeWorktree({ force: args?.force === true }, { ownTurn: true })
-          : action === 'list-worktrees'
-            ? await workspace.listWorktrees()
-            : await workspace.pruneWorktrees();
-    return JSON.stringify({ action, cwd: rt.currentCwd, result }, null, 2);
-  };
-
-  const WORKTREE_ACTIONS = new Set(['merge-worktree', 'remove-worktree', 'list-worktrees', 'prune-worktrees']);
   const SIDEBAR_ACTIONS = new Set(['favorite', 'archive']);
 
   // Sidebar flags only (the desktop's favorite/archive metadata).
@@ -61,7 +70,55 @@ export function createWorkspaceToolHandlers({
 
   const session = async (args, { callerCtx, callerCwd }) => {
     const action = clean(args?.action || (args?.path ? 'set-project' : 'status')).toLowerCase();
-    if (WORKTREE_ACTIONS.has(action)) return worktreeAction(action, args, callerCtx);
+    const target = clean(args?.session_id);
+    if (
+      ['list', 'bots', 'read', 'send', 'cancel', 'delete', 'create'].includes(action) ||
+      (action === 'status' && target)
+    ) {
+      const callerSessionId = assertLead(action, callerCtx);
+      const callerAgentId = attendedAgentOf(rt.session);
+      if (action === 'create' && !callerAgentId) {
+        throw new Error(
+          'session: create belongs to a bot conversation; delegated workers, agent task sessions and schedule/webhook runs cannot create agent task sessions'
+        );
+      }
+      // A task session reaches its agent only through its reported result.
+      const origin = rt.session?.taskOrigin;
+      if (
+        action === 'send' &&
+        origin &&
+        (target === origin.sessionId || agentIdOfHomeSession(target) === origin.agentId)
+      ) {
+        throw new Error('session: a task session reports to its agent only through its result');
+      }
+      if (typeof executeSessionControl !== 'function') {
+        throw new Error('session: cross-session control is unavailable in this runtime');
+      }
+      const { attachments, ...rest } = args || {};
+      if (attachments !== undefined && action !== 'send' && action !== 'create') {
+        throw new Error(`session: attachments apply to send and create, not action=${action}`);
+      }
+      const attachmentParts = callerAttachmentParts(rt, args, callerCwd, 'session');
+      return JSON.stringify(
+        await executeSessionControl(
+          { ...rest, action },
+          {
+            callerSessionId,
+            callerAgentId,
+            callerCwd,
+            ...(action === 'send' || action === 'create' ? { callerHop: turnHopOf(rt.session) } : {}),
+            // Whether a create may provision a worktree (worktree-access.mjs).
+            ...(action === 'create' ? { callerScope: worktreeCallerScope(rt.session) } : {}),
+            // Which bots and sessions it may see (bot-status.mjs).
+            ...(action === 'bots' || action === 'list' ? { callerScope: scheduleCallerScope(rt.session) } : {}),
+            ...(attachmentParts.length ? { attachmentParts } : {}),
+          }
+        )
+      );
+    }
+    if (target && target !== assertLead(action, callerCtx)) {
+      throw new Error(`session: action=${action} only applies to the current session`);
+    }
     if (SIDEBAR_ACTIONS.has(action)) return sidebarAction(action, args, callerCtx);
     let currentCwd = callerCwd;
     if (action === 'status' || action === 'list-projects' || action === 'set-project') assertLead(action, callerCtx);
@@ -178,13 +235,21 @@ export function createWorkspaceToolHandlers({
       }),
     agent: async (args, { callerCtx, callerCwd }) => {
       const callerSessionId = callerCtx?.callerSessionId || rt.session?.id || null;
-      return await agentTool.execute(args, {
+      // `attachmentParts` is never the model's to set: only the resolved
+      // `attachments` reach the agent's turn.
+      const { attachments, attachmentParts: _ignored, ...rest } = args || {};
+      const attachmentParts = callerAttachmentParts(rt, { attachments }, callerCwd, 'agent');
+      return await agentTool.execute(attachmentParts.length ? { ...rest, attachmentParts } : rest, {
         callerCwd,
         invocationSource: 'model-tool',
         callerSessionId,
         clientHostPid: callerCtx?.clientHostPid || rt.session?.clientHostPid || process.pid,
         signal: callerCtx?.signal,
         notifyFn: notifyFnForSession(callerSessionId),
+        // The jobs it starts report back at this turn's bot-chain hop (bot-hops.mjs).
+        ...(turnHopOf(rt.session) > 0 ? { hop: turnHopOf(rt.session) } : {}),
+        // The jobs this call starts are recorded under it (agent-task-starts.mjs).
+        ...(callerCtx?.toolCallId ? { toolCallId: callerCtx.toolCallId } : {}),
       });
     },
   };

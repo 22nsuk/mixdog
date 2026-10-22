@@ -4,12 +4,20 @@
 // the app shell (which owns the pane docks).
 import { useSyncExternalStore } from 'react';
 
-import type {
-  DesktopVisualizeEvent,
-  VisualizeCommandResult,
-  VisualizeSessionState,
+import {
+  type DesktopVisualizeEvent,
+  type VisualizeCommandResult,
+  type VisualizeInlineContent,
+  type VisualizeSessionState,
+  type VisualizeTabView,
+  visualizeThumbnail,
 } from '../shared/visualize';
-import { requestBrowserPage } from './browser-page-request';
+import { browserPageRequestsAvailable, requestBrowserPage } from './browser-page-request';
+import { linkOpenTarget } from './link-open-target';
+import { isMobileRemoteSurface } from './mobile-surface';
+import { timeFormatOptions } from './time-format-preference';
+import { sameTarget } from './visualize-card-model';
+import { emitVisualizeZoomInput, emitVisualizeZoomModifier } from './visualize-zoom';
 
 type Listener = () => void;
 type RevealListener = (sessionId: string) => void;
@@ -17,6 +25,12 @@ type RevealListener = (sessionId: string) => void;
 const EMPTY: VisualizeSessionState = Object.freeze({ sessionId: '', tabs: [], active: null });
 
 let states = new Map<string, VisualizeSessionState>();
+/** What a running agent turn has made so far, per session (`held` events):
+ *  the panel keeps drawing `states`; chat cards read this. The turn's end
+ *  (an ordinary event) or the user asking to see a tab replaces it. */
+let heldStates = new Map<string, VisualizeSessionState>();
+/** When each held session's turn started (ms), as main reported it. */
+const heldSince = new Map<string, number>();
 const listeners = new Set<Listener>();
 const revealListeners = new Set<RevealListener>();
 /** Reveals asked for before the app shell subscribed (a reloaded renderer
@@ -24,13 +38,47 @@ const revealListeners = new Set<RevealListener>();
 const pendingReveals = new Set<string>();
 let connected = false;
 
-/** Per-session panel memory, kept in sessionStorage so it survives a renderer
- *  reload (main keeps the tabs; the renderer forgets which panels it showed).
+/** Per-session panel memory, kept in localStorage so it survives a renderer
+ *  reload and a phone whose page was discarded in the background (a WebView
+ *  restarted by the OS keeps no sessionStorage); main keeps the tabs, the
+ *  renderer forgets which panels it showed.
  *  `open`: the panel was on screen and not closed by the user since.
- *  `closed`: the user closed it — agent opens keep updating the tabs but no
- *  longer reveal the panel until the user opens it again, the same policy as
- *  the browser panel's auto-reveal. */
+ *  `closed`: the user closed it — a renderer reload or a remote resume does
+ *  not bring it back. An agent open or update still does (the open policy
+ *  below) and lifts the mark. */
 const PANEL_MEMORY_KEY = 'mixdog.visualize.panels.v1';
+
+/*
+ * The open policy. Every agent `open` and every content update of a tab
+ * (its file changed, or the agent opened it again) brings the session's
+ * visualize panel up on that tab — unless the panel is on screen showing
+ * another tab the user picked themselves; then the tab only gets an
+ * "updated" mark until it is viewed. The phone layout never brings the panel
+ * up for the agent: only the user opens it (a turn card tile, the dock); an
+ * update while it is on screen lands as on the desktop.
+ * A pick lasts while the panel stays on screen; once it leaves (closed,
+ * another dock view, another session) the next open or update takes over.
+ */
+/** Sessions whose visualize panel is on screen right now (VisualizePane). */
+const onScreen = new Set<string>();
+/** The tab the user picked in a session's panel (strip, chat card). */
+const userPicks = new Map<string, string>();
+/** A user's request to open a closed tab or history entry, per session: the
+ *  reveal of a tab that is exactly its target (within USER_OPEN_TTL_MS)
+ *  shows the panel, on the phone too, once. */
+interface UserOpen {
+  matches: (tab: VisualizeTabView) => boolean;
+  expires: number;
+}
+const userOpens = new Map<string, UserOpen>();
+const USER_OPEN_TTL_MS = 15_000;
+/** A turn's end opening its previews (openTurnPreviews), one entry per open
+ *  request: when main's open of exactly that tab arrives, a panel the user
+ *  keeps closed at that moment stays closed (the tab is only made or updated). */
+const previewOpens = new Map<string, UserOpen[]>();
+/** Tabs opened or updated behind the user's pick, per session. */
+let updatedTabs = new Map<string, ReadonlySet<string>>();
+const NO_UPDATES: ReadonlySet<string> = new Set();
 interface PanelMemory {
   open: Set<string>;
   closed: Set<string>;
@@ -42,7 +90,7 @@ function panelMemory(): PanelMemory {
   let open: string[] = [];
   let closed: string[] = [];
   try {
-    const parsed = JSON.parse(globalThis.sessionStorage?.getItem(PANEL_MEMORY_KEY) ?? '{}');
+    const parsed = JSON.parse(globalThis.localStorage?.getItem(PANEL_MEMORY_KEY) ?? '{}');
     if (Array.isArray(parsed?.open)) open = parsed.open.map(String);
     if (Array.isArray(parsed?.closed)) closed = parsed.closed.map(String);
   } catch {
@@ -55,7 +103,7 @@ function panelMemory(): PanelMemory {
 function savePanelMemory(): void {
   const memory = panelMemory();
   try {
-    globalThis.sessionStorage?.setItem(
+    globalThis.localStorage?.setItem(
       PANEL_MEMORY_KEY,
       JSON.stringify({ open: [...memory.open], closed: [...memory.closed] })
     );
@@ -67,6 +115,13 @@ function savePanelMemory(): void {
 /** Test seam: forget the in-memory panel memory so storage is re-read. */
 export function resetVisualizePanelMemory(): void {
   panelMemoryCache = null;
+  onScreen.clear();
+  userPicks.clear();
+  userOpens.clear();
+  previewOpens.clear();
+  updatedTabs = new Map();
+  heldStates = new Map();
+  heldSince.clear();
 }
 
 function emit(): void {
@@ -137,13 +192,237 @@ function setState(state: VisualizeSessionState): void {
   emit();
 }
 
+/** A web link clicked in a pane page opens where a chat web link would: the
+ *  app window may not frame another origin (its CSP frame-src), so the page
+ *  script hands the address over instead of navigating to an error page. A
+ *  click in the pane frame activates this document too; a message a page
+ *  script posts by itself carries no activation and opens nothing. */
+export function openVisualizePageLink(sessionId: string, url: string, external = false): void {
+  if (typeof navigator === 'undefined' || !navigator.userActivation?.isActive) return;
+  if (linkOpenTarget({ sessionId, paneAvailable: browserPageRequestsAvailable(), external }) === 'pane') {
+    requestBrowserPage(sessionId, url, { newTab: true });
+    return;
+  }
+  void window.mixdogDesktop?.openExternal?.(url)?.catch(() => {});
+}
+
 /** Apply one main-process event (exported for tests). */
 export function applyVisualizeEvent(event: DesktopVisualizeEvent): void {
+  // A zoom gesture from inside a pane frame names no session.
+  if (event?.zoomModifier !== undefined) {
+    emitVisualizeZoomModifier(event.zoomModifier);
+    return;
+  }
+  if (event?.zoom) {
+    emitVisualizeZoomInput(event.zoom, event.point);
+    return;
+  }
   const sessionId = String(event?.sessionId || '');
   if (!sessionId) return;
   if (event.openUrl) requestBrowserPage(sessionId, event.openUrl, { newTab: true, agent: true });
-  if (event.state) setState({ ...event.state, sessionId });
-  if (event.reveal && !panelMemory().closed.has(sessionId)) requestReveal(sessionId);
+  const state = event.state ? { ...event.state, sessionId } : undefined;
+  if (event.held) {
+    // Mid-turn: nothing in the panel opens, activates or reloads; a tab whose
+    // files the turn changed wears the "updated" dot.
+    if (!state) return;
+    heldStates = new Map(heldStates);
+    heldStates.set(sessionId, state);
+    if (Number.isFinite(event.heldSince)) heldSince.set(sessionId, Number(event.heldSince));
+    emit();
+    const shown = states.get(sessionId);
+    if (event.updated && shown?.tabs.some((tab) => tab.id === event.updated)) {
+      setUpdated(sessionId, event.updated, shown.active !== event.updated);
+    }
+    return;
+  }
+  const released = Boolean(state && heldStates.has(sessionId));
+  if (released) {
+    // The turn ended. Its end is announced after the final state is applied
+    // (below), so no reader sees the end of the hold with the state from
+    // before the turn.
+    heldStates = new Map(heldStates);
+    heldStates.delete(sessionId);
+    heldSince.delete(sessionId);
+  }
+  // An agent open or a content update carries `reveal` (and, from current
+  // hosts, the tab it was for): the open policy decides what shows.
+  if (event.reveal) showUpdatedTab(sessionId, event.tab || state?.active || '', state);
+  else if (state) {
+    // A file-change update lands in place: nothing is activated or revealed;
+    // a tab that is not the active one wears the dot until it is viewed.
+    const shown = keptLocalActive(state);
+    setState(shown);
+    if (event.updated && shown.tabs.some((tab) => tab.id === event.updated)) {
+      setUpdated(sessionId, event.updated, shown.active !== event.updated);
+    }
+  }
+  if (released) emit();
+}
+
+/** Whether an open or update of `tabId` brings the panel up on it (the open
+ *  policy): no, only while the panel is on screen on another tab the user
+ *  picked that still exists. */
+export function visualizeUpdateShows(
+  state: Pick<VisualizeSessionState, 'tabs'>,
+  tabId: string,
+  panelOnScreen: boolean,
+  pick: string | undefined
+): boolean {
+  return !(panelOnScreen && pick && pick !== tabId && state.tabs.some((tab) => tab.id === pick));
+}
+
+function sendActivate(sessionId: string, tabId: string): void {
+  void globalThis.window?.mixdogDesktop?.visualizeCommand?.({ sessionId, tabId, action: 'activate' })?.catch(() => {});
+}
+
+function setUpdated(sessionId: string, tabId: string, updated: boolean): void {
+  const current = updatedTabs.get(sessionId) ?? NO_UPDATES;
+  if (current.has(tabId) === updated) return;
+  const next = new Set(current);
+  if (updated) next.add(tabId);
+  else next.delete(tabId);
+  updatedTabs = new Map(updatedTabs);
+  if (next.size) updatedTabs.set(sessionId, next);
+  else updatedTabs.delete(sessionId);
+  emit();
+}
+
+/** The phone layout with the session's panel off screen: the agent neither
+ *  shows it nor moves its selection. */
+function phonePanelClosed(sessionId: string): boolean {
+  return !onScreen.has(sessionId) && isMobileRemoteSurface();
+}
+
+/** `incoming` keeping this renderer's selected tab while the phone's panel
+ *  is closed (and that tab still exists); otherwise `incoming` as main has it. */
+function keptLocalActive(incoming: VisualizeSessionState): VisualizeSessionState {
+  const local = states.get(incoming.sessionId)?.active;
+  if (!local || local === incoming.active || !phonePanelClosed(incoming.sessionId)) return incoming;
+  return incoming.tabs.some((tab) => tab.id === local) ? { ...incoming, active: local } : incoming;
+}
+
+/** Consumes the session's pending user open when `tab` is exactly its
+ *  target and it has not expired. */
+function takeUserOpen(sessionId: string, tab: VisualizeTabView | undefined): boolean {
+  const pending = userOpens.get(sessionId);
+  if (!pending) return false;
+  if (pending.expires <= Date.now()) {
+    userOpens.delete(sessionId);
+    return false;
+  }
+  if (!tab || !pending.matches(tab)) return false;
+  userOpens.delete(sessionId);
+  return true;
+}
+
+/** Consumes the session's pending preview open of exactly `tab` (expired
+ *  ones are dropped). */
+function takePreviewOpen(sessionId: string, tab: VisualizeTabView | undefined): boolean {
+  const now = Date.now();
+  const pending = (previewOpens.get(sessionId) ?? []).filter((open) => open.expires > now);
+  const at = tab ? pending.findIndex((open) => open.matches(tab)) : -1;
+  if (at >= 0) pending.splice(at, 1);
+  if (pending.length) previewOpens.set(sessionId, pending);
+  else previewOpens.delete(sessionId);
+  return at >= 0;
+}
+
+/** The user keeps the session's panel closed right now. */
+function panelClosedByUser(sessionId: string): boolean {
+  return visualizeRevealSuppressed(sessionId) && !onScreen.has(sessionId);
+}
+
+/** Apply the open policy to an open or update of `tabId` (`incoming`: the
+ *  state that came with it). Shown: the tab becomes active (main told when it
+ *  did not pick it itself, as for a file-change update) and the panel is
+ *  revealed, lifting a user close. Kept: the user's tab stays (main told
+ *  again when the open moved it) and `tabId` is marked updated. */
+function showUpdatedTab(sessionId: string, tabId: string, incoming?: VisualizeSessionState): void {
+  const base = incoming ?? states.get(sessionId);
+  if (!base) return;
+  const opened = base.tabs.find((tab) => tab.id === tabId);
+  const user = takeUserOpen(sessionId, opened);
+  // A turn preview's open: whether the user keeps the panel closed is asked
+  // now, at its reveal, so a close made while it was pending holds.
+  const preview = !user && takePreviewOpen(sessionId, opened);
+  if (!user && (phonePanelClosed(sessionId) || (preview && panelClosedByUser(sessionId)))) {
+    // Phone: an agent open or update never brings the panel up or moves its
+    // selection; the tab is only made or updated (the turn card's tile opens
+    // it), and one not selected wears the dot. A turn's previews do the same
+    // while the user keeps the panel closed.
+    const kept = keptLocalActive(base);
+    setState(kept);
+    if (tabId && kept.tabs.some((tab) => tab.id === tabId)) setUpdated(sessionId, tabId, kept.active !== tabId);
+    return;
+  }
+  const pick = userPicks.get(sessionId);
+  if (pick && !visualizeUpdateShows(base, tabId, onScreen.has(sessionId), pick)) {
+    setState(base.active === pick ? base : { ...base, active: pick });
+    if (base.active !== pick) sendActivate(sessionId, pick);
+    if (tabId) setUpdated(sessionId, tabId, true);
+    return;
+  }
+  userPicks.delete(sessionId);
+  const shown = base.tabs.some((tab) => tab.id === tabId) ? tabId : base.active;
+  setState(shown && base.active !== shown ? { ...base, active: shown } : base);
+  if (shown) {
+    if (base.active !== shown) sendActivate(sessionId, shown);
+    setUpdated(sessionId, shown, false);
+  }
+  allowVisualizeReveal(sessionId);
+  requestReveal(sessionId);
+}
+
+/** Tabs opened or updated behind the user's pick (the strip marks them). */
+export function visualizeUpdatedTabs(sessionId: string): ReadonlySet<string> {
+  return updatedTabs.get(sessionId) ?? NO_UPDATES;
+}
+
+export function useVisualizeUpdatedTabs(sessionId: string): ReadonlySet<string> {
+  return useSyncExternalStore(
+    subscribe,
+    () => visualizeUpdatedTabs(sessionId),
+    () => NO_UPDATES
+  );
+}
+
+/** The session's panel came on screen (true) or left it: while it is off,
+ *  the user's tab pick no longer holds back opens and updates. */
+export function setVisualizePanelOnScreen(sessionId: string, shown: boolean): void {
+  if (!sessionId) return;
+  const was = onScreen.has(sessionId);
+  if (shown) onScreen.add(sessionId);
+  else {
+    onScreen.delete(sessionId);
+    userPicks.delete(sessionId);
+  }
+  // Chat card tiles outline the shown tab only while the panel is on screen.
+  if (was !== shown) emit();
+}
+
+/** Whether the session's visualize panel is on screen right now. */
+export function visualizePanelOnScreen(sessionId: string): boolean {
+  return onScreen.has(sessionId);
+}
+
+export function useVisualizePanelOnScreen(sessionId: string): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => visualizePanelOnScreen(sessionId),
+    () => false
+  );
+}
+
+/** The newest version number of each tab (0 without versions). */
+function tabVersions(state: VisualizeSessionState | undefined): Map<string, number> {
+  return new Map((state?.tabs ?? []).map((tab) => [tab.id, tab.versions?.at(-1)?.n ?? 0]));
+}
+
+/** Panels a reload or resume should bring back: open before, not closed by
+ *  the user since, and still with tabs. */
+function rememberedOpen(state: VisualizeSessionState): boolean {
+  const memory = panelMemory();
+  return state.tabs.length > 0 && memory.open.has(state.sessionId) && !memory.closed.has(state.sessionId);
 }
 
 /** Apply main's tab snapshot after a renderer (re)load (exported for tests):
@@ -157,10 +436,7 @@ export function hydrateVisualizeStates(snapshot: readonly VisualizeSessionState[
   for (const state of snapshot ?? []) {
     if (!state?.sessionId || states.has(state.sessionId)) continue;
     changed = putState(next, state) || changed;
-    const memory = panelMemory();
-    if (state.tabs.length && memory.open.has(state.sessionId) && !memory.closed.has(state.sessionId)) {
-      reopen.push(state.sessionId);
-    }
+    if (rememberedOpen(state)) reopen.push(state.sessionId);
   }
   if (changed) {
     states = next;
@@ -169,20 +445,40 @@ export function hydrateVisualizeStates(snapshot: readonly VisualizeSessionState[
   if (reopen.length) setTimeout(() => reopen.forEach(requestReveal), 0);
 }
 
-/** A paired remote client back from a gap (exported for tests): pushes may
- *  have been missed while the link was down, so the host's snapshot replaces
- *  every session's tabs. Nothing is revealed. */
+/** A paired remote client back from a gap — a phone resumed from the
+ *  background, a dropped link (exported for tests): pushes may have been
+ *  missed meanwhile, so the host's snapshot replaces every session's tabs.
+ *  Then, a turn later (the shell renders the visualize view first): a tab
+ *  opened or updated during the gap goes through the open policy as its
+ *  missed push would have, and a panel that was open before the gap (not
+ *  closed by the user) is brought back. */
 export function resyncVisualizeStates(snapshot: readonly VisualizeSessionState[] | null | undefined): void {
+  const before = states;
   const next = new Map<string, VisualizeSessionState>();
   for (const state of snapshot ?? []) {
     if (state?.sessionId && (state.tabs.length || state.history?.length)) {
-      next.set(state.sessionId, shareSession(states.get(state.sessionId), state));
+      next.set(state.sessionId, shareSession(states.get(state.sessionId), keptLocalActive(state)));
     }
   }
   const same = next.size === states.size && [...next].every(([id, state]) => states.get(id) === state);
-  if (same) return;
-  states = next;
-  emit();
+  if (!same) {
+    states = next;
+    emit();
+  }
+  const missed: Array<[string, string]> = [];
+  const reopen: string[] = [];
+  for (const [sessionId, state] of next) {
+    const known = tabVersions(before.get(sessionId));
+    const changed = state.tabs.filter((tab) => known.get(tab.id) !== (tab.versions?.at(-1)?.n ?? 0));
+    const tab = changed.find((candidate) => candidate.id === state.active) ?? changed.at(-1);
+    if (tab) missed.push([sessionId, tab.id]);
+    else if (rememberedOpen(state)) reopen.push(sessionId);
+  }
+  if (!missed.length && !reopen.length) return;
+  setTimeout(() => {
+    for (const [sessionId, tabId] of missed) showUpdatedTab(sessionId, tabId);
+    reopen.forEach(requestReveal);
+  }, 0);
 }
 
 /** Subscribe to main once; a reloaded renderer first reads the current tabs. */
@@ -229,6 +525,22 @@ export function useVisualizeState(sessionId: string): VisualizeSessionState {
   );
 }
 
+/** While a running agent turn holds the session's visualize state back: when
+ *  that turn started (ms); else null. */
+export function visualizeHeldSince(sessionId: string): number | null {
+  return heldStates.has(sessionId) ? (heldSince.get(sessionId) ?? 0) : null;
+}
+
+/** Chat cards of the running turn's opens wait for its end (see
+ *  `visualizeHeldSince`): none is drawn, or changes, while the turn runs. */
+export function useVisualizeHeldSince(sessionId: string): number | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => visualizeHeldSince(sessionId),
+    () => null
+  );
+}
+
 /** True once any session has visualize tabs: the dock toggle appears then. */
 export function useVisualizeAvailable(): boolean {
   return useSyncExternalStore(
@@ -250,8 +562,8 @@ export function onVisualizeRevealRequested(listener: RevealListener): () => void
   };
 }
 
-/** The user closed the panel: later agent opens stay quiet for this session,
- *  and a renderer reload does not bring it back. */
+/** The user closed the panel: a renderer reload or a remote resume does not
+ *  bring it back (the next agent open or update still does). */
 export function suppressVisualizeReveal(sessionId: string): void {
   if (!sessionId) return;
   const memory = panelMemory();
@@ -285,43 +597,30 @@ export function markVisualizePanelHidden(sessionId: string): void {
 }
 
 /** Below this body width, 2-3 panes stack instead of sharing the width. */
-export const VISUALIZE_SIDE_BY_SIDE_MIN_WIDTH = 2 * 360;
+const VISUALIZE_SIDE_BY_SIDE_MIN_WIDTH = 2 * 360;
 
 export function visualizePanesStacked(bodyWidth: number, paneCount: number): boolean {
   return paneCount > 1 && bodyWidth > 0 && bodyWidth < VISUALIZE_SIDE_BY_SIDE_MIN_WIDTH;
 }
 
-/** Below this panel width the header keeps only Comment and Tweaks as
- *  buttons (beside ⋯, expand and close); the other toolbar toggles become
- *  ⋯ items so the tab strip keeps room for the active tab's label. */
-export const VISUALIZE_HEADER_FOLD_WIDTH = 520;
-const VISUALIZE_HEADER_PINNED: ReadonlySet<string> = new Set(['comment', 'tweaks']);
-
 interface VisualizeHeaderAction {
   id: string;
   inline?: boolean;
-  checked?: boolean;
   checkbox?: boolean;
   separatorBefore?: boolean;
 }
 
-/** The panel's header actions at `panelWidth` (0 = unmeasured: as wide).
- *  Folded toggles lead the ⋯ menu as checkbox items, ahead of the menu's
- *  own items (exports) behind a separator; attention and badges ride along. */
-export function visualizeHeaderActions<T extends VisualizeHeaderAction>(
-  actions: readonly T[],
-  panelWidth: number
-): T[] {
-  if (!(panelWidth > 0 && panelWidth < VISUALIZE_HEADER_FOLD_WIDTH)) return [...actions];
-  const folds = (action: T) => Boolean(action.inline) && !VISUALIZE_HEADER_PINNED.has(action.id);
-  const folded = actions
-    .filter(folds)
-    .map((action) => ({ ...action, inline: false, ...(action.checked === undefined ? {} : { checkbox: true }) }));
-  const menu = actions.filter((action) => !action.inline);
+/** The panel's header actions. Only Comment and Versions are header buttons
+ *  (beside ⋯, expand and close). Every toggle (All visuals, Source, Elements,
+ *  Tweaks, Zoom bar) is a checkbox item that leads the ⋯ menu, ahead of the
+ *  menu's own items (exports) behind a separator. */
+export function visualizeHeaderActions<T extends VisualizeHeaderAction>(actions: readonly T[]): T[] {
+  const toggles = actions.filter((action) => !action.inline && action.checkbox);
+  const menu = actions.filter((action) => !action.inline && !action.checkbox);
   return [
-    ...actions.filter((action) => action.inline && !folds(action)),
-    ...folded,
-    ...menu.map((action, index) => (index === 0 && folded.length ? { ...action, separatorBefore: true } : action)),
+    ...actions.filter((action) => action.inline),
+    ...toggles,
+    ...menu.map((action, index) => (index === 0 && toggles.length ? { ...action, separatorBefore: true } : action)),
   ];
 }
 
@@ -330,16 +629,29 @@ export function visualizeTabTooltip(tab: Pick<VisualizeSessionState['tabs'][numb
   return [tab.label, ...tab.panes.map((pane) => pane.target)].join('\n');
 }
 
+/** The user picked `tabId` (the tab strip, a chat card): it holds the panel
+ *  against opens and updates of other tabs while the panel stays on screen. */
 export function activateVisualizeTab(sessionId: string, tabId: string): void {
+  userPicks.set(sessionId, tabId);
+  setUpdated(sessionId, tabId, false);
   const state = states.get(sessionId);
   if (state && state.active !== tabId) setState({ ...state, active: tabId });
-  void window.mixdogDesktop?.visualizeCommand?.({ sessionId, tabId, action: 'activate' })?.catch(() => {});
+  sendActivate(sessionId, tabId);
 }
 
 /** A chat card click on a live tab: the user's own request, so it lifts the
  *  user-closed rule, selects the tab and reveals the session's panel. */
 export function revealVisualizeTab(sessionId: string, tabId: string): void {
   allowVisualizeReveal(sessionId);
+  // A tab a running turn made: the user asked to see it now, so the panel
+  // takes what the turn has made so far.
+  const held = heldStates.get(sessionId);
+  if (held) {
+    heldStates = new Map(heldStates);
+    heldStates.delete(sessionId);
+    heldSince.delete(sessionId);
+    setState(held);
+  }
   activateVisualizeTab(sessionId, tabId);
   requestReveal(sessionId);
 }
@@ -347,17 +659,129 @@ export function revealVisualizeTab(sessionId: string, tabId: string): void {
 /** A chat card click on a closed tab: open the same file targets again (no
  *  agent turn); main's open then reveals the panel, which the click allowed. */
 export function reopenVisualizeTargets(sessionId: string, tabId: string, targets: string[], label = ''): Promise<void> {
-  allowVisualizeReveal(sessionId);
-  return (
-    window.mixdogDesktop
-      ?.visualizeCommand?.({
+  const matches = (tab: VisualizeTabView) => {
+    const live = livePanes(tab);
+    return live.length === targets.length && live.every((pane, index) => sameTarget(pane.target, targets[index]));
+  };
+  return userOpen(sessionId, matches, () =>
+    window.mixdogDesktop?.visualizeCommand?.({
+      sessionId,
+      tabId,
+      action: 'reopen',
+      targets,
+      ...(label ? { label } : {}),
+    })
+  );
+}
+
+/** A turn's end opening its confident previews (transcript-visualize-card.tsx),
+ *  each file in its own tab, in order, through main's reopen: validated like
+ *  an agent open, with its versions, reload watch and "updated" marks, and
+ *  brought up by the open policy as an agent open is, so the last one shows.
+ *  A panel the user keeps closed stays closed: each open is marked as a
+ *  preview's, and whether the panel is closed is asked when that open's
+ *  reveal arrives (showUpdatedTab), so a close made at any point while the
+ *  opens are pending holds; those opens only make or update their tabs
+ *  (their tiles still open them). A file that fails to open is reported and
+ *  the rest still open. */
+export async function openTurnPreviews(sessionId: string, targets: readonly string[]): Promise<void> {
+  for (const target of targets) {
+    const request: UserOpen = {
+      matches: (tab) => {
+        const live = livePanes(tab);
+        return live.length === 1 && sameTarget(live[0].target, target);
+      },
+      expires: Date.now() + USER_OPEN_TTL_MS,
+    };
+    previewOpens.set(sessionId, [...(previewOpens.get(sessionId) ?? []), request]);
+    try {
+      await window.mixdogDesktop?.visualizeCommand?.({
         sessionId,
-        tabId,
+        tabId: 'preview',
         action: 'reopen',
-        targets,
-        ...(label ? { label } : {}),
-      })
-      ?.then(() => undefined) ?? Promise.resolve()
+        targets: [target],
+      });
+    } catch (error) {
+      const left = (previewOpens.get(sessionId) ?? []).filter((open) => open !== request);
+      if (left.length) previewOpens.set(sessionId, left);
+      else previewOpens.delete(sessionId);
+      console.warn(`turn preview did not open (${target}):`, error instanceof Error ? error.message : error);
+    }
+  }
+}
+
+/** The host's reuse identity of inline content (main `inlineKey`): its
+ *  title, else its kind and exact source (main hashes the source). */
+function sameInlineIdentity(a: VisualizeInlineContent, b: VisualizeInlineContent): boolean {
+  if (a.title || b.title) return a.title === b.title;
+  return a.kind === b.kind && a.source === b.source;
+}
+
+/** A tab's live panes (all of them while it shows only a kept version). */
+function livePanes(tab: VisualizeTabView): VisualizeTabView['panes'] {
+  const current = tab.panes.filter((pane) => pane.version === undefined);
+  return current.length ? current : tab.panes;
+}
+
+/** A user's request to open the tab `matches` names (`send` sends it): lifts
+ *  the user-closed rule. A live tab it names is shown at once and nothing is
+ *  sent; else the open that answers it (that exact tab, within
+ *  USER_OPEN_TTL_MS) shows the panel. A failed request shows nothing. */
+function userOpen(
+  sessionId: string,
+  matches: (tab: VisualizeTabView) => boolean,
+  send: () => Promise<unknown> | undefined
+): Promise<void> {
+  const live = states.get(sessionId)?.tabs.find(matches);
+  if (live) {
+    revealVisualizeTab(sessionId, live.id);
+    return Promise.resolve();
+  }
+  return awaitUserOpen(sessionId, matches, send);
+}
+
+/** Sends a user's open request and lets the open of exactly the tab
+ *  `matches` names (within USER_OPEN_TTL_MS) show the panel. */
+function awaitUserOpen(
+  sessionId: string,
+  matches: (tab: VisualizeTabView) => boolean,
+  send: () => Promise<unknown> | undefined
+): Promise<void> {
+  allowVisualizeReveal(sessionId);
+  const sent = send();
+  if (!sent) return Promise.resolve();
+  const pending: UserOpen = { matches, expires: Date.now() + USER_OPEN_TTL_MS };
+  userOpens.set(sessionId, pending);
+  return sent.then(
+    () => undefined,
+    (error) => {
+      if (userOpens.get(sessionId) === pending) userOpens.delete(sessionId);
+      throw error;
+    }
+  );
+}
+
+/** The same for a closed inline tab: open its stored content again. */
+export function reopenVisualizeContent(
+  sessionId: string,
+  tabId: string,
+  content: VisualizeInlineContent,
+  label = ''
+): Promise<void> {
+  const matches = (tab: VisualizeTabView) => {
+    const live = livePanes(tab);
+    const shown = live[0]?.inline;
+    return live.length === 1 && !!shown && sameInlineIdentity(shown, content);
+  };
+  return userOpen(sessionId, matches, () =>
+    window.mixdogDesktop?.visualizeCommand?.({
+      sessionId,
+      tabId,
+      action: 'reopen',
+      targets: [],
+      content,
+      ...(label ? { label } : {}),
+    })
   );
 }
 
@@ -365,12 +789,17 @@ export function reopenVisualizeTargets(sessionId: string, tabId: string, targets
  *  when closed (no agent turn). The user's own request, so it lifts the
  *  user-closed rule like a chat card press. */
 export function openVisualizeHistory(sessionId: string, entry: string): Promise<void> {
-  allowVisualizeReveal(sessionId);
-  return (
-    window.mixdogDesktop
-      ?.visualizeCommand?.({ sessionId, tabId: '', action: 'history', entry })
-      .then(() => undefined) ?? Promise.resolve()
-  );
+  const send = () => window.mixdogDesktop?.visualizeCommand?.({ sessionId, tabId: '', action: 'history', entry });
+  const item = states.get(sessionId)?.history?.find((candidate) => candidate.id === entry);
+  if (item?.open) {
+    // Open already: main only selects it and reveals nothing, so the panel
+    // is shown now (its selection follows main's state) and nothing waits.
+    allowVisualizeReveal(sessionId);
+    requestReveal(sessionId);
+    return send()?.then(() => undefined) ?? Promise.resolve();
+  }
+  // Closed: main opens it as a new tab under the entry's label.
+  return awaitUserOpen(sessionId, (tab) => tab.label === item?.label, send);
 }
 
 /** Export displayed pane `pane` of a tab (see `DesktopVisualizeTabCommand`);
@@ -395,7 +824,7 @@ export function visualizeExportPane(tab: Pick<VisualizeSessionState['tabs'][numb
 /** When a list entry was opened: the time today, else the date and time. */
 export function visualizeHistoryTime(at: number, now: number = Date.now()): string {
   const date = new Date(at);
-  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', ...timeFormatOptions() });
   return date.toDateString() === new Date(now).toDateString()
     ? time
     : `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
@@ -442,6 +871,17 @@ export function showVisualizeVersion(sessionId: string, tabId: string, version: 
     ?.catch(() => {});
 }
 
+/** The card picture kept of the tab's version `version` (taken when its turn
+ *  ended); undefined when it has none or the host cannot say. */
+export async function readVisualizeVersionThumbnail(
+  sessionId: string,
+  tabId: string,
+  version: number
+): Promise<string | undefined> {
+  const result = await window.mixdogDesktop?.visualizeCommand?.({ sessionId, tabId, action: 'thumbnail', version });
+  return visualizeThumbnail(result?.thumbnail) || undefined;
+}
+
 /** Toggle Compare: on from live compares the previous version with live. */
 export function toggleVisualizeCompare(sessionId: string, tab: VisualizeTabState): void {
   if (tab.compare) {
@@ -450,38 +890,6 @@ export function toggleVisualizeCompare(sessionId: string, tab: VisualizeTabState
   }
   const version = tab.version ?? visualizeVersionStep(tab, -1);
   if (typeof version === 'number') showVisualizeVersion(sessionId, tab.id, version, true);
-}
-
-/** Allow (or block again) outside network for a tab's HTML pages; the tab
- *  reloads under the new policy. Desktop only. */
-export function setVisualizeNetwork(sessionId: string, tabId: string, allow: boolean): void {
-  void window.mixdogDesktop?.visualizeCommand?.({ sessionId, tabId, action: 'network', allow })?.catch(() => {});
-}
-
-/** Tabs whose pages the user chose to run on this paired remote client,
- *  remembered for this device session (the page's lifetime). */
-const scriptRuns = new Set<string>();
-const scriptRunKey = (sessionId: string, tabId: string) => `${sessionId}\0${tabId}`;
-
-/** The user tapped "Run" on a page that runs scripts: only a trusted
- *  (user-made) event counts. Returns whether it was accepted. */
-export function allowVisualizeScripts(sessionId: string, tabId: string, event: { isTrusted?: boolean }): boolean {
-  if (event.isTrusted !== true) return false;
-  scriptRuns.add(scriptRunKey(sessionId, tabId));
-  emit();
-  return true;
-}
-
-export function visualizeScriptsAllowed(sessionId: string, tabId: string): boolean {
-  return scriptRuns.has(scriptRunKey(sessionId, tabId));
-}
-
-export function useVisualizeScriptsAllowed(sessionId: string, tabId: string): boolean {
-  return useSyncExternalStore(
-    subscribe,
-    () => visualizeScriptsAllowed(sessionId, tabId),
-    () => false
-  );
 }
 
 /** An inline pane (displayed index `pane`) finished rendering; `error` is why
@@ -493,7 +901,8 @@ export function reportVisualizeRender(
   renderId: string | undefined,
   error?: string
 ): void {
-  // Only panes of the desktop window carry an id; remote clients render locally.
+  // Panes carry the id issued for this render (the desktop window's, or a
+  // paired client's own); older hosts issue none to remote clients.
   if (!renderId) return;
   void window.mixdogDesktop
     ?.visualizeCommand?.({
@@ -504,6 +913,20 @@ export function reportVisualizeRender(
       renderId,
       ...(error ? { error: error.slice(0, 2000) } : {}),
     })
+    ?.catch(() => {});
+}
+
+/** A remote page frame refused an outside request (`url`, asked for by
+ *  `resource`): the host lists it with the tab's page problems. */
+export function reportVisualizeBlockedNetwork(
+  sessionId: string,
+  tabId: string,
+  pane: number,
+  url: string,
+  resource: string
+): void {
+  void window.mixdogDesktop
+    ?.visualizeCommand?.({ sessionId, tabId, action: 'blocked', pane, url, resource })
     ?.catch(() => {});
 }
 

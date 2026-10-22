@@ -1,9 +1,10 @@
 import { X } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 
-import type { DesktopCapability, DesktopModelOption, DesktopModelSelection } from '../shared/contract';
+import type { DesktopCapability, DesktopModelOption } from '../shared/contract';
+import { AgentInstructionEditors } from './agent-instruction-editors';
 import { t } from './i18n';
-import { ModelRouteEditor } from './ModelRouteEditor';
+import { RouteChainEditor, routeChainComplete } from './RouteChainEditor';
 import { record } from './record-utils';
 import { EditorDialogFooter, SidebarDialogLayer } from './sidebar-dialog';
 import { CompactSwitch } from './settings/capability-controls';
@@ -17,8 +18,9 @@ export type RouteEditorTarget = {
   id: string;
   label: string;
   route: RecordValue;
-  capability: Extract<DesktopCapability, 'setWebSearchRoute' | 'setAgentRoute'>;
-  modelKind: 'webSearch' | 'agent';
+  /** 'setModelRoute' is the Main route's desktop API setter, not a capability. */
+  capability: Extract<DesktopCapability, 'setWebSearchRoute' | 'setAgentRoute'> | 'setModelRoute';
+  modelKind: 'webSearch' | 'agent' | 'main';
   description: string;
   disabled?: boolean;
   readOnlyDefinition: boolean;
@@ -31,10 +33,23 @@ const NEW_WORKFLOW_BODY = [
   'what each phase must deliver, and how results are reviewed and verified.',
 ].join('\n');
 
-const NEW_AGENT_BODY = [
-  'Describe this agent role: what it owns, how it works, and what it must',
-  'deliver back to the Lead.',
-].join('\n');
+/** The AGENT.md an empty "일하는 방식" saves as: the name as its heading, what
+ *  it does, then conversational conduct (the agent talks with the user; it is
+ *  not a worker filing reports). The name is required, so the body is never empty. */
+export function agentBodyFromBrief(name: string, description: string): string {
+  const role = description.trim();
+  return [
+    `# ${name.trim()}`,
+    role,
+    [
+      `- ${role ? 'Help the user with this role' : 'Help the user'} in a natural, friendly conversation, in the language they write in.`,
+      '- Ask a short question when a request is unclear, and say plainly when something is outside what you do.',
+      '- Keep replies as short or as detailed as the moment needs.',
+    ].join('\n'),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
 
 // Reuse the canonical compact route editor so model, effort, and fast mode
 // match the existing options surface instead of drifting in a local copy.
@@ -44,23 +59,29 @@ function RouteControls({
   models,
   disabled,
   composerParity = false,
+  fallbacks,
+  providerNames,
   onChange,
 }: {
   composerParity?: boolean;
+  fallbacks?: boolean;
   label: string;
   route: RecordValue;
   models: DesktopModelOption[];
+  providerNames?: Record<string, string>;
   disabled: boolean;
-  onChange(selection: DesktopModelSelection): void;
+  onChange(selection: RecordValue): void;
 }) {
   return (
     <div className="workflows-route-controls">
-      <ModelRouteEditor
-        ariaLabel={label}
+      <RouteChainEditor
+        label={label}
         models={models}
+        providerNames={providerNames}
         disabled={disabled}
         composerParity={composerParity}
-        value={route as unknown as DesktopModelSelection}
+        fallbacks={fallbacks}
+        route={route}
         onChange={onChange}
       />
     </div>
@@ -180,6 +201,7 @@ export function AgentEditorDialog({
   agent,
   deletable,
   models,
+  providerNames,
   busy,
   error = '',
   onCancel,
@@ -191,6 +213,7 @@ export function AgentEditorDialog({
   agent: RecordValue | null;
   deletable: boolean;
   models: DesktopModelOption[];
+  providerNames?: Record<string, string>;
   busy: boolean;
   error?: string;
   onCancel(): void;
@@ -203,9 +226,11 @@ export function AgentEditorDialog({
   const [route, setRoute] = useState<RecordValue>(() => record(agent?.route));
   const [enabled, setEnabled] = useState(() => record(agent).disabled !== true);
   const [formError, setFormError] = useState('');
+  const [body, setBody] = useState(() => String(agent?.body || ''));
+  const [persona, setPersona] = useState(() => String(agent?.persona || ''));
   // An agent is either off or pinned to a model: switching it on waits for
   // one, and an on agent with an empty model cannot be saved.
-  const needsModel = enabled && !(route.provider && route.model);
+  const needsModel = enabled && !routeChainComplete(route);
   return (
     <SidebarDialogLayer onClose={onCancel}>
       <section
@@ -236,19 +261,18 @@ export function AgentEditorDialog({
             event.preventDefault();
             const data = new FormData(event.currentTarget);
             const text = (name: string) => String(data.get(name) || '').trim();
-            const body = String(data.get('agent-body') || '').trim();
-            if (!body) {
-              setFormError('AGENT.md must not be empty.');
-              return;
-            }
             setFormError('');
             const picked = route.provider && route.model ? route : null;
+            let routeField: { route?: object } = {};
+            if (!enabled) routeField = { route: { ...(picked || {}), disabled: true } };
+            else if (picked) routeField = { route: picked };
             onSave({
               ...(editing ? { id: String(agent?.id || '') } : {}),
               name: text('agent-name'),
               description: text('agent-description'),
-              ...(enabled ? (picked ? { route: picked } : {}) : { route: { ...(picked || {}), disabled: true } }),
-              body,
+              ...routeField,
+              persona: persona.trim(),
+              body: body.trim() || agentBodyFromBrief(text('agent-name'), text('agent-description')),
             });
           }}
         >
@@ -274,38 +298,31 @@ export function AgentEditorDialog({
               defaultValue={String(agent?.description || '')}
               placeholder={t('When Mixdog should use this')}
               disabled={busy}
-              maxLength={160}
             />
           </label>
           <div className="schedules-field">
-            <span>{t('Model')}</span>
-            <small>{t('Model used when this agent runs.')}</small>
             <div className="workflows-dialog-route">
               <RouteControls
                 label={t('Agent model')}
                 route={route}
                 models={models}
+                providerNames={providerNames}
                 disabled={busy}
                 composerParity
                 onChange={(selection) => setRoute(selection as unknown as RecordValue)}
               />
             </div>
-            {needsModel && (
-              <small className="workflows-route-required">{t('Pick a model to turn this agent on.')}</small>
-            )}
           </div>
-          <label className="schedules-field workflows-md-field">
-            <span>AGENT.md</span>
-            <small>{t('Instructions that define how this agent works.')}</small>
-            <textarea
-              name="agent-body"
-              defaultValue={String(agent?.body || (editing ? '' : NEW_AGENT_BODY))}
-              required
-              spellCheck={false}
+          <div className="schedules-field workflows-md-field">
+            <span>{t('Personality and how it works')}</span>
+            <AgentInstructionEditors
+              persona={persona}
+              body={body}
               disabled={busy}
-              aria-label="AGENT.md body"
+              onPersona={setPersona}
+              onBody={setBody}
             />
-          </label>
+          </div>
           <EditorDialogFooter
             error={formError || error}
             busy={busy}
@@ -323,6 +340,7 @@ export function AgentEditorDialog({
 export function RouteEditorDialog({
   target,
   models,
+  providerNames,
   busy,
   error = '',
   onCancel,
@@ -331,6 +349,7 @@ export function RouteEditorDialog({
 }: {
   target: RouteEditorTarget;
   models: DesktopModelOption[];
+  providerNames?: Record<string, string>;
   busy: boolean;
   error?: string;
   onCancel(): void;
@@ -340,10 +359,10 @@ export function RouteEditorDialog({
   const [route, setRoute] = useState<RecordValue>(() => target.route);
   const [enabled, setEnabled] = useState(() => target.disabled !== true);
   const usageEditable = target.modelKind === 'agent';
-  const routeSet = Boolean(route.provider && route.model);
+  const routeSet = routeChainComplete(route);
   // Same rule as the agent editor: on means a model, so an empty one blocks
   // both the switch-on write and Save.
-  const needsModel = usageEditable && enabled && !routeSet;
+  const needsModel = (!usageEditable || enabled) && !routeSet;
   return (
     <SidebarDialogLayer onClose={onCancel}>
       <section
@@ -382,26 +401,23 @@ export function RouteEditorDialog({
             (user: 팝업 레이아웃 정리). */}
           {target.readOnlyDefinition && (
             <div className="schedules-field">
-              <span>{t('When to use')}</span>
-              <p className="workflows-route-usage">{target.description}</p>
+              {/* Lead runs every conversation, so it has no "when"; it says what it does. */}
+              <span>{target.modelKind === 'main' ? t('What it does') : t('When to use')}</span>
+              <small>{target.description}</small>
             </div>
           )}
           <div className="schedules-field">
-            <span>{t('Model')}</span>
-            <small>{t('Model used when this built-in agent runs.')}</small>
             <div className="workflows-dialog-route">
               <RouteControls
                 label={t('{{name}} model', { name: target.label })}
                 route={route}
                 models={models}
+                providerNames={providerNames}
                 disabled={busy}
-                composerParity={target.modelKind === 'agent'}
+                composerParity={target.modelKind !== 'webSearch'}
                 onChange={(selection) => setRoute(selection as unknown as RecordValue)}
               />
             </div>
-            {needsModel && (
-              <small className="workflows-route-required">{t('Pick a model to turn this agent on.')}</small>
-            )}
           </div>
           <EditorDialogFooter error={error} busy={busy} onCancel={onCancel} saveDisabled={needsModel} />
         </form>

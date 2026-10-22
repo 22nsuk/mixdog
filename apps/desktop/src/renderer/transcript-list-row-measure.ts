@@ -37,33 +37,60 @@ export function useMountedRowMeasurement({
   restoreReadingAnchor: ReadingAnchorState['restoreReadingAnchor'];
 }) {
   const landingMeasure = useRef(false);
+  const previousRows = useRef(rows);
+  // Rows whose live band left in this row set: the band's row is gone from
+  // the virtual total in this commit, while the reply above it took the
+  // band's slot (its completion footer) in the same commit. Left to its
+  // ResizeObserver, that growth landed a frame after the shrink, and the
+  // followed tail painted one frame 40px low at every turn end.
+  const bandHandoff = useRef(new Set<string>());
   const measureMountedRows = useCallback(
     (landing: boolean) => {
       const root = spacer.current;
       const apply = landing ? baseResizeItem.current : virtualizerRef.current.resizeItem;
       if (!root || !apply) return false;
       const instance = virtualizerRef.current;
+      const handoff = bandHandoff.current;
       const mounted = [...root.children].filter(
         (row): row is HTMLElement =>
           row instanceof HTMLElement &&
           row.dataset.timelineKey !== undefined &&
           (landing ||
+            handoff.has(row.dataset.timelineKey) ||
             (!instance.itemSizeCache.has(row.dataset.timelineKey) &&
               !pendingResizes.current.has(row.dataset.timelineKey)))
       );
+      handoff.clear();
       if (mounted.length === 0) return false;
       // One batched read: the first lays out what this commit needs anyway,
       // every later one is free. New rows and rows whose content the page
       // changed (a group that gained its head, a reply that took its
       // completion) both land here; the observer's later delivery of the same
       // box is then a no-op, so each size still lands exactly once.
-      const sizes = mounted.map((row) => rememberRowHeight(row, Math.round(row.getBoundingClientRect().height)));
+      // All rects are read before any row's held height is written: writing
+      // inside the read loop invalidated style, so every next read forced
+      // another style/layout pass (one per mounted row).
+      const sizes = mounted.map((row) => Math.round(row.getBoundingClientRect().height));
+      mounted.forEach((row, position) => {
+        rememberRowHeight(row, sizes[position] ?? 0);
+      });
       let measured = false;
       mounted.forEach((row, position) => {
         const size = sizes[position] ?? 0;
         const key = row.dataset.timelineKey as string;
         const at = indexForPendingKey(key, Number(row.dataset.index));
         if (size <= 0 || at < 0 || instance.itemSizeCache.get(key) === size) return;
+        // A row whose height its estimate already had (the learned shape is
+        // often exact) changes no geometry, and virtual-core's resize records
+        // no size for a zero delta: the row stayed unmeasured, so every later
+        // commit read every such row again (a forced layout per commit) and
+        // the snapshot a revisit restores left them out. Recorded here, the
+        // row counts as measured with nothing moved.
+        if (!instance.itemSizeCache.has(key) && instance.measurementsCache[at]?.size === size) {
+          pendingResizes.current.delete(key);
+          instance.itemSizeCache.set(key, size);
+          return;
+        }
         pendingResizes.current.delete(key);
         apply(at, size);
         measured = true;
@@ -75,6 +102,15 @@ export function useMountedRowMeasurement({
   // biome-ignore lint/correctness/useExhaustiveDependencies: must run only when the row set changes; every other input is read through refs or stable callbacks
   useLayoutEffect(() => {
     laidOutRows.current = rows;
+    const before = previousRows.current;
+    previousRows.current = rows;
+    const kept = new Set(rows.map((row) => String(row.key)));
+    before.forEach((row, index) => {
+      const lead = before[index - 1];
+      if (row._tag === 'Thinking' && lead && !kept.has(String(row.key)) && kept.has(String(lead.key))) {
+        bandHandoff.current.add(String(lead.key));
+      }
+    });
     const pending = pendingAnchor.current;
     pendingAnchor.current = null;
     if (!pending?.anchor || virtualizerRef.current.options.anchorTo === 'end') return;

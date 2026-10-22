@@ -101,16 +101,6 @@
   .composer-footer {
     height: 48px;
   }
-  .studio-composer {
-    min-height: 108px;
-  }
-  .studio-composer textarea {
-    min-height: 72px;
-    padding: 14px 16px 10px;
-  }
-  .studio-composer-bar {
-    height: 48px;
-  }
   /* The closed trigger follows its label instead of painting the footer's
      entire remaining lane. Opening still supplies the sheet width inline. */
   .route-editor {
@@ -181,7 +171,7 @@ html[data-mixdog-mobile-tabs] .model-trigger {
     transition: none;
   }
   /* Loading glyphs rest like every other spinner under reduced motion
-     (desktop-loading-spinner, sidebar-update-loader); an indeterminate bar
+     (desktop-loading-spinner); an indeterminate bar
      rests as a static partial fill. `:root` outranks the lazily loaded
      browser-pane and extension layers that land after this one. */
   .spin,
@@ -277,6 +267,11 @@ html[data-mixdog-mobile-tabs] .dock-scm-commit-summary,
 html[data-mixdog-mobile-tabs] .schedules-dialog input:not([type="checkbox"]):not([type="radio"]),
 html[data-mixdog-mobile-tabs] .settings-oauth-dialog button,
 html[data-mixdog-mobile-tabs] .stats-range,
+html[data-mixdog-mobile-tabs] .doctor-surface-actions > button,
+html[data-mixdog-mobile-tabs] .doctor-check-fix,
+html[data-mixdog-mobile-tabs] .settings-custom-models > summary,
+html[data-mixdog-mobile-tabs] .settings-model-check,
+html[data-mixdog-mobile-tabs] .agent-instruction-head > button,
 html[data-mixdog-mobile-tabs] .settings-feedback-attach,
 html[data-mixdog-mobile-tabs] .settings-feedback-kinds label,
 html[data-mixdog-mobile-tabs] .settings-changelog-list button[aria-expanded],
@@ -409,10 +404,13 @@ html[data-mixdog-mobile-tabs] .provider-account-row {
   flex-wrap: wrap;
   row-gap: 4px;
 }
+/* The account's actions stay on the name's line at the right edge; usage
+   meters take the full line below. A full-width actions line left the
+   button floating alone between the email and the meters. */
 html[data-mixdog-mobile-tabs] .provider-account-row > .settings-resource-actions {
-  flex: 1 0 100%;
-  margin-left: 0;
-  justify-content: flex-end;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-left: auto;
 }
 /* Provider card header: the title reads whole; when title + count + the
    Auto-switch/+ cluster do not fit one line, the cluster takes the next line
@@ -489,11 +487,15 @@ html[data-mixdog-mobile-tabs] .settings-shortcut-row {
   row-gap: 4px;
   padding-block: 8px;
 }
-html[data-mixdog-mobile-tabs] .settings-shortcut-row kbd {
-  margin-left: auto;
-  overflow-wrap: normal;
-  text-align: right;
-  white-space: normal;
+/* The phone is touch-only: desktop keyboard-shortcut hints never show there.
+   (Menus/palette also skip them in JS; this covers static markup.) Only the
+   app's own key chips: a <kbd> inside rendered message text is content. */
+html[data-mixdog-mobile-tabs] .mx-keybind,
+html[data-mixdog-mobile-tabs] .welcome-keys,
+html[data-mixdog-mobile-tabs] .question-key,
+html[data-mixdog-mobile-tabs] .visualize-region-note-keys,
+html[data-mixdog-mobile-tabs] .dock-file-menu-key {
+  display: none !important;
 }
 
 /* Pairing v2 PC switcher: the chip is a 40dp hit area that keeps its 28dp

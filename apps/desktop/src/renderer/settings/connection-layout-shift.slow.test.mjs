@@ -80,13 +80,16 @@ test('opening Settings → Connection does not shift the page when its data arri
         'process.env.NODE_ENV': '"production"',
         'import.meta.url': '"http://mixdog.test/assets/index.js"',
       },
+      // Settings → Display imports the skin pictures; like Vite, each becomes
+      // an asset URL string.
+      loader: { '.jpg': 'file', '.webm': 'file' },
       plugins: [lazyChunkBoundary],
     }),
     build({
       stdin: {
         resolveDir: rendererDir,
         loader: 'css',
-        contents: '@import "./ui/tokens.css"; @import "./desktop.css";',
+        contents: '@import "./font-faces.css"; @import "./ui/tokens.css"; @import "./desktop.css";',
       },
       outfile: 'connection-layout-shift.css',
       bundle: true,
@@ -129,7 +132,8 @@ test('opening Settings → Connection does not shift the page when its data arri
         const sample = () => {
           for (const block of document.querySelectorAll('.conn-toolbar, .conn-card, .conn-group')) {
             const key = block.className.split(' ')[0] + ':' + (block.querySelector('h4')?.textContent ?? '');
-            (tops[key] ??= []).push(Math.round(block.getBoundingClientRect().top));
+            tops[key] ??= [];
+            tops[key].push(Math.round(block.getBoundingClientRect().top));
           }
           if (sampling) requestAnimationFrame(sample);
         };

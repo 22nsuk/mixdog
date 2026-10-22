@@ -19,6 +19,7 @@ import {
 import { previewFreshContextCompaction, runFreshContextCompact } from './loop/fresh-context.mjs';
 import { estimateMessagesTokensSafe } from './loop/compact-debug.mjs';
 import { textPdfAllowanceDiscount } from './context-utils.mjs';
+import { referenceOversizedAttachments } from './attachment-preflight.mjs';
 import { providerNativePdf } from '../providers/registry.mjs';
 import { messagesArrayChanged } from './loop/tool-helpers.mjs';
 import { normalizeUsage, addUsage } from './loop/usage.mjs';
@@ -31,12 +32,15 @@ import { bumpUsageMetricsEpoch } from './manager/usage-metrics.mjs';
 import { resetReadStateAfterCompaction } from './read-dedup.mjs';
 import { scheduleCompactionArchive, stampCompactionMessageIds } from './compaction-archive-capture.mjs';
 import { writeStderrBestEffort } from '../../../shared/best-effort-stderr.mjs';
+import { isAgentModeSession } from './agent-mode.mjs';
 import { applyPendingWorkspaceReroot } from './manager/prompt-utils.mjs';
+import { backfillFallbackSessionTitle } from './manager/session-fallback-title.mjs';
 import {
   acknowledgePendingGoalReminder,
   markPendingGoalReminder,
   snapshotPendingGoalReminder,
 } from '../runtime-core/goal-reminder.mjs';
+import { rearmLateDeferredTools } from '../runtime-core/tool-catalog.mjs';
 
 async function setStage(opts, stage) {
   try {
@@ -272,6 +276,9 @@ async function compactTranscript(ctx, run) {
     goalReminderText: run.inlineGoalReminder?.content || '',
     activeTurn: true,
     requireReduction: decision.requireReduction,
+    // The provider refused this request as too long: whatever the estimate
+    // said, the latest request's attachments now travel by reference.
+    referenceLatestAttachments: decision.compactTrigger === 'reactive',
   });
   const freshMessages = Array.isArray(run.freshContextResult?.messages) ? run.freshContextResult.messages : null;
   if (!freshMessages) throw new Error('fresh-context compact produced no messages');
@@ -288,6 +295,9 @@ function acknowledgeGoalReminder(sessionRef, run) {
   }
 }
 
+// Detection is narrow on purpose — signal.aborted or a true AbortError — so
+// the recall pipeline's SYNTHETIC "…aborted: memory … ; head preserved"
+// failure (a real compact failure, message text aside) still escalates.
 function isCompactAbort(signal, err) {
   return signal?.aborted === true || err?.name === 'AbortError' || err?.code === 'ABORT_ERR' || err?.code === 'ABORT';
 }
@@ -324,6 +334,32 @@ function reportCompactFailure(ctx, run, compactErr) {
   });
 }
 
+function isGenuineCompactOverflow(compactErr) {
+  return (
+    compactErr?.code === 'AGENT_CONTEXT_OVERFLOW' ||
+    compactErr?.name === 'AgentContextOverflowError' ||
+    isContextOverflowError(compactErr)
+  );
+}
+
+// Agent mode retries a failed compaction quietly: the first ordinary failure
+// in a turn neither ends the send nor reaches the user — the context is still
+// under the model's boundary, and the next send's pre-send pass compacts
+// again. A second failure, an abort or a genuine overflow takes the normal path.
+function retryCompactQuietly(ctx, run, compactErr) {
+  const { state } = ctx;
+  // `opts` is the turn's loop options (one per turn; each send builds a new state).
+  if (!isAgentModeSession(state.sessionRef) || !state.opts || state.opts.quietCompactRetryUsed) return false;
+  if (isCompactAbort(state.signal, compactErr) || isGenuineCompactOverflow(compactErr)) return false;
+  state.opts.quietCompactRetryUsed = true;
+  acknowledgeGoalReminder(state.sessionRef, run);
+  reportCompactFailure(ctx, run, compactErr);
+  writeStderrBestEffort(
+    `[loop] pre-send compact failed; retrying on the next send (sess=${state.sessionId || 'unknown'}): ${compactErr?.message || compactErr}\n`
+  );
+  return true;
+}
+
 // A failed compact pass ends the send. A genuine cancellation/abort surfaced
 // from the compact pipeline is NOT a context overflow: the fresh-context
 // pipeline deliberately rethrows the original abort error unchanged so the
@@ -331,9 +367,6 @@ function reportCompactFailure(ctx, run, compactErr) {
 // (manager/compaction-runner.mjs) likewise never fabricates an
 // AGENT_CONTEXT_OVERFLOW for an aborted compact. Mirror that here: preserve
 // the real error (code/name/cause intact) instead of masking it as overflow.
-// Detection is narrow on purpose — signal.aborted or a true AbortError — so
-// the recall pipeline's SYNTHETIC "…aborted: memory … ; head preserved"
-// failure (a real compact failure, message text aside) still escalates.
 function throwCompactFailure(ctx, run, compactErr) {
   const { state, compactPolicy, decision } = ctx;
   const { sessionRef, sessionId, signal, model } = state;
@@ -352,11 +385,7 @@ function throwCompactFailure(ctx, run, compactErr) {
   // compact failure, not "latest turn cannot fit" — mislabeling it as
   // overflow hides the real cause and misroutes downstream overflow
   // handling. Surface an explicit compact-failed error.
-  const genuineOverflow =
-    compactErr?.code === 'AGENT_CONTEXT_OVERFLOW' ||
-    compactErr?.name === 'AgentContextOverflowError' ||
-    isContextOverflowError(compactErr);
-  if (genuineOverflow) {
+  if (isGenuineCompactOverflow(compactErr)) {
     throw agentContextOverflowError(
       {
         stage: 'pre_send',
@@ -379,6 +408,7 @@ function adoptCompactedTranscript(ctx, run) {
   const { state } = ctx;
   const { messages, sessionRef, sessionId, opts } = state;
   const replaced = messages.slice();
+  if (sessionRef) backfillFallbackSessionTitle(sessionRef, replaced);
   messages.length = 0;
   messages.push(...run.compacted);
   // Display-only archive of the dropped conversation; the projection and the
@@ -511,6 +541,10 @@ async function compactBeforeSend(ctx) {
     }
     run.summaryChanged = messagesArrayChanged(messages, run.compacted);
   } catch (compactErr) {
+    if (retryCompactQuietly(ctx, run, compactErr)) {
+      await setStage(opts, 'requesting');
+      return;
+    }
     throwCompactFailure(ctx, run, compactErr);
   }
   await setStage(opts, 'requesting');
@@ -519,11 +553,46 @@ async function compactBeforeSend(ctx) {
     return;
   }
   ctx.compactChanged = messagesArrayChanged(messages, run.compacted);
-  if (ctx.compactChanged) adoptCompactedTranscript(ctx, run);
+  if (ctx.compactChanged) {
+    adoptCompactedTranscript(ctx, run);
+    // The adopted compaction strips late MCP tool announcements from older turns.
+    try {
+      rearmLateDeferredTools(sessionRef);
+    } catch {
+      /* best-effort, like the Goal reminder: a tool reminder never fails the compaction */
+    }
+  }
   reportCompactOutcome(ctx, run);
   // PostCompact belongs only to a completed compaction pass, never the
   // ordinary pre-send threshold check.
   await runCompactHook(ctx, 'postCompactHook');
+}
+
+// Attachments that would crowd the window travel by reference from this send
+// on (session/attachment-preflight.mjs). Runs whether or not auto-compaction
+// is on: it is what keeps an oversized attachment message from ever reaching
+// the provider. A rewrite changes the transcript the provider chain was built
+// on, so the continuation is dropped and the send is tagged exactly like an
+// automatic compaction: the prefix guard accepts that boundary, whereas a
+// transcript-repair tag would refuse the rewritten earlier message.
+function preflightAttachments(ctx, compactPolicy) {
+  const { state } = ctx;
+  const contextWindow = compactPolicy?.contextWindow || state.sessionRef?.contextWindow;
+  const outcome = referenceOversizedAttachments(state.messages, {
+    contextWindow,
+    nativePdf: providerNativePdf(state.sessionRef?.provider),
+  });
+  if (!outcome.changed) return;
+  ctx.providerState = undefined;
+  ctx.providerStateCleared = true;
+  ctx.compactChanged = true;
+  if (state.opts && !String(state.opts.cacheBreakIntent || '').endsWith('_compaction')) {
+    state.opts.cacheBreakIntent = 'automatic_compaction';
+  }
+  writeStderrBestEffort(
+    `[loop] attachments sent by reference (sess=${state.sessionId || 'unknown'}): ` +
+      `${outcome.referencedMessages} message(s), inline estimate ${outcome.inlineTokensBefore} > budget ${outcome.budgetTokens}\n`
+  );
 }
 
 export async function runPreSendCompactPass(state) {
@@ -538,6 +607,7 @@ export async function runPreSendCompactPass(state) {
     compactChanged: false,
   };
   const compactPolicy = resolveWorkerCompactPolicy(state.sessionRef, state.requestTools);
+  preflightAttachments(ctx, compactPolicy);
   if (compactPolicy?.auto) {
     ctx.compactPolicy = compactPolicy;
     ctx.decision = preSendCompactDecision(state, compactPolicy);

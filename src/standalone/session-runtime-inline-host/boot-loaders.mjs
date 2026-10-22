@@ -50,6 +50,22 @@ export function createInlineBootLoaders({
     return localModulePromise;
   }
 
+  // Background warm-up of the session-local module graph. Independent of the
+  // keychain gate (the ESM cache makes the later localModule() import free);
+  // never throws — a failed warm-up leaves create on its lazy path.
+  async function warmLocalRuntime() {
+    if (isClosed()) return false;
+    try {
+      const module = await loadLocalModule();
+      // A loop turn between the two graph loads: one piece held the loop.
+      await new Promise((resolve) => setImmediate(resolve));
+      if (isClosed()) return false;
+      return (await module.warmLocalSessionRuntime?.()) !== false;
+    } catch {
+      return false;
+    }
+  }
+
   function agentGraph() {
     agentGraphPromise ??= measured('agent-dispatch-graph-import', () => {
       assertOpen();
@@ -92,5 +108,5 @@ export function createInlineBootLoaders({
     await tracked;
   }
 
-  return { prewarmKeychain, localModule, agentGraph, prepareAgentProviders };
+  return { prewarmKeychain, warmLocalRuntime, localModule, agentGraph, prepareAgentProviders };
 }

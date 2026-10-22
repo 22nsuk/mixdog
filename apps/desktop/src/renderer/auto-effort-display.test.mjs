@@ -28,12 +28,12 @@ const { adoptSidebarReferenceHost, resetSidebarReferenceCache, updateSidebarRefe
 const setSwitch = (enabled) =>
   act(async () => publishAutoEffort({ autoEffort: { installed: true, enabled, supported: true } }));
 
-test('displayEffortLabel: Auto only when on + capable + not max/ultra', () => {
+test('displayEffortLabel: Auto when on + capable, whatever level is saved', () => {
   const on = { autoOn: true, capable: true };
   assert.equal(displayEffortLabel('high', on), 'Auto');
   assert.equal(displayEffortLabel('', on), 'Auto');
-  assert.equal(displayEffortLabel('max', on), null);
-  assert.equal(displayEffortLabel('ULTRA', on), null);
+  assert.equal(displayEffortLabel('max', on), 'Auto');
+  assert.equal(displayEffortLabel('ULTRA', on), 'Auto');
   assert.equal(displayEffortLabel('high', { autoOn: false, capable: true }), null);
   assert.equal(displayEffortLabel('high', { autoOn: true, capable: false }), null);
 });
@@ -55,8 +55,9 @@ test('ModelRouteLabel follows the Auto switch live and respects capability and m
   await setSwitch(true);
   assert.equal(await text({ effort: 'high', autoEffortCapable: true }), 'Opus Auto');
   assert.equal(await text({ effort: 'high', autoEffortCapable: false }), 'Opus High');
-  assert.equal(await text({ effort: 'max', autoEffortCapable: true }), 'Opus Max');
-  assert.equal(await text({ effort: 'ultra', autoEffortCapable: true }), 'Opus Ultra');
+  assert.equal(await text({ effort: 'max', autoEffortCapable: true }), 'Opus Auto');
+  assert.equal(await text({ effort: 'ultra', autoEffortCapable: true }), 'Opus Auto');
+  assert.equal(await text({ effort: 'max', autoEffortCapable: false }), 'Opus Max');
   await setSwitch(false);
   assert.equal(await text({ effort: 'high', autoEffortCapable: true }), 'Opus High');
 });
@@ -83,11 +84,15 @@ test('Workflows sidebar rows (agents and default agents) show Auto for capable m
   resetSidebarReferenceCache();
   adoptSidebarReferenceHost(api);
   updateSidebarReference('workflows', []);
+  // WorkflowsView `ownRoute`: a row shows its model only when the agent's own
+  // route is configured (routeConfigured: true); otherwise it reads "Default".
+  // `isContactAgentRow`: an unmarked custom id (heavy, maxed) is a bot listed on
+  // the Bots page, so the Workflows-page agents carry `kind: 'agent'`.
   updateSidebarReference('agents', [
-    { id: 'worker', label: 'Worker', route: route('alpha', 'capable', 'medium') },
-    { id: 'heavy', label: 'Heavy', route: route('alpha', 'plain', 'high') },
-    { id: 'maxed', label: 'Maxed', route: route('alpha', 'capable', 'max') },
-    { id: 'maintainer', label: 'Maintainer', route: route('alpha', 'capable', 'low') },
+    { id: 'worker', label: 'Worker', routeConfigured: true, route: route('alpha', 'capable', 'medium') },
+    { id: 'heavy', label: 'Heavy', kind: 'agent', routeConfigured: true, route: route('alpha', 'plain', 'high') },
+    { id: 'maxed', label: 'Maxed', kind: 'agent', routeConfigured: true, route: route('alpha', 'capable', 'max') },
+    { id: 'maintainer', label: 'Maintainer', routeConfigured: true, route: route('alpha', 'capable', 'low') },
   ]);
   updateSidebarReference('webSearchRoute', route('alpha', 'capable', 'low'));
   updateSidebarReference('webSearchModels', [option('alpha', 'capable', true)]);
@@ -120,7 +125,16 @@ test('Workflows sidebar rows (agents and default agents) show Auto for capable m
   const on = summaries();
   assert.equal(on.Worker, 'capable Auto');
   assert.equal(on.Heavy, 'plain High');
-  assert.equal(on.Maxed, 'capable Max');
+  assert.equal(on.Maxed, 'capable Auto');
   assert.equal(on.Maintainer, 'capable Auto');
-  assert.equal(on['Web Search'], 'capable Auto');
+  // Web Search never runs per-call Auto reasoning: it shows its stored effort,
+  // even on an auto-capable model with the feature on and a stale autoEffort.
+  assert.equal(on['Web Search'], 'capable Low');
+  await act(async () =>
+    updateSidebarReference('webSearchRoute', { ...route('alpha', 'capable', 'low'), autoEffort: true })
+  );
+  assert.equal(summaries()['Web Search'], 'capable Low');
+  // The default route inherits Main's effort: it says so instead of showing Auto.
+  await act(async () => updateSidebarReference('webSearchRoute', { provider: 'default', model: 'default' }));
+  assert.equal(summaries()['Web Search'], 'Follows Main');
 });

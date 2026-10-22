@@ -5,30 +5,17 @@
 // top-level id/closed/generation, foreign id) is left EXACTLY as it is — not
 // deleted, not closed, not repaired.
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { isAgentOwner } from '../../../agent-owner.mjs';
+import { isHistoricalAutomaticClosure } from '../../historical-session-closure.mjs';
 import { readTopLevelLifecycleRecord, isLifecycleUnreadable } from '../../lifecycle-scan.mjs';
-import { resolveAgentTerminalReapMs } from '../../../runtime-core/config-helpers.mjs';
-import { sessionPath } from '../paths-heartbeat.mjs';
+import { sessionPath } from '../session-paths.mjs';
 import { probePath, PROBE_PRESENT, PROBE_ABSENT } from '../fs-probe.mjs';
 import { _queueSessionSummaryUpsert, _queueSessionSummaryRemoval } from '../summary-cache.mjs';
 import { deleteSession } from '../session-delete.mjs';
 import { markSessionClosed } from '../lifecycle-barriers.mjs';
-import {
-  AGENT_TERMINAL_STATUSES,
-  BLANK_SCRATCH_MAX_AGE_MS,
-  RUNNING_STALL_MS,
-  readSweepRecord,
-  retainedLinkedAgent,
-} from './sweep-record.mjs';
-
-/** The .hb sidecar mtime: 0 when proven absent, null when its liveness cannot
- *  be judged (an unreadable sidecar makes the record no sweep candidate). */
-const heartbeatMtimeOf = (dir, id) => {
-  const probe = probePath(join(dir, `${id}.hb`));
-  if (probe.state === PROBE_PRESENT) return probe.mtimeMs || 0;
-  return probe.state === PROBE_ABSENT ? 0 : null;
-};
+import { BLANK_SCRATCH_MAX_AGE_MS, RUNNING_STALL_MS, SWEEP_RECORD_NO_DATA, readSweepRecord } from './sweep-record.mjs';
+import { subAgentMember } from './sub-agent-retention.mjs';
+import { isAgentHomeSessionId } from '../../agent-home.mjs';
+import { isRoomThreadSessionId } from '../../agent-room.mjs';
 
 /** The AUTHORITATIVE on-disk fields, falling back to the best-effort (and
  *  possibly stale) summary row only where the record lacks them — a stale row
@@ -41,6 +28,14 @@ const effectiveFields = (actual, row) => ({
   lastHeartbeatAt: Number(actual?.lastHeartbeatAt) > 0 ? Number(actual.lastHeartbeatAt) : row.lastHeartbeatAt || 0,
   createdAt: Number(actual?.createdAt) > 0 ? Number(actual.createdAt) : row.createdAt || 0,
 });
+
+/** Every sub-agent record, open or closed, fresh or not, for the tree
+ *  retention its caller applies (sub-agent-retention.mjs). */
+function noteSubAgent(ctx, id, doc) {
+  if (!ctx.plan.retainSubAgents) return;
+  const member = subAgentMember(id, doc);
+  if (member) ctx.tally.subAgents.push(member);
+}
 
 /** A closed record: a mature tombstone is deleted; otherwise a stale summary
  *  row that still claims the session open is repaired and the row is kept. */
@@ -56,7 +51,7 @@ function sweepClosedRecord(ctx, row, actual, jsonPath) {
     return;
   }
   // Closed sessions are EXEMPT from the freshness gate: a tombstone whose
-  // file/hb mtime keeps getting bumped would otherwise stay perpetually
+  // file mtime keeps getting bumped would otherwise stay perpetually
   // "fresh" and never mature. Maturity is governed ONLY by the ORIGINAL
   // close time (disk updatedAt, not row.updatedAt which a stale row may
   // carry from before the close).
@@ -64,7 +59,7 @@ function sweepClosedRecord(ctx, row, actual, jsonPath) {
   const age = now - closedAt;
   if (plan.sweepTombstones && Number.isFinite(closedAt) && age >= plan.tombstoneMaxAgeMs) {
     try {
-      if (deleteSession(row.id, { deferSummaryUpdate: true })) {
+      if (deleteSession(row.id, { deferSummaryUpdate: true, legacyOwnerVeto: true })) {
         tally.tombstonesCleaned++;
         tally.tombstoneDetails.push({ id: row.id, ageSeconds: Math.floor(age / 1000) });
         return;
@@ -96,14 +91,15 @@ function sweepClosedRecord(ctx, row, actual, jsonPath) {
  *  that permanence is a blank scratch: ZERO user/assistant conversation
  *  (engine boot artifact, force-killed window, crashed host) has nothing to
  *  preserve, and relaunch storms otherwise pile hundreds of "(blank)" rows
- *  that no sweep may touch. Reap once cold; liveness/heartbeat vetoes inside
- *  deleteSession still protect an in-flight boot. */
-function sweepUserOwnedRecord(ctx, row, record, eff, heartbeatMtime) {
+ *  that no sweep may touch. Reap once cold; the liveness veto inside
+ *  deleteSession still protects an in-flight boot, local or in a live older
+ *  process. */
+function sweepUserOwnedRecord(ctx, row, record, eff) {
   const { plan, now, tally } = ctx;
   const conversationCount = Number.isFinite(record.conversationCount)
     ? record.conversationCount
     : Number(row.messageCount) || 0;
-  const lastActive = Math.max(eff.updatedAt, eff.lastHeartbeatAt, eff.createdAt, heartbeatMtime || 0);
+  const lastActive = Math.max(eff.updatedAt, eff.lastHeartbeatAt, eff.createdAt);
   if (
     plan.sweepIdle &&
     conversationCount === 0 &&
@@ -115,8 +111,7 @@ function sweepUserOwnedRecord(ctx, row, record, eff, heartbeatMtime) {
         deleteSession(row.id, {
           deferSummaryUpdate: true,
           isSessionLive: plan.isSessionLive,
-          heartbeatSnapshotMtime: heartbeatMtime,
-          heartbeatFreshMs: BLANK_SCRATCH_MAX_AGE_MS,
+          legacyOwnerVeto: true,
         })
       ) {
         tally.openPruned++;
@@ -130,32 +125,17 @@ function sweepUserOwnedRecord(ctx, row, record, eff, heartbeatMtime) {
   tally.remaining++;
 }
 
-/** Closes an idle session. Close is destructive and the earlier heartbeat
- *  stat can race a different process publishing fresh liveness, so both the
- *  local runtime ownership and the sidecar are re-checked at the commit edge. */
-function closeIdleRecord(ctx, row, eff, { lastActive, sessionMaxAge, heartbeatMtime }) {
-  const { plan, dir, now, tally } = ctx;
+/** Closes an idle session. Close is destructive, so the in-memory runtime
+ *  ownership is re-checked at the commit edge. */
+function closeIdleRecord(ctx, row, eff, { lastActive }) {
+  const { plan, now, tally } = ctx;
   if (plan.isSessionLive?.(row.id)) {
-    tally.remaining++;
-    return;
-  }
-  const preCloseHeartbeatMtime = heartbeatMtimeOf(dir, row.id);
-  if (preCloseHeartbeatMtime === null) {
-    // Unknown liveness at the destructive edge: do not close.
-    tally.remaining++;
-    return;
-  }
-  if (preCloseHeartbeatMtime > 0 && now - preCloseHeartbeatMtime <= sessionMaxAge) {
     tally.remaining++;
     return;
   }
   let closeResult = null;
   try {
-    closeResult = markSessionClosed(row.id, 'idle-sweep', {
-      isSessionLive: plan.isSessionLive,
-      heartbeatSnapshotMtime: heartbeatMtime,
-      heartbeatFreshMs: sessionMaxAge,
-    });
+    closeResult = markSessionClosed(row.id, 'idle-sweep', { isSessionLive: plan.isSessionLive, legacyOwnerVeto: true });
   } catch (err) {
     process.stderr.write(`[session-store] idle-sweep close failed for ${row.id}: ${err?.message}\n`);
     return;
@@ -174,51 +154,36 @@ function closeIdleRecord(ctx, row, eff, { lastActive, sessionMaxAge, heartbeatMt
 
 /** An open record: the freshness gate, then user permanence, the running
  *  backstop, the idle close, or a retention-cap candidacy. */
-function sweepOpenRecord(ctx, row, record, { jsonMtime, heartbeatMtime }) {
+function sweepOpenRecord(ctx, row, record, { jsonMtime }) {
   const { plan, now, tally } = ctx;
-  const eff = effectiveFields(record.doc, row);
-  const ownerRef = { owner: eff.owner };
-  const ownerNamed = typeof eff.owner === 'string' && eff.owner.length > 0;
-  // Completed agents use their provider's Advanced terminal duration rather
-  // than the general sweep cadence, so it is resolved before the freshness
-  // gate: a short provider override must not be hidden behind the default
-  // 5-minute gate.
-  const isCompletedAgent = isAgentOwner(ownerRef) && AGENT_TERMINAL_STATUSES.has(eff.status);
-  const terminalReapMs = isCompletedAgent ? resolveAgentTerminalReapMs(plan.terminalReapConfig, eff.provider) : null;
-  if (isCompletedAgent && terminalReapMs == null) {
+  // An agent's home thread is permanent, blank or not: no idle close, no
+  // blank-scratch prune, no retention cap. So are a group room's sessions.
+  if (isAgentHomeSessionId(row.id) || isRoomThreadSessionId(row.id)) {
     tally.remaining++;
     return;
   }
+  noteSubAgent(ctx, row.id, record.doc);
+  const eff = effectiveFields(record.doc, row);
+  const ownerNamed = typeof eff.owner === 'string' && eff.owner.length > 0;
   // Freshness gate — recently-touched open sessions are skipped cheaply here.
   let freshnessGateMs = 0;
-  if (plan.sweepIdle) freshnessGateMs = terminalReapMs ?? plan.maxAge;
+  if (plan.sweepIdle) freshnessGateMs = plan.maxAge;
   else if (plan.sweepTombstones) freshnessGateMs = plan.tombstoneMaxAgeMs;
-  const newestKnown = Math.max(
-    row.updatedAt || 0,
-    row.lastHeartbeatAt || 0,
-    row.createdAt || 0,
-    jsonMtime,
-    heartbeatMtime
-  );
+  const newestKnown = Math.max(row.updatedAt || 0, row.lastHeartbeatAt || 0, row.createdAt || 0, jsonMtime);
   if (freshnessGateMs > 0 && newestKnown > 0 && now - newestKnown <= freshnessGateMs) {
     // Fresh agent/legacy sessions survive idle close but still participate
     // in the resumable-open retention cap. The cap performs its own
     // commit-edge liveness veto before deletion.
-    if (plan.retainOpen && plan.sweepIdle && (!ownerNamed || isAgentOwner(ownerRef))) {
-      tally.openCandidates.push({
-        id: row.id,
-        lastActive: newestKnown,
-        heartbeatSnapshotMtime: heartbeatMtime,
-        heartbeatFreshMs: terminalReapMs ?? plan.maxAge,
-      });
+    if (plan.retainOpen && plan.sweepIdle && !ownerNamed) {
+      tally.openCandidates.push({ id: row.id, lastActive: newestKnown });
     }
     tally.remaining++;
     return;
   }
-  // Sweep agent-owned and ownerless (legacy) sessions; explicit user sessions
-  // never feed the retention cap and are only ever reaped as blank scratch.
-  if (ownerNamed && !isAgentOwner(ownerRef)) {
-    sweepUserOwnedRecord(ctx, row, record, eff, heartbeatMtime);
+  // Every explicitly owned conversation has the same retention policy.
+  // Only ownerless legacy records enter idle closure and the retention cap.
+  if (ownerNamed) {
+    sweepUserOwnedRecord(ctx, row, record, eff);
     return;
   }
   if (!plan.sweepIdle) {
@@ -227,17 +192,13 @@ function sweepOpenRecord(ctx, row, record, { jsonMtime, heartbeatMtime }) {
   }
   // The manager may sweep while unrelated sessions are active. Protect this
   // specific locally-current/in-flight session regardless of stale on-disk
-  // timestamps; its controller/heartbeat owner decides when it is safe to
-  // become an idle-sweep candidate.
+  // timestamps; its in-memory runtime decides when it is safe to become an
+  // idle-sweep candidate.
   if (plan.isSessionLive?.(row.id)) {
     tally.remaining++;
     return;
   }
-  // Prefer .hb sidecar mtime — updated at tight cadence (≤5s) without
-  // serialising the full JSON, so it reflects true liveness more accurately
-  // than the JSON timestamp fields.
-  let lastActive = eff.lastHeartbeatAt || eff.updatedAt || eff.createdAt || 0;
-  if (heartbeatMtime) lastActive = Math.max(lastActive, heartbeatMtime);
+  const lastActive = eff.lastHeartbeatAt || eff.updatedAt || eff.createdAt || 0;
   // Running sessions are normally reaped by the stream-watchdog within
   // ~120s. Skip them here unless they've been silent past RUNNING_STALL_MS,
   // at which point they are treated as zombies.
@@ -245,18 +206,41 @@ function sweepOpenRecord(ctx, row, record, { jsonMtime, heartbeatMtime }) {
     tally.remaining++;
     return;
   }
-  const sessionMaxAge = terminalReapMs ?? plan.maxAge;
-  if (now - lastActive > sessionMaxAge) {
-    closeIdleRecord(ctx, row, eff, { lastActive, sessionMaxAge, heartbeatMtime });
+  if (now - lastActive > plan.maxAge) {
+    closeIdleRecord(ctx, row, eff, { lastActive });
     return;
   }
-  if (plan.retainOpen) {
-    tally.openCandidates.push({
-      id: row.id,
-      lastActive,
-      heartbeatSnapshotMtime: heartbeatMtime,
-      heartbeatFreshMs: sessionMaxAge,
-    });
+  if (plan.retainOpen) tally.openCandidates.push({ id: row.id, lastActive });
+  tally.remaining++;
+}
+
+/** A record a crash left empty or NUL-filled holds nothing to preserve and
+ *  would otherwise be reported forever as an unreadable session: its bytes are
+ *  kept aside as `<id>.json.corrupt-<ts>` (deleteSession, under the commit
+ *  lock and its liveness vetoes) and the session's row is retired with it. */
+function sweepNoDataRecord(ctx, row) {
+  const { plan, tally } = ctx;
+  if (plan.isSessionLive?.(row.id)) {
+    tally.remaining++;
+    return;
+  }
+  try {
+    if (
+      deleteSession(row.id, {
+        deferSummaryUpdate: true,
+        isSessionLive: plan.isSessionLive,
+        legacyOwnerVeto: true,
+        // The no-data verdict predates the commit lock: a record repaired or
+        // republished since is valid content and must survive.
+        damagedOnly: true,
+      })
+    ) {
+      tally.openPruned++;
+      tally.openPrunedDetails.push({ id: row.id, ageSeconds: 0 });
+      return;
+    }
+  } catch {
+    /* keep the row on failure */
   }
   tally.remaining++;
 }
@@ -277,11 +261,6 @@ export function sweepRow(ctx, row) {
     tally.remaining++;
     return;
   }
-  const heartbeatMtime = heartbeatMtimeOf(ctx.dir, row.id);
-  if (heartbeatMtime === null) {
-    tally.remaining++;
-    return;
-  }
   // Truth source: the summary index is a deferred/best-effort sidecar, so a
   // row can still claim status='idle'/open while the session JSON was
   // already tombstoned. Read the real session JSON BEFORE the freshness gate
@@ -292,6 +271,10 @@ export function sweepRow(ctx, row) {
   // unreadable record, or a record naming another id (including a foreign
   // TOMBSTONE that would look perfectly mature) is preserved untouched.
   const record = readSweepRecord(row.id, jsonPath, jsonProbe);
+  if (record === SWEEP_RECORD_NO_DATA) {
+    sweepNoDataRecord(ctx, row);
+    return;
+  }
   if (record === null || isLifecycleUnreadable(record) || record.id !== row.id) {
     tally.remaining++;
     return;
@@ -299,16 +282,16 @@ export function sweepRow(ctx, row) {
   // One strict parse for the whole record: every decision below reads the
   // SAME authoritative document (owner/status/timestamps/messages).
   const actual = record.doc;
-  if (retainedLinkedAgent(actual)) {
-    // Parent-owned agent transcripts are task history, not ephemeral worker
-    // cache. This covers both new open sessions and tombstones created by
-    // older Mixdog versions.
+  if (isHistoricalAutomaticClosure(actual)) {
     tally.remaining++;
     return;
   }
   if (record.closed === true || actual.status === 'closed') {
+    const cleanedBefore = ctx.tally.tombstonesCleaned;
     sweepClosedRecord(ctx, row, actual, jsonPath);
+    // A tombstone this sweep just deleted is gone, not a member.
+    if (ctx.tally.tombstonesCleaned === cleanedBefore) noteSubAgent(ctx, row.id, actual);
     return;
   }
-  sweepOpenRecord(ctx, row, record, { jsonMtime: jsonProbe.mtimeMs || 0, heartbeatMtime });
+  sweepOpenRecord(ctx, row, record, { jsonMtime: jsonProbe.mtimeMs || 0 });
 }

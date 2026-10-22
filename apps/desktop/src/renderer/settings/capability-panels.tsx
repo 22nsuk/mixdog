@@ -4,7 +4,7 @@ import { ErrorNotice } from '../ErrorNotice';
 import type { DesktopApi } from '../../shared/contract';
 import { requestOpenDoctor } from '../command-surface-doctor-event';
 import { t } from '../i18n';
-import { providerDisplayName } from '../provider-display';
+import { customProviderDisplayNames, resolveProviderDisplayName } from '../model-catalog';
 import { record } from '../record-utils';
 import { isSshConnectionWindow } from '../desktop-connection';
 import { isRemoteHostRenderer } from '../remote-ui-projection';
@@ -20,6 +20,8 @@ import { ConnectionPanel } from './connection-panel';
 import { DeveloperPanel } from './developer-panel';
 import { getCachedDesktopStatus, readDesktopStatus, storeDesktopStatus } from './desktop-status-cache';
 import { DisplayPanel, GeneralPanel } from './general-panel';
+import { SkinPanel } from './skin-panel';
+import { BotsPanel } from './desktop-pet-toggle';
 
 import { ActionButton, AutoSaveRow, Group, ListEmpty, ResourceRow, SelectRow, ToggleRow } from './capability-controls';
 import {
@@ -33,8 +35,11 @@ import {
   type PanelContext,
   type RecordValue,
 } from './capability-data';
-import { McpPanel, PluginExtensionsPanel, SkillExtensionsPanel } from './extension-panels';
+import { McpPanel, PluginExtensionsPanel, SkillExtensionsPanel, SkillsPanel } from './extension-panels';
+import { ConnectorsPanel } from './connectors-panel';
+import { PhoneUpdatePanel } from './phone-app-update-group';
 import { ProvidersPanel } from './provider-panel';
+import { ModelManagementPanel } from './model-management-panel';
 
 export { OAuthControl } from './provider-panel';
 
@@ -42,10 +47,13 @@ export function CategoryPanel({ category, context }: { category: CapabilityCateg
   if (category === 'builtins') return <BuiltInFeaturesPanel {...context} />;
   if (category === 'output-style') return <OutputStylePanel {...context} />;
   if (category === 'providers') return <ProvidersPanel {...context} />;
+  if (category === 'models') return <ModelManagementPanel {...context} />;
   if (category === 'git') return <BuiltInFeaturesPanel {...context} initialFeature="git" />;
   if (category === 'mcp') return <McpPanel {...context} />;
   if (category === 'plugins') return <PluginExtensionsPanel {...context} />;
   if (category === 'skills') return <SkillExtensionsPanel {...context} />;
+  if (category === 'connectors') return <ConnectorsPanel {...context} />;
+  if (category === 'user-skills') return <SkillsPanel {...context} />;
   if (category === 'context') return <ContextPanel {...context} />;
   if (category === 'system') return <SystemPanel {...context} />;
   if (category === 'shortcuts') return <ShortcutsPanel />;
@@ -53,6 +61,8 @@ export function CategoryPanel({ category, context }: { category: CapabilityCateg
   if (category === 'developer') return <DeveloperPanel {...context} />;
   if (category === 'about') return <AboutPanel />;
   if (category === 'display') return <DisplayPanel {...context} />;
+  if (category === 'skin') return <SkinPanel {...context} />;
+  if (category === 'bots') return <BotsPanel />;
   return <GeneralPanel {...context} />;
 }
 
@@ -63,6 +73,7 @@ const SHORTCUT_GROUPS: ReadonlyArray<readonly [string, ReadonlyArray<readonly [s
     'Project',
     [
       ['Ctrl+N', 'New task'],
+      ['Ctrl+Alt+N', 'New task without a project'],
       ['Ctrl+P', 'Quick Open'],
       ['Ctrl+Shift+P / Ctrl+K / Ctrl+/', 'Command Palette'],
       ['Ctrl+F', 'Search sessions (no tab open)'],
@@ -136,6 +147,7 @@ function ChoicePanel({
   active,
   pending,
   emptyText,
+  loadingRows = 0,
   onChoose,
 }: {
   title: string;
@@ -143,6 +155,8 @@ function ChoicePanel({
   active: string;
   pending: string;
   emptyText: string;
+  /** Placeholder rows to hold the list's height while it loads. */
+  loadingRows?: number;
   onChoose(id: string): void;
 }) {
   return (
@@ -167,6 +181,22 @@ function ChoicePanel({
             />
           );
         })
+      ) : loadingRows ? (
+        <div role="status" aria-busy="true" aria-label={emptyText}>
+          {Array.from({ length: loadingRows }, (_, index) => (
+            <ResourceRow
+              // biome-ignore lint/suspicious/noArrayIndexKey: identical static placeholders.
+              key={index}
+              className="is-skeleton"
+              title={'\u00a0'}
+              actions={
+                <ActionButton disabled onClick={() => undefined}>
+                  {t('Choose')}
+                </ActionButton>
+              }
+            />
+          ))}
+        </div>
       ) : (
         <ListEmpty text={emptyText} />
       )}
@@ -174,9 +204,16 @@ function ChoicePanel({
   );
 }
 
+// Rows the output-style list showed the last time it loaded: the placeholder
+// reserves that many so the loaded list replaces it in place.
+let lastOutputStyleRows = 4;
+
 function OutputStylePanel({ data, pending, run }: PanelContext) {
   const output = record(data.outputStyles);
   const failure = sectionError(data, 'outputStyles');
+  const styleRows = rows(output, 'styles');
+  const loaded = sectionLoaded(data, 'outputStyles');
+  if (loaded && styleRows.length) lastOutputStyleRows = styleRows.length;
   return (
     <>
       {failure ? (
@@ -184,12 +221,11 @@ function OutputStylePanel({ data, pending, run }: PanelContext) {
       ) : (
         <ChoicePanel
           title=""
-          values={rows(output, 'styles')}
+          values={styleRows}
           active={String(record(output.current).id || output.configured || 'default')}
           pending={pending}
-          emptyText={
-            sectionLoaded(data, 'outputStyles') ? t('No output styles available.') : t('Loading output styles…')
-          }
+          emptyText={loaded ? t('No output styles available.') : t('Loading output styles…')}
+          loadingRows={loaded ? 0 : lastOutputStyleRows}
           onChoose={(id) => void run('setOutputStyle', [id])}
         />
       )}
@@ -285,6 +321,15 @@ function UpdatePanel({ data, pending, run, updaterState, checkDesktopUpdate, ins
   );
 }
 
+// Typed/shown for a provider that never auto-clears; the runtime stores 0.
+const AUTO_CLEAR_UNLIMITED_INPUT = 'unlimited';
+
+function autoClearSource(autoClear: ReturnType<typeof record>): string {
+  if (autoClear.providerCustom) return t('{{value0}} override', { value0: String(autoClear.provider) });
+  if (autoClear.custom) return t('global duration');
+  return t('{{value0}} default', { value0: String(autoClear.provider || 'default') });
+}
+
 // Context management (user decision): ONE page owns how a session's context
 // evolves — auto-compact, idle auto-clear, and the memory that carries over.
 function ContextPanel({ data, pending, run }: PanelContext) {
@@ -292,6 +337,8 @@ function ContextPanel({ data, pending, run }: PanelContext) {
   const compaction = record(data.compaction);
   const sessionTitles = record(data.sessionTitles);
   const providerDefaults = rows(autoClear.providerDefaults);
+  // A custom provider's idle window is named by what the user registered.
+  const providerNames = customProviderDisplayNames(data.providerSetup);
   const busy = Boolean(pending);
   return (
     <Group title={t('Session lifecycle')}>
@@ -318,19 +365,35 @@ function ContextPanel({ data, pending, run }: PanelContext) {
         disabled={busy}
         onChange={(enabled) => void run('setCompactionSettings', [{ onModelChange: enabled }])}
       />
+      <SelectRow
+        title={t('Compaction summary model')}
+        description={t(
+          'Smart reuses the conversation’s cache while it is warm, otherwise the Maintainer or a lighter model.'
+        )}
+        value={String(compaction.summaryMode || 'smart')}
+        disabled={busy}
+        options={[
+          { value: 'smart', label: t('Smart') },
+          { value: 'maintainer', label: t('Maintainer') },
+          { value: 'self', label: t('Conversation model') },
+        ]}
+        onChange={(summaryMode) => void run('setCompactionSettings', [{ summaryMode }])}
+      />
       <ToggleRow
         title={t('Auto-clear')}
-        description={t(
-          'Clear idle sessions after {{value0}} ({{value1}}). A provider idle window below overrides the global duration.',
-          {
-            value0: formatDuration(autoClear.idleMs) || t('the provider default'),
-            value1: autoClear.providerCustom
-              ? t('{{value0}} override', { value0: String(autoClear.provider) })
-              : autoClear.custom
-                ? t('global duration')
-                : t('{{value0}} default', { value0: String(autoClear.provider || 'default') }),
-          }
-        )}
+        description={
+          autoClear.unlimited === true
+            ? t('Never clear idle sessions ({{value0}}). A provider idle window below overrides the global duration.', {
+                value0: autoClearSource(autoClear),
+              })
+            : t(
+                'Clear idle sessions after {{value0}} ({{value1}}). A provider idle window below overrides the global duration.',
+                {
+                  value0: formatDuration(autoClear.idleMs) || t('the provider default'),
+                  value1: autoClearSource(autoClear),
+                }
+              )
+        }
         checked={autoClear.enabled !== false}
         disabled={busy}
         onChange={(enabled) => void run('setAutoClear', [{ enabled }])}
@@ -338,30 +401,51 @@ function ContextPanel({ data, pending, run }: PanelContext) {
       {providerDefaults.map((entry) => (
         <AutoSaveRow
           key={String(entry.provider)}
-          title={t('{{value0}} idle window', { value0: providerDisplayName(String(entry.provider || 'default')) })}
+          title={t('{{value0}} idle window', {
+            value0: resolveProviderDisplayName(String(entry.provider || 'default'), providerNames),
+          })}
           name="duration"
-          value={durationTextInput(entry.idleMs)}
-          placeholder={durationTextInput(entry.builtInMs)}
+          // 'unlimited' is the typed token the runtime parses (never auto-clear).
+          value={entry.unlimited === true ? AUTO_CLEAR_UNLIMITED_INPUT : durationTextInput(entry.idleMs)}
+          placeholder={
+            entry.builtInUnlimited === true ? AUTO_CLEAR_UNLIMITED_INPUT : durationTextInput(entry.builtInMs)
+          }
           required
           disabled={busy}
           onSave={(duration) =>
             void run('setAutoClear', [{ provider: entry.provider, duration }], `autoclear-${entry.provider}`)
           }
           actions={
-            Boolean(entry.custom) && (
-              <ActionButton
-                disabled={busy}
-                onClick={() =>
-                  void run(
-                    'setAutoClear',
-                    [{ provider: entry.provider, resetProvider: true }],
-                    `autoclear-reset-${entry.provider}`
-                  )
-                }
-              >
-                {t('Reset')}
-              </ActionButton>
-            )
+            <>
+              {entry.unlimited !== true && (
+                <ActionButton
+                  disabled={busy}
+                  onClick={() =>
+                    void run(
+                      'setAutoClear',
+                      [{ provider: entry.provider, unlimited: true }],
+                      `autoclear-unlimited-${entry.provider}`
+                    )
+                  }
+                >
+                  {t('Unlimited')}
+                </ActionButton>
+              )}
+              {Boolean(entry.custom) && (
+                <ActionButton
+                  disabled={busy}
+                  onClick={() =>
+                    void run(
+                      'setAutoClear',
+                      [{ provider: entry.provider, resetProvider: true }],
+                      `autoclear-reset-${entry.provider}`
+                    )
+                  }
+                >
+                  {t('Reset')}
+                </ActionButton>
+              )}
+            </>
           }
         />
       ))}
@@ -435,6 +519,7 @@ function DesktopPowerGroup() {
 function SystemPanel(context: PanelContext) {
   return (
     <>
+      <PhoneUpdatePanel />
       {/* The updater is this PC's: a server window has no update entry. */}
       {!isSshConnectionWindow() && <UpdatePanel {...context} />}
       <DesktopPowerGroup />

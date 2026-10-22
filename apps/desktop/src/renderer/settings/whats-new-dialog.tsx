@@ -4,11 +4,13 @@ import { version as appVersion } from '../../../package.json';
 import MarkdownBody from '../MarkdownBody';
 import { parseStreamingMarkdownAst } from '../markdown-worker-client';
 import { t } from '../i18n';
+import { scrimDismiss } from '../scrim-dismiss';
 import { useMobileBack } from '../mobile-back';
 import { acquireTitleBarDim } from '../titlebar-dim';
 import { CopyControl } from '../transcript-primitives';
 import { type ChangelogRelease, selectWhatsNew } from './changelog';
 import { loadReleases } from './changelog-source';
+import { openModal } from './dialog-modality';
 import './changelog-dialog.css';
 
 /** The running version's section in the UI language, parsed and ready to paint. */
@@ -33,12 +35,17 @@ export default function WhatsNewDialog({
 }) {
   const uid = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
   useMobileBack(true, onClose);
   useEffect(() => acquireTitleBarDim(), []);
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const release = layerRef.current ? openModal(layerRef.current) : () => {};
     closeRef.current?.focus();
-    return () => opener?.focus();
+    return () => {
+      release();
+      opener?.focus();
+    };
   }, []);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -48,13 +55,8 @@ export default function WhatsNewDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: scrim click-to-dismiss; keyboard dismissal is the dialog's close button and Escape.
-    <div
-      className="settings-confirm-layer"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
+    // Scrim click-to-dismiss; keyboard dismissal is the dialog's close button and Escape.
+    <div ref={layerRef} className="settings-confirm-layer" {...scrimDismiss(onClose)}>
       <section
         className="settings-confirm-dialog settings-changelog-dialog"
         role="dialog"

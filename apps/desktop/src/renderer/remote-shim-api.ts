@@ -16,6 +16,8 @@ import { LEGACY_HOST_FALLBACKS, REMOTE_BROWSER_FALLBACKS } from './remote-browse
 import { recoverableCreation } from './recoverable-creation';
 import { REMOTE_VISUALIZE_LANE, type VisualizeCommandResult, type VisualizeSessionState } from '../shared/visualize';
 import { createRemotePreviewApi, readRemoteVisualizePane, readRemoteVisualizePaneText } from './remote-file-preview';
+import { storedGrantSources, withFileGrantRefresh } from './remote-file-grant-refresh';
+import { openRemoteExternalLink } from './remote-external-link';
 import { mediaLaneSupported, remoteMediaLaneUrl } from './remote-media-lane';
 import { VISIBLE_SESSIONS_STORAGE_KEY, MAX_RESTORED_VISIBLE_SESSIONS } from './remote-shim-state';
 import type { RemoteShimContext } from './remote-shim-state';
@@ -24,6 +26,7 @@ type GatedKey =
   | 'previewProjectFile'
   | 'captureFileSnapshot'
   | 'localPageSource'
+  | 'localPageUrl'
   | 'githubCliLoginOpenBrowser'
   | 'ghPrList'
   | 'ghPrDefaultBranch'
@@ -70,10 +73,15 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     currentToken,
     connect,
     laneSubscription,
-    call,
+    call: relayCall,
     readCatalog,
     fire,
   } = ctx;
+  // A linked file's grant that ended under a held token is granted again once;
+  // the records survive a reload in this device's pairing storage.
+  const call = ctx.pairingKeys?.fileGrants
+    ? withFileGrantRefresh(relayCall, storedGrantSources(localStorage, ctx.pairingKeys.fileGrants))
+    : withFileGrantRefresh(relayCall);
   const parity = (): boolean => ctx.peerRemoteParity === true;
   // Per-route Auto reasoning follows its own flag: an older host's selection
   // validator rejects the unknown `autoEffort` key, so it never reaches one.
@@ -118,6 +126,13 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     // equivalents (remote-browser-fallbacks.ts); everything below forwards over
     // the relay socket.
     ...REMOTE_BROWSER_FALLBACKS,
+    // A loopback address names the PC: its browser shows it, streamed here.
+    openExternal: (url) =>
+      openRemoteExternalLink(url, {
+        sessionId: () => ctx.lastVisibleSessionIds?.[0],
+        ...(ctx.peerBrowserParity === true ? { openHostTab: (target) => call('browserRemoteTabOpen', [target]) } : {}),
+        openHere: REMOTE_BROWSER_FALLBACKS.openExternal,
+      }),
     submitFeedback: (input) => call('submitFeedback', [input]),
     // Web Push: the desktop mints the key, this browser subscribes with it and
     // sends the endpoint straight back through the encrypted socket, so the
@@ -191,6 +206,7 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     resolveLocalPaths: (paths, sessionId) => call('resolveLocalPaths', sessionId ? [paths, sessionId] : [paths]),
     readLocalFile: (path) => call('readLocalFile', [path]),
     fileDownloads,
+    openSessionAttachment: (sessionId, attachmentId) => call('attachmentOpen', [sessionId, attachmentId]),
     readAttachmentThumbnail: (attachmentRef) => call<string | null>('readAttachmentThumbnail', [attachmentRef]),
     listSessions: () => readCatalog(sessionsCatalog, 'listSessions'),
     markSessionRead: (sessionId, messageCount, consumedUnread) =>
@@ -204,10 +220,15 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     scheduleQuotaResume: (sessionId) => call('scheduleQuotaResume', [sessionId]),
     cancelQuotaResume: (sessionId) => call('cancelQuotaResume', [sessionId]),
     stopShellJob: (sessionId, taskId) => call('stopShellJob', [sessionId, taskId]),
+    releaseShellJob: (sessionId, taskId) => call('releaseShellJob', [sessionId, taskId]),
     getQuotaAutoResume: () => call('getQuotaAutoResume', []),
     viewerDevice: () => call('viewerDevice', []),
+    readTranscriptItem: (sessionId, itemId) => call('readTranscriptItem', [sessionId, itemId]),
     setQuotaAutoResume: (enabled) => call('setQuotaAutoResume', [enabled]),
     setSessionArchived: (sessionId: string, archived: boolean) => call('setSessionArchived', [sessionId, archived]),
+    openAgentHome: (agentId: string) => call('openAgentHome', [agentId]),
+    resetAgentHome: (agentId: string) => call('resetAgentHome', [agentId]),
+    agentRoomAction: (action: string, args: unknown[]) => call('agentRoomAction', [action, args]),
     setSessionFavorite: (sessionId: string, favorite: boolean) => call('setSessionFavorite', [sessionId, favorite]),
     setSessionProject: (sessionId: string, projectPath: string) => call('setSessionProject', [sessionId, projectPath]),
     deleteSession: (sessionId) => call('deleteSession', [sessionId]),
@@ -263,6 +284,13 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     subscribeTermData: (listener) => laneSubscription('terminal', termListeners, listener),
     // Rides the terminal lane the output subscription already registers.
     subscribeTermSizeOwner: (listener) => listenOn(termSizeOwnerListeners, listener),
+    // A host that predates terminal activity answers "unknown method": the
+    // tabs then show no dots, which is what unknown means.
+    termActivity: () => call('termActivity'),
+    termFocus: (id, focused) => {
+      void call('termFocus', [id, focused === true]).catch(() => {});
+    },
+    subscribeTermActivity: (listener) => laneSubscription('terminal', ctx.termActivityListeners, listener),
     gitStatus: (cwd, options) => call('gitStatus', [cwd, options]),
     gitBranches: (cwd) => call('gitBranches', [cwd]),
     gitRenameBranch: (cwd, branch, nextBranch) => call('gitRenameBranch', [cwd, branch, nextBranch]),
@@ -289,6 +317,7 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     gitLog: (cwd, query, skip, limit) => call('gitLog', [cwd, query, skip, limit]),
     gitShow: (cwd, hash) => call('gitShow', [cwd, hash]),
     gitShowDiff: (cwd, hash, path) => call('gitShowDiff', [cwd, hash, path]),
+    gitRequestContext: (cwd, input) => call('gitRequestContext', [cwd, input]),
     // The confirmation flag is part of the call: dropping it made every
     // confirmed dirty `--mixed` reset ask again on the main side.
     gitResetToCommit: (cwd, hash, mode, confirmedDirty) =>
@@ -297,8 +326,9 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     gitCherryPickCommit: (cwd, hash) => call('gitCherryPickCommit', [cwd, hash]),
     gitCreateTag: (cwd, tag, hash) => call('gitCreateTag', [cwd, tag, hash]),
     gitDeleteTag: (cwd, tag) => call('gitDeleteTag', [cwd, tag]),
-    gitReview: (cwd) => call('gitReview', [cwd]),
-    gitReviewDiff: (cwd, path, untracked) => call('gitReviewDiff', [cwd, path, untracked === true]),
+    gitReview: (cwd, source) => call('gitReview', [cwd, source]),
+    gitReviewDiff: (cwd, path, untracked, source) => call('gitReviewDiff', [cwd, path, untracked === true, source]),
+    gitReviewDiffs: (cwd, files, source) => call('gitReviewDiffs', [cwd, files, source]),
     gitStashList: (cwd) => call('gitStashList', [cwd]),
     gitStashApply: (cwd, ref) => call('gitStashApply', [cwd, ref]),
     gitStashDrop: (cwd, ref) => call('gitStashDrop', [cwd, ref]),
@@ -378,6 +408,8 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     abortSession: (sessionId, options = {}) => call('abortSession', [sessionId, options]),
     resolveToolApprovalForSession: (sessionId, id, decision) =>
       call('resolveToolApprovalForSession', [sessionId, id, decision]),
+    getAgentNotificationMute: (agentId) => call('getAgentNotificationMute', [agentId]),
+    setAgentNotificationMute: (agentId, muted) => call('setAgentNotificationMute', [agentId, muted]),
     subscribeSessionState: (listener) => sessionInbox.subscribe(listener),
     inheritSession: (sourceSessionId, selection, options) =>
       call('inheritSession', [sourceSessionId, hostSelection(selection ?? null), options ?? null]),
@@ -420,7 +452,20 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     visualizePaneSource: async (sessionId, tabId, index) => {
       await connect();
       if (!ctx.peerVisualize) throw new Error('This desktop does not serve the visualize panel to remote devices.');
-      return readRemoteVisualizePane(call, sessionId, tabId, index);
+      // Media panes stream on the encrypted media lane when it answers.
+      return readRemoteVisualizePane(call, sessionId, tabId, index, laneUrl, ctx.visualizePages);
+    },
+    visualizePanePages: async (sessionId, tabId, index, options) => {
+      await connect();
+      if (!ctx.peerVisualize) throw new Error('This desktop does not serve the visualize panel to remote devices.');
+      return call('visualizePanePages', [sessionId, tabId, index, options]);
+    },
+    visualizeExport: async (sessionId, tabId, format, pane) => {
+      await connect();
+      // The export arrives as a download: a host without the lane cannot hand it over.
+      if (!ctx.peerVisualize || !ctx.peerFileDownloads)
+        throw new FileDownloadError('host-too-old', 'Update Mixdog on the PC to download its files.');
+      return call('visualizeExport', [sessionId, tabId, format, pane]);
     },
     // Gallery bytes ride HTTP, not this socket: the browser caches tiles and
     // asks for byte ranges when a clip seeks. A host that does not serve the
@@ -437,6 +482,10 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     // the host offers it; otherwise they ride the RPC lane as ranged reads
     // into blob: URLs. Local pages become a srcdoc document.
     ...createRemotePreviewApi(call, laneUrl),
+    // The PC's loopback address of a local page, for the PC's own browser pane
+    // (a host that predates the method answers `unknown method`).
+    localPageUrl: (projectPath, relPath, accessToken) =>
+      call<string>('localPageUrl', [projectPath, relPath, accessToken ?? null]),
     githubCliLoginOpenBrowser: (flowId, options) => call('githubCliLoginOpenBrowser', [flowId, options]),
     ghPrList: (cwd) => call('ghPrList', [cwd]),
     ghPrDefaultBranch: (cwd) => call('ghPrDefaultBranch', [cwd]),
@@ -455,8 +504,10 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
   Object.defineProperty(api, 'routeAutoEffort', { enumerable: true, get: routeAutoEffort });
   Object.defineProperty(api, 'projectRecovery', {
     enumerable: true,
-    get: () => ctx.peerProjectRecovery === true
-      ? (project: string, request: ProjectRecoveryRequest) => call('projectRecovery', [project, request]) : undefined,
+    get: () =>
+      ctx.peerProjectRecovery === true
+        ? (project: string, request: ProjectRecoveryRequest) => call('projectRecovery', [project, request])
+        : undefined,
   });
   // Read per access like the members below: a reconnect may reach a host that
   // predates `browserDrive`, and the pane must then never send `viewport`.

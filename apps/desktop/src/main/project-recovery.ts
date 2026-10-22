@@ -1,6 +1,6 @@
 import { lstat } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import {
   requiredProjectRecoveryRequest,
   recoveryStorageError,
@@ -26,7 +26,9 @@ import {
   sameRecoveryIdentity,
   writeRecoveryState,
   inspectRecoveryStorage,
+  recoveryStorageInventory,
   recoveryIsRetired,
+  recoverySettledPhase,
   retireRecoveryDirectory,
   removeRecoveryDirectory,
   type RecoveryFile,
@@ -48,6 +50,17 @@ function validateTarget(root: string, manifest: RecoveryManifest, entry: Recover
   return file;
 }
 
+// The manifest root is the writer's canonical root; a deleted root keeps the
+// spelling the store was keyed by.
+function recoveryBelongsTo(root: string, manifest: RecoveryManifest): boolean {
+  if (manifest.root === resolve(root)) return true;
+  try {
+    return realpathSync(root) === manifest.root;
+  } catch {
+    return false;
+  }
+}
+
 async function inspectDirectory(root: string, directory: string, leased = false): Promise<ProjectRecoveryDetail> {
   if (recoveryIsRetired(directory)) return inspectRecoveryStorage(directory, leased);
   let record: Awaited<ReturnType<typeof readRecoveryRecord>>;
@@ -59,7 +72,12 @@ async function inspectDirectory(root: string, directory: string, leased = false)
   const { manifest, state, fingerprint } = record;
   const busy = !leased && recoveryIsActive(directory);
   const files: ProjectRecoveryDetail['files'] = [];
-  const observations: string[] = [fingerprint];
+  // The record itself (directory identity and full store inventory) is part
+  // of the approval, not only its manifest: discard removes all of it.
+  const observations: string[] = [
+    fingerprint,
+    JSON.stringify([recoveryIdentity(directory), await recoveryStorageInventory(directory)]),
+  ];
   for (let index = 0; index < manifest.files.length; index++) {
     const entry = manifest.files[index];
     try {
@@ -75,14 +93,12 @@ async function inspectDirectory(root: string, directory: string, leased = false)
       observations.push(
         JSON.stringify([entry.relPath, digest, info.dev, info.ino, info.mode, info.mtimeMs, info.ctimeMs])
       );
-      const status =
-        bytes.length === entry.before.size && digest === entry.before.sha256
-          ? state?.restored.includes(entry.relPath)
-            ? 'restored'
-            : 'original'
-          : bytes.length === entry.after.size && digest === entry.after.sha256
-            ? 'written'
-            : 'external';
+      let status: 'restored' | 'original' | 'written' | 'external' = 'external';
+      if (bytes.length === entry.before.size && digest === entry.before.sha256) {
+        status = state?.restored.includes(entry.relPath) ? 'restored' : 'original';
+      } else if (bytes.length === entry.after.size && digest === entry.after.sha256) {
+        status = 'written';
+      }
       files.push({ relPath: entry.relPath, status });
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -98,20 +114,13 @@ async function inspectDirectory(root: string, directory: string, leased = false)
     }
   }
   const again = await readRecoveryRecord(directory);
-  if (again.fingerprint !== fingerprint) throw new ProjectRecoveryError('RECOVERY_CHANGED', 'Recovery record changed while inspecting. Refresh it.');
+  if (again.fingerprint !== fingerprint)
+    throw new ProjectRecoveryError('RECOVERY_CHANGED', 'Recovery record changed while inspecting. Refresh it.');
   return {
     id: manifest.id,
     createdAt: manifest.createdAt,
     fileCount: manifest.files.length,
-    phase: busy
-      ? 'active'
-      : state?.phase === 'complete'
-        ? 'completed'
-        : state?.phase === 'recovered'
-          ? 'recovered'
-          : state?.phase === 'failed'
-            ? 'failed'
-            : 'interrupted',
+    phase: busy ? 'active' : recoverySettledPhase(state),
     active: busy,
     revision: recoveryDigest(JSON.stringify(observations)),
     files,
@@ -119,20 +128,35 @@ async function inspectDirectory(root: string, directory: string, leased = false)
   };
 }
 
+function requireApprovedRevision(approved: ProjectRecoveryDetail, revision: string): void {
+  if (approved.revision !== revision)
+    throw new ProjectRecoveryError(
+      'RECOVERY_CHANGED',
+      'Files or recovery data changed since inspection. Inspect and confirm again.'
+    );
+}
+
 async function recoveryOverview(userDataPath: string, root: string): Promise<ProjectRecoveryResponse> {
   const records = await listRecoveryRecords(userDataPath, root);
   let rootAvailable = false;
-  try { rootAvailable = (await lstat(root)).isDirectory() && realpathSync(root) === root; } catch { /* Observational only. */ }
+  try {
+    rootAvailable = (await lstat(root)).isDirectory() && realpathSync(root) === root;
+  } catch {
+    /* Observational only. */
+  }
   const resolved = records.filter((record) => ['completed', 'recovered', 'retired'].includes(record.phase)).length;
   return {
     records,
     rootAvailable,
     storage: {
-      usedRecords: records.length, maxRecords: RECOVERY_MAX_RECORDS,
-      unresolvedRecords: records.length - resolved, resolvedRecords: resolved,
+      usedRecords: records.length,
+      maxRecords: RECOVERY_MAX_RECORDS,
+      unresolvedRecords: records.length - resolved,
+      resolvedRecords: resolved,
       payloadBytes: records.reduce((sum, record) => sum + (record.payloadBytes ?? 0), 0),
       unknownSizeRecords: records.filter((record) => record.payloadBytes === undefined).length,
-      maxBatchBytes: RECOVERY_MAX_BYTES, maxBatchFiles: 100,
+      maxBatchBytes: RECOVERY_MAX_BYTES,
+      maxBatchFiles: 100,
     },
   };
 }
@@ -157,20 +181,42 @@ async function executeProjectRecovery(
   try {
     if (request.action === 'discard') {
       const approved = await inspectDirectory(root, owned, true);
-      if (approved.revision !== request.revision)
-        throw new ProjectRecoveryError('RECOVERY_CHANGED', 'Files or recovery data changed since inspection. Inspect and confirm again.');
+      requireApprovedRevision(approved, request.revision);
+      if (!recoveryIsRetired(owned)) {
+        const manifest = await readRecoveryRecord(owned).then(
+          (record) => record.manifest,
+          () => null
+        );
+        // A readable manifest of another project root is not this scope's
+        // journal. Never delete it as if it were; leave it for manual inspection.
+        if (manifest && !recoveryBelongsTo(root, manifest))
+          throw new ProjectRecoveryError(
+            'RECOVERY_MANUAL_INSPECTION',
+            'Recovery record belongs to another project root. Inspect the host recovery folder manually.'
+          );
+      }
       owned = await retireRecoveryDirectory(owned);
       await removeRecoveryDirectory(owned);
       removed = true;
     } else {
       if (recoveryIsRetired(owned)) {
-        throw new ProjectRecoveryError('RECOVERY_NOT_RESTORABLE', 'This record cannot restore files; recovery is not an undo command.');
+        throw new ProjectRecoveryError(
+          'RECOVERY_NOT_RESTORABLE',
+          'This record cannot restore files; recovery is not an undo command.'
+        );
       }
       const { manifest, state } = await readRecoveryRecord(owned).catch((cause) => {
-        throw new ProjectRecoveryError('RECOVERY_NOT_RESTORABLE', 'This record cannot restore files; recovery is not an undo command.', { cause });
+        throw new ProjectRecoveryError(
+          'RECOVERY_NOT_RESTORABLE',
+          'This record cannot restore files; recovery is not an undo command.',
+          { cause }
+        );
       });
       if (state?.phase === 'complete')
-        throw new ProjectRecoveryError('RECOVERY_NOT_RESTORABLE', 'This batch completed successfully; recovery is not an undo command.');
+        throw new ProjectRecoveryError(
+          'RECOVERY_NOT_RESTORABLE',
+          'This batch completed successfully; recovery is not an undo command.'
+        );
       // Journal ownership prevents concurrent recovery/discard. The project claim
       // also serializes this restore against the existing editor mutation queue.
       const paths = manifest.files.flatMap((entry) => {
@@ -185,8 +231,7 @@ async function executeProjectRecovery(
       });
       await withProjectMutationPaths(paths, async () => {
         const approved = await inspectDirectory(root, owned, true);
-        if (approved.revision !== request.revision)
-          throw new ProjectRecoveryError('RECOVERY_CHANGED', 'Files or recovery data changed since inspection. Inspect and confirm again.');
+        requireApprovedRevision(approved, request.revision);
         if (['invalid', 'retired', 'completed'].includes(approved.phase))
           throw new ProjectRecoveryError('RECOVERY_NOT_RESTORABLE', 'Recovery record is no longer restorable.');
         const restored = new Set(
@@ -207,7 +252,6 @@ async function executeProjectRecovery(
               file,
               before,
               after,
-              info.mode,
               () => restored.add(entry.relPath),
               () => {
                 if (validateTarget(root, manifest, entry) !== file) throw new Error('Recovery destination changed.');
@@ -251,7 +295,14 @@ async function executeProjectRecovery(
   return { ...overview, detail: await inspectDirectory(root, await recoveryLocation(userDataPath, root, request.id)) };
 }
 
-export async function projectRecoveryIn(userDataPath: string, root: string, input: unknown): Promise<ProjectRecoveryResponse> {
-  try { return await executeProjectRecovery(userDataPath, root, input); }
-  catch (error) { throw recoveryStorageError(error); }
+export async function projectRecoveryIn(
+  userDataPath: string,
+  root: string,
+  input: unknown
+): Promise<ProjectRecoveryResponse> {
+  try {
+    return await executeProjectRecovery(userDataPath, root, input);
+  } catch (error) {
+    throw recoveryStorageError(error);
+  }
 }

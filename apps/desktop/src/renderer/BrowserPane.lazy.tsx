@@ -2,7 +2,7 @@
 // partition. Login survives and is shared; page, tab, and target state is not.
 // The pane owns only the chrome; agent control lives in main/browser/host.ts.
 import { browserNavLayout } from './browser-nav-layout';
-import { type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   useActiveGuestReport,
   useAgentViewport,
@@ -19,62 +19,49 @@ import {
   ArrowLeft,
   ArrowRight,
   ExternalLink,
-  Globe,
   KeyRound,
   Link2,
   PanelTop,
   RotateCw,
   Smartphone,
+  UserCheck,
   X,
 } from 'lucide-react';
 import { DockHeaderRow, DockOverflowMenu, requestPaneDockClose, type DockAction } from './pane-dock-chrome';
+import { BrowserPageOverlays } from './browser-page-overlays';
+import { useBlankTabClaim, useBrowserNavigation } from './browser-pane-navigation';
+import { useBrowserZoom, useBrowserZoomSync } from './browser-pane-zoom';
+import { useBrowserPageEvents, useBrowserPageState } from './browser-pane-page-state';
+import {
+  useBrowserAgentFollow,
+  useBrowserFullscreen,
+  useEscapeRestore,
+  useMainTabPageReport,
+} from './browser-pane-surface';
 import { requestBrowserInMain } from './browser-main-request';
 import { useBrowserRemoteDriving } from './browser-remote-drive';
 import { isRemoteHostRenderer } from './remote-ui-projection';
 
 import { t } from './i18n';
-import { reportBrowserLoadFailure } from './browser-load-failure';
-import { ErrorNotice } from './ErrorNotice';
-import { normalizeAddressInput } from './browser-address';
 import { BrowserImportDialog } from './BrowserImportDialog';
-import { BrowserLoadingPlaceholder } from './BrowserLoadingPlaceholder';
-import { watchBrowserForegroundReturns } from './browser-foreground-lifecycle';
+import { BrowserSignInsDialog } from './BrowserSignInsDialog';
+import { onBrowserImportRequested } from './browser-page-request';
 import {
   BROWSER_VIEWPORT_PRESETS,
-  browserViewportZoom,
   readBrowserViewportPreset,
   resolveBrowserViewportPreset,
   writeBrowserViewportPreset,
   type BrowserViewportPreset,
   type BrowserViewportPresetId,
 } from './browser-viewport-mode';
-import { readBrowserZoom, writeBrowserZoom } from './browser-zoom-level';
 import { BrowserZoomPill } from './BrowserZoomPill';
+import { useZoomBarVisible, zoomBarAction } from './zoom-bar-pref';
 import { BrowserTabStrip } from './BrowserTabStrip';
 import RemoteBrowserPane from './RemoteBrowserPane';
 import { IsolatedBrowserView } from './IsolatedBrowserView';
 import type { BrowserPageElement } from './browser-page-client';
-import type {
-  DesktopBrowserCredentialSuggestion,
-  DesktopBrowserHistoryEntry,
-  DesktopBrowserTab,
-} from '../shared/contract';
+import type { DesktopBrowserCredentialSuggestion, DesktopBrowserHistoryEntry } from '../shared/contract';
 import './desktop/32-browser-pane.css';
-
-type WebviewNavigationEvent = Event & { url?: string; isMainFrame?: boolean };
-type WebviewLoadFailureEvent = Event & {
-  errorCode?: number;
-  errorDescription?: string;
-  isMainFrame?: boolean;
-};
-type WebviewRenderProcessGoneEvent = Event & {
-  details?: { reason?: string; exitCode?: number };
-};
-type BrowserPageFailure = {
-  kind: 'load' | 'renderer' | 'unresponsive';
-  title: string;
-  detail: string;
-};
 
 export { normalizeAddressInput } from './browser-address';
 
@@ -96,205 +83,6 @@ export interface BrowserPaneProps {
   onPageChange?(url: string, title: string): void;
 }
 
-/** Bridges one guest's page events onto the pane's state: navigation, load
- *  progress, the tab list, and the failure surface. Returns its own teardown
- *  so the caller effect stays a single wiring statement. */
-function watchBrowserPageEvents(
-  view: BrowserPageElement,
-  {
-    addressFocused,
-    agentViewports,
-    refreshCredentialSuggestions,
-    setAddress,
-    setAddressHasFocus,
-    setAgentViewport,
-    setCanGoBack,
-    setCanGoForward,
-    setCredentialMenuOpen,
-    setCredentialStatus,
-    setCurrentUrl,
-    setHistorySuggestions,
-    setLoading,
-    setPageFailure,
-    setTabs,
-  }: {
-    addressFocused: { current: boolean };
-    agentViewports: { current: Map<number, { width: number; height: number } | null> };
-    refreshCredentialSuggestions(): void;
-    setAddress(value: string): void;
-    setAddressHasFocus(value: boolean): void;
-    setAgentViewport(value: { width: number; height: number } | null): void;
-    setCanGoBack(value: boolean): void;
-    setCanGoForward(value: boolean): void;
-    setCredentialMenuOpen(value: boolean): void;
-    setCredentialStatus(value: 'idle' | 'success' | 'error'): void;
-    setCurrentUrl(value: string): void;
-    setHistorySuggestions(value: DesktopBrowserHistoryEntry[]): void;
-    setLoading(value: boolean): void;
-    setPageFailure: Dispatch<SetStateAction<BrowserPageFailure | null>>;
-    setTabs(value: DesktopBrowserTab[]): void;
-  }
-) {
-  const syncNavigationState = () => {
-    // canGoBack/canGoForward throw until the guest finishes attaching.
-    try {
-      setCanGoBack(view.canGoBack());
-      setCanGoForward(view.canGoForward());
-    } catch {
-      /* guest not ready yet */
-    }
-  };
-  const onNavigate = (event: Event) => {
-    const url = (event as WebviewNavigationEvent).url || '';
-    const inPage = event.type === 'did-navigate-in-page' && (event as WebviewNavigationEvent).isMainFrame === false;
-    if (inPage) {
-      syncNavigationState();
-      return;
-    }
-    const displayed = url === 'about:blank' ? '' : url;
-    setCurrentUrl(displayed);
-    setPageFailure(null);
-    setCredentialMenuOpen(false);
-    setCredentialStatus('idle');
-    if (!addressFocused.current) setAddress(displayed);
-    syncNavigationState();
-    refreshCredentialSuggestions();
-  };
-  const onStartLoading = () => {
-    setLoading(true);
-    setPageFailure(null);
-    setCredentialMenuOpen(false);
-  };
-  const onStopLoading = () => {
-    setLoading(false);
-    syncNavigationState();
-    refreshCredentialSuggestions();
-  };
-  const onFinishLoading = () => setPageFailure(null);
-  const onFailLoad = (event: Event) => {
-    const failure = event as WebviewLoadFailureEvent;
-    if (failure.isMainFrame === false || failure.errorCode === -3) return;
-    setLoading(false);
-    setPageFailure({
-      kind: 'load',
-      title: t('Failed to load page'),
-      detail:
-        `${failure.errorDescription || t('Network or site error')}` +
-        `${failure.errorCode ? ` (${failure.errorCode})` : ''}`,
-    });
-  };
-  const onRenderProcessGone = (event: Event) => {
-    const details = (event as WebviewRenderProcessGoneEvent).details;
-    setLoading(false);
-    const exitCode = details?.exitCode ? ` (${details.exitCode})` : '';
-    setPageFailure({
-      kind: 'renderer',
-      title: t('Browser crashed'),
-      detail: details?.reason ? `${details.reason}${exitCode}` : t('The page renderer process exited.'),
-    });
-  };
-  const onUnresponsive = () =>
-    setPageFailure({
-      kind: 'unresponsive',
-      title: t('Page unresponsive'),
-      detail: t('Wait or reload the page.'),
-    });
-  const onResponsive = () => setPageFailure((failure) => (failure?.kind === 'unresponsive' ? null : failure));
-  const syncTabs = () => setTabs(view.getTabs());
-  const onAttach = () => {
-    addressFocused.current = false;
-    setAddressHasFocus(false);
-    setAgentViewport(agentViewports.current.get(view.getWebContentsId()) ?? null);
-    setPageFailure(null);
-    setHistorySuggestions([]);
-  };
-  view.addEventListener('tabs-changed', syncTabs);
-  view.addEventListener('did-attach', onAttach);
-  syncTabs();
-  view.addEventListener('did-navigate', onNavigate);
-  view.addEventListener('did-navigate-in-page', onNavigate);
-  view.addEventListener('did-start-loading', onStartLoading);
-  view.addEventListener('did-stop-loading', onStopLoading);
-  view.addEventListener('did-finish-load', onFinishLoading);
-  view.addEventListener('did-fail-load', onFailLoad);
-  view.addEventListener('render-process-gone', onRenderProcessGone);
-  view.addEventListener('unresponsive', onUnresponsive);
-  view.addEventListener('responsive', onResponsive);
-  return () => {
-    view.removeEventListener('tabs-changed', syncTabs);
-    view.removeEventListener('did-attach', onAttach);
-    view.removeEventListener('did-navigate', onNavigate);
-    view.removeEventListener('did-navigate-in-page', onNavigate);
-    view.removeEventListener('did-start-loading', onStartLoading);
-    view.removeEventListener('did-stop-loading', onStopLoading);
-    view.removeEventListener('did-finish-load', onFinishLoading);
-    view.removeEventListener('did-fail-load', onFailLoad);
-    view.removeEventListener('render-process-gone', onRenderProcessGone);
-    view.removeEventListener('unresponsive', onUnresponsive);
-    view.removeEventListener('responsive', onResponsive);
-  };
-}
-
-/** Keeps the guest's zoom factor in step with the surface: the preset
- *  baseline, the user's zoom, pane resizes and foreground returns. Returns
- *  its own teardown. */
-function startBrowserZoomSync({
-  view,
-  desiredZoom,
-  fixedViewport,
-  viewportPreset,
-  zoomLevel,
-  configureViewportPreset,
-}: {
-  view: BrowserPageElement;
-  desiredZoom: { current: number };
-  fixedViewport: boolean;
-  viewportPreset: BrowserViewportPreset;
-  zoomLevel: number;
-  configureViewportPreset(preset: BrowserViewportPreset, reload: boolean): Promise<boolean>;
-}) {
-  let disposed = false;
-  let restoreFrame = 0;
-  const applyZoom = () => {
-    try {
-      view.setZoomFactor(desiredZoom.current);
-    } catch {
-      /* guest not attached yet; dom-ready reapplies */
-    }
-  };
-  const syncZoom = (force = false) => {
-    const zoom = fixedViewport ? zoomLevel : browserViewportZoom(viewportPreset, view.clientWidth, zoomLevel);
-    const changed = Math.abs(zoom - desiredZoom.current) >= 0.01;
-    if (changed) desiredZoom.current = zoom;
-    if (changed || force) applyZoom();
-  };
-  const configureGuest = async () => {
-    const configured = await configureViewportPreset(viewportPreset, false);
-    if (!disposed && configured) syncZoom(true);
-  };
-  const restoreVisibleGuest = () => {
-    window.cancelAnimationFrame(restoreFrame);
-    restoreFrame = window.requestAnimationFrame(() => syncZoom(true));
-  };
-  const observer = new ResizeObserver(() => syncZoom());
-  observer.observe(view);
-  const stopForegroundReturnReporting = watchBrowserForegroundReturns(window, document, restoreVisibleGuest);
-  const onGuestReady = () => void configureGuest();
-  view.addEventListener('did-attach', onGuestReady);
-  view.addEventListener('dom-ready', onGuestReady);
-  view.addEventListener('did-navigate', applyZoom);
-  void configureGuest();
-  return () => {
-    disposed = true;
-    window.cancelAnimationFrame(restoreFrame);
-    stopForegroundReturnReporting();
-    observer.disconnect();
-    view.removeEventListener('did-attach', onGuestReady);
-    view.removeEventListener('dom-ready', onGuestReady);
-    view.removeEventListener('did-navigate', applyZoom);
-  };
-}
-
 /** Address entry and its history completions: the one toolbar control whose
  *  value follows the guest only while the field is unfocused. */
 function browserAddressField({
@@ -306,6 +94,7 @@ function browserAddressField({
   navigate,
   setAddress,
   setAddressHasFocus,
+  onUserEdit,
 }: {
   address: string;
   addressRef: { current: HTMLInputElement | null };
@@ -315,6 +104,8 @@ function browserAddressField({
   navigate(rawInput: string): void;
   setAddress(value: string): void;
   setAddressHasFocus(value: boolean): void;
+  /** The person clicked or typed in the field (not the pane focusing it). */
+  onUserEdit(): void;
 }) {
   return (
     <form
@@ -332,7 +123,10 @@ function browserAddressField({
         spellCheck={false}
         placeholder={t('Search or enter address')}
         aria-label={t('Address bar')}
+        onPointerDown={onUserEdit}
+        onKeyDown={onUserEdit}
         onChange={(event) => {
+          onUserEdit();
           setAddress(event.target.value);
         }}
         onFocus={(event) => {
@@ -379,7 +173,10 @@ export function browserHeaderActions({
   credentialStatus,
   fillStoredCredential,
   onOpenInMain,
+  onSignedInSites,
 }: {
+  /** "로그인 유지 중인 사이트"; absent where the host has no managed profile. */
+  onSignedInSites?(): void;
   currentUrl: string;
   viewportPresetId: BrowserViewportPresetId;
   selectViewportPreset(preset: BrowserViewportPreset): void;
@@ -434,6 +231,16 @@ export function browserHeaderActions({
       onSelect: () => fillStoredCredential(credential.id),
     });
   }
+  if (onSignedInSites) {
+    actions.push({
+      id: 'signed-in-sites',
+      label: t('Signed-in sites'),
+      icon: UserCheck,
+      separatorBefore: true,
+      onSelect: onSignedInSites,
+    });
+  }
+  actions.push(zoomBarAction(true));
   return actions;
 }
 
@@ -451,16 +258,25 @@ function DesktopBrowserPane({
   const mainTab = mode === 'main';
   const webviewRef = useRef<BrowserPageElement | null>(null);
   const addressRef = useRef<HTMLInputElement | null>(null);
-  const addressFocused = useRef(false);
-  const [address, setAddress] = useState('');
-  const [currentUrl, setCurrentUrl] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [tabs, setTabs] = useState<DesktopBrowserTab[]>([]);
-  const [canGoBack, setCanGoBack] = useState(false);
-  const [canGoForward, setCanGoForward] = useState(false);
-  const [addressHasFocus, setAddressHasFocus] = useState(false);
-  const [pageFailure, setPageFailure] = useState<BrowserPageFailure | null>(null);
+  const page = useBrowserPageState();
+  const {
+    addressFocused,
+    address,
+    setAddress,
+    currentUrl,
+    loading,
+    tabs,
+    canGoBack,
+    canGoForward,
+    addressHasFocus,
+    setAddressHasFocus,
+    pageFailure,
+    setPageFailure,
+  } = page;
   const [importOpen, setImportOpen] = useState(false);
+  const [signInsOpen, setSignInsOpen] = useState(false);
+  useEffect(() => onBrowserImportRequested(sessionId, () => setImportOpen(true)), [sessionId]);
+  useBrowserAgentFollow(sessionId, webviewRef);
   const [viewportPresetId, setViewportPresetId] = useState<BrowserViewportPresetId>(
     () => readBrowserViewportPreset(window.localStorage, sessionId).id
   );
@@ -479,158 +295,51 @@ function DesktopBrowserPane({
   const viewportPreset = resolveBrowserViewportPreset(viewportPresetId);
   // A streaming phone sizes the page meanwhile; the pane's preset returns after.
   const remoteDriving = useBrowserRemoteDriving(sessionId);
-  useEffect(() => {
-    if (!active || !expanded || !onToggleExpanded || importOpen) return undefined;
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
-      event.preventDefault();
-      onToggleExpanded();
-    };
-    window.addEventListener('keydown', onEscape);
-    return () => window.removeEventListener('keydown', onEscape);
-  }, [active, expanded, onToggleExpanded, importOpen]);
+  useEscapeRestore(active && expanded && !importOpen, onToggleExpanded);
+  const pageFullscreen = useBrowserFullscreen(sessionId);
   const { agentViewport, agentViewports, setAgentViewport } = useAgentViewport(sessionId, webviewRef);
   const frameWidth = agentViewport?.width ?? viewportPreset.width;
   const frameHeight = agentViewport?.height ?? viewportPreset.height;
   const fixedViewport = frameWidth !== null && frameHeight !== null;
-  // User zoom on top of the surface baseline (auto-fit factor, or 1 inside a
-  // device frame). Page zoom in both modes: inside a frame the page grows and
-  // scrolls within it, the way a phone's own browser zooms.
-  const [zoomLevel, setZoomLevel] = useState(() => readBrowserZoom(window.localStorage, sessionId));
-  const changeZoomLevel = useCallback(
-    (level: number) => {
-      setZoomLevel(writeBrowserZoom(window.localStorage, sessionId, level));
-    },
-    [sessionId]
-  );
-  useEffect(() => {
-    const view = webviewRef.current;
-    if (!view) return;
-    const shortcut = (event: Event) => {
-      const action = (event as Event & { shortcut: string }).shortcut;
-      if (action === 'address') {
-        addressRef.current?.focus();
-        addressRef.current?.select();
-      } else if (['zoom-in', 'zoom-out', 'zoom-reset'].includes(action)) {
-        const zoomFactor = action === 'zoom-in' ? 1.1 : 1 / 1.1;
-        setZoomLevel((previous) =>
-          writeBrowserZoom(window.localStorage, sessionId, action === 'zoom-reset' ? 1 : previous * zoomFactor)
-        );
-      }
-    };
-    view.addEventListener('browser-shortcut', shortcut);
-    return () => view.removeEventListener('browser-shortcut', shortcut);
-  }, [sessionId]);
+  const { zoomLevel, changeZoomLevel } = useBrowserZoom(sessionId, webviewRef, addressRef);
   const { toolbarRef, toolbarWidth } = useToolbarWidth();
   const { contentRef, frameScale } = useFrameFit(frameWidth, frameHeight);
   useActiveGuestReport({ webviewRef, desktopApi, sessionId, active });
 
-  useEffect(() => {
-    const view = webviewRef.current;
-    if (!view) return undefined;
-    return watchBrowserPageEvents(view, {
-      addressFocused,
-      agentViewports,
-      refreshCredentialSuggestions,
-      setAddress,
-      setAddressHasFocus,
-      setAgentViewport,
-      setCanGoBack,
-      setCanGoForward,
-      setCredentialMenuOpen,
-      setCredentialStatus,
-      setCurrentUrl,
-      setHistorySuggestions,
-      setLoading,
-      setPageFailure,
-      setTabs,
-    });
-  }, [
+  useBrowserPageEvents(webviewRef, page, {
     agentViewports,
-    refreshCredentialSuggestions,
     setAgentViewport,
+    refreshCredentialSuggestions,
     setCredentialMenuOpen,
     setCredentialStatus,
     setHistorySuggestions,
-  ]);
+  });
 
   const configureViewportPreset = useViewportPresetConfigurator(webviewRef, desktopApi, sessionId);
-
-  // Normal browsing preserves the user's zoom as the pane resizes. Fit is an
-  // explicit mode; device presets retain their actual UA/touch/device metrics.
-  const desiredZoom = useRef(1);
-  useEffect(() => {
-    if (!active) return undefined;
-    const view = webviewRef.current;
-    if (!view) return undefined;
-    return startBrowserZoomSync({
-      view,
-      desiredZoom,
-      fixedViewport,
-      viewportPreset,
-      zoomLevel,
-      configureViewportPreset,
-    });
-  }, [active, configureViewportPreset, fixedViewport, viewportPreset, zoomLevel]);
+  useBrowserZoomSync({ webviewRef, active, fixedViewport, viewportPreset, zoomLevel, configureViewportPreset });
 
   // A fresh, blank browser tab is for typing an address first.
   useEffect(() => {
     if (active && focusAddressOnActivate && !currentUrl) addressRef.current?.focus();
   }, [active, currentUrl, focusAddressOnActivate]);
 
-  const navigate = useCallback(
-    (rawInput: string) => {
-      const url = normalizeAddressInput(rawInput);
-      const view = webviewRef.current;
-      // An empty address has nothing to wait for; a missing view does.
-      if (!url) return true;
-      if (!view) return false;
-      setAddress(url);
-      setHistorySuggestions([]);
-      // A failed page parks the view; a new address must wake it, as Retry
-      // does, or the load waits behind the parked view until the next one.
-      setPageFailure(null);
-      // loadURL throws synchronously while the guest is still attaching, and
-      // rejects on user-aborted navigations; only other rejections are failures.
-      try {
-        void view.loadURL(url).catch(reportBrowserLoadFailure);
-        view.focus();
-      } catch {
-        view.src = url;
-      }
-      return true;
-    },
-    [setHistorySuggestions]
+  const { navigate, navigateRequested } = useBrowserNavigation(
+    webviewRef,
+    setAddress,
+    setHistorySuggestions,
+    setPageFailure
   );
-
-  const navigateRequested = useCallback(
-    (url: string, newTab?: boolean) => {
-      const view = webviewRef.current;
-      if (!newTab) return navigate(url);
-      if (!view) return false;
-      // The new tab becomes the shown page; load the address into it once created.
-      view
-        .createTab()
-        .then(() => {
-          navigate(url);
-        })
-        .catch(reportBrowserLoadFailure);
-      return true;
-    },
-    [navigate]
-  );
+  const claimBlankTab = useBlankTabClaim(webviewRef);
   useRequestedAddress(webviewRef, sessionId, navigateRequested);
   useInitialAddress(webviewRef, mainTab, initialUrl, navigate);
   const painted = useGuestPainted(webviewRef);
 
   const activeTabTitle = tabs.find((tab) => tab.active)?.title ?? '';
-  // biome-ignore lint/correctness/useExhaustiveDependencies: onPageChange is a fresh callback per parent render; the page reports only when its address or title changes.
-  useEffect(() => {
-    if (mainTab && currentUrl) onPageChange?.(currentUrl, activeTabTitle);
-  }, [mainTab, currentUrl, activeTabTitle]);
+  useMainTabPageReport(mainTab, currentUrl, activeTabTitle, onPageChange);
 
   // Header ⋯ menu: everything that is not page navigation lives here.
   const navLayout = browserNavLayout(toolbarWidth, Boolean(desktopApi?.browserProfileImportSources));
+  const zoomBarVisible = useZoomBarVisible();
   const headerActions = browserHeaderActions({
     currentUrl,
     viewportPresetId,
@@ -649,6 +358,7 @@ function DesktopBrowserPane({
       mainTab || isRemoteHostRenderer()
         ? undefined
         : () => requestBrowserInMain({ sessionId, url: currentUrl, title: activeTabTitle }),
+    onSignedInSites: desktopApi?.browserSignedInSites ? () => setSignInsOpen(true) : undefined,
   });
   const frameTransform = frameScale < 1 ? `scale(${frameScale})` : undefined;
   const viewportFrameStyle = fixedViewport
@@ -656,7 +366,7 @@ function DesktopBrowserPane({
     : undefined;
   return (
     <div
-      className="browser-pane"
+      className={`browser-pane${pageFullscreen ? ' is-page-fullscreen' : ''}`}
       data-pane-instance={sessionId}
       data-browser-mode={mode}
       data-surface-active={active || parked ? 'true' : 'false'}
@@ -667,7 +377,7 @@ function DesktopBrowserPane({
           onToggleExpanded={onToggleExpanded}
           expandLabel={t('Expand browser')}
           restoreLabel={t('Restore browser')}
-          onClose={() => requestPaneDockClose('browser')}
+          onClose={() => requestPaneDockClose('browser', sessionId)}
           actions={headerActions}
           left={
             <BrowserTabStrip
@@ -679,7 +389,7 @@ function DesktopBrowserPane({
                 // The host's count after the close decides, not the frame this
                 // click was made from: tabs may have changed in between.
                 const result = await webviewRef.current?.closeTab(id);
-                if (result?.remainingTabs === 0) requestPaneDockClose('browser');
+                if (result?.remainingTabs === 0) requestPaneDockClose('browser', sessionId);
               }}
               onCreate={async () => {
                 await webviewRef.current?.createTab();
@@ -736,6 +446,7 @@ function DesktopBrowserPane({
           navigate,
           setAddress,
           setAddressHasFocus,
+          onUserEdit: claimBlankTab,
         })}
         {navLayout.import && (
           <button
@@ -764,49 +475,49 @@ function DesktopBrowserPane({
         </div>
       )}
       <BrowserImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
+      <BrowserSignInsDialog
+        open={signInsOpen}
+        onClose={() => setSignInsOpen(false)}
+        onImport={
+          desktopApi?.browserProfileImportSources
+            ? () => {
+                setSignInsOpen(false);
+                setImportOpen(true);
+              }
+            : undefined
+        }
+      />
       <div className={`browser-pane-content${fixedViewport ? ' is-device-frame' : ''}`} ref={contentRef}>
         <div className="browser-pane-viewport" data-viewport-preset={viewportPreset.id} style={viewportFrameStyle}>
           <IsolatedBrowserView
             ref={(element) => {
               webviewRef.current = element;
             }}
-            className={`browser-pane-webview${importOpen ? ' is-import-open' : ''}${historySuggestions.length ? ' is-history-open' : ''}${credentialMenuOpen ? ' is-credential-open' : ''}${pageFailure ? ' is-failed' : ''}`}
+            className={`browser-pane-webview${importOpen || signInsOpen ? ' is-import-open' : ''}${historySuggestions.length ? ' is-history-open' : ''}${credentialMenuOpen ? ' is-credential-open' : ''}${pageFailure ? ' is-failed' : ''}`}
             sessionId={sessionId}
             // A load failure only covers the page: the display keeps reading
             // it, so a navigation from anywhere else clears the failure.
-            active={active && !importOpen}
+            active={active && !importOpen && !signInsOpen}
             native={!fixedViewport}
           />
-          {/* about:blank paints Chromium's default white; until a real page is
-            committed the pane stays in the app theme instead. */}
-          {!painted && !pageFailure && <BrowserLoadingPlaceholder url={currentUrl || initialUrl || ''} />}
-          {painted && !currentUrl && (
-            <div className="browser-pane-empty" aria-hidden="true">
-              <Globe size={28} />
-              <span>{t('Search or enter address')}</span>
-            </div>
-          )}
-          {pageFailure && (
-            <div className="browser-pane-failure">
-              <ErrorNotice
-                error={pageFailure.detail}
-                title={pageFailure.title}
-                role="status"
-                onRetry={() => {
-                  const view = webviewRef.current;
-                  setPageFailure(null);
-                  if (!view) return;
-                  try {
-                    view.reload();
-                  } catch {
-                    navigate(currentUrl || address);
-                  }
-                }}
-              />
-            </div>
-          )}
+          <BrowserPageOverlays
+            painted={painted}
+            pageFailure={pageFailure}
+            currentUrl={currentUrl}
+            initialUrl={initialUrl}
+            onRetry={() => {
+              const view = webviewRef.current;
+              setPageFailure(null);
+              if (!view) return;
+              try {
+                view.reload();
+              } catch {
+                navigate(currentUrl || address);
+              }
+            }}
+          />
         </div>
-        {currentUrl && <BrowserZoomPill level={zoomLevel} onChange={changeZoomLevel} />}
+        {currentUrl && zoomBarVisible && <BrowserZoomPill level={zoomLevel} onChange={changeZoomLevel} />}
         {remoteDriving && (
           <div className="browser-pane-remote-driving" role="status">
             <Smartphone size={13} aria-hidden="true" />

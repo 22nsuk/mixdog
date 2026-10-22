@@ -163,6 +163,8 @@ async function run(): Promise<void> {
     });
     const remoteFrames: DesktopRemoteBrowserStreamFrame[] = [];
     host = createBrowserHost(parent, {
+      // Exercises the blocked (remote session) policy: 10.255.255.1 is refused.
+      remoteSession: true,
       requestApproval: async () => true,
       publishRemoteFrame: async (frame) => {
         remoteFrames.push(frame);
@@ -299,11 +301,8 @@ async function run(): Promise<void> {
     progress('root navigation complete');
     await command({ action: 'open' });
     await command({ action: 'open' });
-    assert.deepEqual(browserSurfaceRequests.splice(0), [
-      { sessionId: 'browser-integration-session', reveal: true },
-      { sessionId: 'browser-integration-session', reveal: true },
-    ]);
-    progress('existing foreground guest reveal complete');
+    assert.deepEqual(browserSurfaceRequests.splice(0), [], 'agent work never opens the panel by itself');
+    progress('existing foreground guest open keeps the panel closed');
     await visibleGuest.executeJavaScript(`
       const draft = document.createElement('textarea');
       draft.id = 'completion-draft';
@@ -483,6 +482,23 @@ async function run(): Promise<void> {
       tab: 'alpha',
     });
     assert.match(alpha.text, /Dropped browser-upload-fixture\.txt/);
+    const seenAfterDrop = await command({ action: 'evaluate', script: 'window.dropFilesSeen', tab: 'alpha' });
+    assert.match(seenAfterDrop.text, /\b1\b/, "the approved frame's own capture listener sees the drop on its target");
+    // An element the page lays over the zone while the drag is on: the
+    // browser-side hit test right before the drop refuses, and no listener of
+    // the page ever sees the files.
+    alpha = await command({ action: 'snapshot', tab: 'alpha' });
+    await assert.rejects(
+      command({
+        action: 'upload',
+        ref: refNamed(alpha.text, 'Trap drop zone'),
+        paths: [uploadFixturePath],
+        tab: 'alpha',
+      }),
+      /upload target changed/
+    );
+    const seenAfterTrap = await command({ action: 'evaluate', script: 'window.dropFilesSeen', tab: 'alpha' });
+    assert.match(seenAfterTrap.text, /\b1\b/, 'the covered drop never reached the page');
     progress('read, wait, type, press, and upload dispatch complete');
 
     // A styled button over a hidden input: the click opens a native picker
@@ -1090,7 +1106,7 @@ async function run(): Promise<void> {
     // string that also names the embedding app contradicts them, and sites
     // answer that mismatch with a login wall or an unsupported-browser page.
     const agent = await command({ action: 'evaluate', script: 'navigator.userAgent', tab: 'beta' });
-    assert.doesNotMatch(agent.text, /Electron|mixdog-desktop/i);
+    assert.doesNotMatch(agent.text, /Electron|mixdog/i);
     assert.match(agent.text, /Chrome\/\d+/);
     // Normalising the agent string must not take the session's language
     // negotiation with it: a request that carries no Accept-Language asks
@@ -1103,6 +1119,28 @@ async function run(): Promise<void> {
       tab: 'beta',
     });
     assert.doesNotMatch(defaultLanguage.text, /missing/, 'the browser still negotiates a language by default');
+    // The brands a page reads and the ones its requests send name the same
+    // Chrome; what a page can read of the host's own scripts looks native.
+    const identity = await command({
+      action: 'evaluate',
+      script: `Promise.all([
+          fetch(${JSON.stringify(`${origin}/api/echo-headers`)}).then((response) => response.json()),
+          navigator.permissions.query({ name: 'notifications' }),
+        ]).then(([payload, notifications]) => [
+          'header=' + /Google Chrome/.test(payload.headers['sec-ch-ua'] || ''),
+          'brands=' + navigator.userAgentData.brands.some((entry) => entry.brand === 'Google Chrome'),
+          'chrome=' + Object.keys(window.chrome).join('+'),
+          'alert=' + /\\[native code\\]/.test(String(window.alert)),
+          'globals=' + Object.getOwnPropertyNames(window).filter((name) => /mixdog/i.test(name)).length,
+          'notifications=' + notifications.state,
+          'notification=' + Notification.permission,
+        ].join(' '))`,
+      tab: 'beta',
+    });
+    assert.match(
+      identity.text,
+      /header=true brands=true chrome=loadTimes\+csi\+app alert=true globals=0 notifications=prompt notification=default/
+    );
     progress('pages are told the Chrome build that renders them');
     await command({
       action: 'storage',

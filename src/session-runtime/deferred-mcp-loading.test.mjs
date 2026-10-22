@@ -181,6 +181,26 @@ test('load_tool refreshes a recovered registry in the same user turn', async (t)
   );
 });
 
+test('load_tool waits for an MCP connect in flight before reporting a name missing', async (t) => {
+  const f = fixture(t);
+  let waits = 0;
+  const executor = createInternalToolExecutor({
+    rt: f.rt,
+    activeToolSurface: () => f.session,
+    mcpStatus: () => ({ servers: [] }),
+    awaitMcpConnect: async () => {
+      waits += 1;
+      f.register([f.original, f.peer]);
+    },
+  });
+  const result = JSON.parse(await executor('load_tool', { names: [`mcp__${f.server}`] }));
+  assert.equal(waits, 1);
+  assert.deepEqual(result.missing, []);
+  assert.deepEqual(result.loaded.sort(), [f.name, f.peerName].sort());
+  await executor('load_tool', { names: [f.name] });
+  assert.equal(waits, 1, 'a name the catalog already holds never waits');
+});
+
 test('native discovery history survives disconnect without granting availability', async (t) => {
   const f = fixture(t);
   f.register([f.original]);
@@ -353,6 +373,14 @@ for (const provider of ['openai-oauth', 'anthropic-oauth', 'gemini', 'openrouter
       }
       const removed = bodies[5].input.find((item) => item.type === 'tool_search_output' && item.call_id === 'load-3');
       assert.deepEqual(removed.tools, []);
+    } else if (!f.session.deferredNativeTools) {
+      // Bridge exposure: connect, schema refresh and removal change only the
+      // scoped catalog; every request carries byte-identical tool definitions.
+      for (const tools of requests) assert.equal(JSON.stringify(tools), JSON.stringify(requests[0]));
+      assert.equal(
+        requests.flat().some((tool) => tool.name === f.name),
+        false
+      );
     } else {
       assert.deepEqual(requests[1].find((tool) => tool.name === f.name).inputSchema, f.original.inputSchema);
       assert.deepEqual(requests[3].find((tool) => tool.name === f.name).inputSchema, f.revised.inputSchema);

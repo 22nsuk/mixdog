@@ -1,9 +1,18 @@
-import { memo, useEffect, useRef, useState, type ComponentType } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ComponentType } from 'react';
 
 import type { MarkdownAstRoot } from './markdown-ast';
-import { LatestMarkdownAstQueue, readCachedStreamingMarkdownAst } from './markdown-worker-client';
+import {
+  LatestMarkdownAstQueue,
+  parseLiveMarkdownAst,
+  parseSettledMarkdownAstNow,
+  readCachedStreamingMarkdownAst,
+  SYNC_MARKDOWN_PARSE_MAX_UTF16_UNITS,
+  syncMarkdownParser,
+} from './markdown-worker-client';
 import MarkdownAstBody from './MarkdownAstBody';
+import type { StreamFadeTimeline } from './markdown-stream-fade';
 import { containsFencedCodeMarkdown, MarkdownSourceFallback } from './MarkdownSourceFallback';
+import { noteStreamSyncParse, noteStreamWorkerParse } from './transcript-stream-metrics';
 
 type MarkdownCopyControl = ComponentType<{
   value: string;
@@ -40,17 +49,51 @@ function promoteMarkdownAst(
   return { text: parsedText, source, root };
 }
 
+/** A main-thread parse slower than this hands longer text back to the worker.
+ *  (Size cap: SYNC_MARKDOWN_PARSE_MAX_UTF16_UNITS in markdown-worker-client.) */
+const SYNC_MARKDOWN_PARSE_BUDGET_MS = 8;
+
 const ParsedMarkdownBody = memo(function ParsedMarkdownBody({
   text,
   parseText,
   parse,
+  sync,
+  live,
+  fadeTimeline,
+  fadeChunk,
   copyControl,
 }: {
   text: string;
   parseText: string;
   parse: boolean;
+  sync: boolean;
+  /** A streamed reply's growing tail: its parses never enter the shared cache. */
+  live: boolean;
+  fadeTimeline: StreamFadeTimeline | null;
+  fadeChunk: string;
   copyControl: MarkdownCopyControl;
 }) {
+  const slowAt = useRef(Number.POSITIVE_INFINITY);
+  const lastSync = useRef<RenderedMarkdownAst | null>(null);
+  const parser =
+    sync && parse && parseText.length <= SYNC_MARKDOWN_PARSE_MAX_UTF16_UNITS && parseText.length < slowAt.current
+      ? syncMarkdownParser()
+      : null;
+  const syncRoot = useMemo(() => {
+    // Settled text (history, a reply that arrived whole) commits its final
+    // structure in the render that mounts it whenever the parser is loaded.
+    if (!sync) return parse ? parseSettledMarkdownAstNow(parseText, SYNC_MARKDOWN_PARSE_MAX_UTF16_UNITS) : null;
+    if (!parser) return null;
+    const cached = readCachedStreamingMarkdownAst(parseText);
+    if (cached) return cached;
+    const startedAt = performance.now();
+    const root = parser(parseText);
+    const duration = performance.now() - startedAt;
+    noteStreamSyncParse(duration, parseText.length);
+    if (duration > SYNC_MARKDOWN_PARSE_BUDGET_MS) slowAt.current = parseText.length;
+    return root;
+  }, [parser, parseText, sync, parse]);
+  if (syncRoot) lastSync.current = { text: parseText, source: text, root: syncRoot };
   const [rendered, setRendered] = useState<RenderedMarkdownAst | null>(() => {
     // A cache read is free, so even a tail past the parse cap opens styled
     // when the worker already holds its AST.
@@ -60,7 +103,8 @@ const ParsedMarkdownBody = memo(function ParsedMarkdownBody({
   const requestedText = useRef(parseText);
   const requestedSource = useRef(text);
   const queue = useRef<LatestMarkdownAstQueue | null>(null);
-  queue.current ??= new LatestMarkdownAstQueue();
+  // A live tail's worker results stay local to this body (see parseLiveMarkdownAst).
+  queue.current ??= new LatestMarkdownAstQueue(live ? parseLiveMarkdownAst : undefined);
   requestedText.current = parseText;
   requestedSource.current = text;
   // A cached AST is promoted while rendering, so the delta that produced it
@@ -86,20 +130,31 @@ const ParsedMarkdownBody = memo(function ParsedMarkdownBody({
   // every paragraph (user: 웹앱에서 트랜스크립트가 튄다). The stale parse is
   // one worker round trip old and is replaced by the parse of the text on
   // screen as soon as it lands.
-  const usable = exact ?? current;
+  const synced = lastSync.current;
+  const usable =
+    (syncRoot ? synced : null) ??
+    exact ??
+    (synced && (!current || synced.source.length >= current.source.length) ? synced : current);
   const renderedRoot = usable?.root ?? null;
   // A cold web Worker can trail the first streamed tokens by a network round
   // trip. Fenced scripts still reserve their final card/mono geometry during
   // that gap; ordinary prose stays hidden so raw Markdown markers never flash.
-  const showFencedSourceFallback = !renderedRoot && containsFencedCodeMarkdown(text);
+  // A completed reply (`sync` false) never paints source: raw prose and
+  // tables would reflow into their final structure when the parse lands, so
+  // its row stays reserved (CSS holds the measured/estimated box) and empty
+  // until the AST arrives.
+  const showFencedSourceFallback = sync && !renderedRoot && containsFencedCodeMarkdown(text);
 
   useEffect(() => {
-    // A cached AST was already promoted during render.
-    if (!parse || readCachedStreamingMarkdownAst(parseText)) return;
+    // A cached AST was already promoted during render; a main-thread parse
+    // already painted this text.
+    if (!parse || syncRoot || readCachedStreamingMarkdownAst(parseText)) return;
     // The source snapshot that produced this request: the render right before
     // this effect published it, so later growth can be recognised as append.
     const source = requestedSource.current;
+    const requestedAt = performance.now();
     queue.current?.request(parseText, (root, parsedText) => {
+      noteStreamWorkerParse(requestedAt);
       // Requiring an EXACT match here meant that whenever the worker was
       // slower than the 20 Hz publication cadence every result was discarded,
       // so the live tail kept its raw "**"/"`" markers for the whole stream
@@ -114,7 +169,7 @@ const ParsedMarkdownBody = memo(function ParsedMarkdownBody({
       const visibleSource = requestedSource.current;
       setRendered((latest) => promoteMarkdownAst(latest, root, parsedText, source, visibleSource));
     });
-  }, [parse, parseText]);
+  }, [parse, parseText, syncRoot]);
   useEffect(() => () => queue.current?.dispose(), []);
 
   // The live tail is parsed on a paced tick, so styled markdown appears WHILE
@@ -129,7 +184,9 @@ const ParsedMarkdownBody = memo(function ParsedMarkdownBody({
   // un-styled markdown that was already rendered, which is the one thing the
   // reader must never see (the projection never shows source either).
   if (usable) {
-    return <MarkdownAstBody root={usable.root} copyControl={copyControl} />;
+    return (
+      <MarkdownAstBody root={usable.root} copyControl={copyControl} fadeTimeline={fadeTimeline} fadeChunk={fadeChunk} />
+    );
   }
   if (showFencedSourceFallback) {
     // The projection only reserves geometry. Entry still waits for the parse:
@@ -151,11 +208,20 @@ const StreamingMarkdownBody = memo(function StreamingMarkdownBody({
   text,
   parseText,
   parse = true,
+  sync = false,
+  fadeTimeline = null,
+  fadeChunk = '',
   copyControl,
 }: {
   text: string;
   parseText?: string;
   parse?: boolean;
+  /** Live reply: small text parses on the main thread (see SYNC_MARKDOWN_PARSE_MAX_UTF16_UNITS). */
+  sync?: boolean;
+  /** A streamed reply's timeline: its words fade in (markdown-stream-fade). */
+  fadeTimeline?: StreamFadeTimeline | null;
+  /** This chunk's key within the reply. */
+  fadeChunk?: string;
   copyControl: MarkdownCopyControl;
 }) {
   // Stable chunks promote exactly (immutable text -> exact AST, whose source
@@ -164,7 +230,18 @@ const StreamingMarkdownBody = memo(function StreamingMarkdownBody({
   // `parseText` is the healed form of `text` for the live tail: the parser
   // sees closed markers while the source fallback still shows exactly what
   // the model has emitted.
-  return <ParsedMarkdownBody text={text} parseText={parseText ?? text} parse={parse} copyControl={copyControl} />;
+  return (
+    <ParsedMarkdownBody
+      text={text}
+      parseText={parseText ?? text}
+      parse={parse}
+      sync={sync}
+      live={sync && parseText !== undefined}
+      fadeTimeline={fadeTimeline}
+      fadeChunk={fadeChunk}
+      copyControl={copyControl}
+    />
+  );
 });
 
 export default StreamingMarkdownBody;

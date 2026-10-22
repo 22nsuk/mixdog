@@ -228,6 +228,51 @@ test('discovery failure on save blocks save, opens manual entry and categorizes 
   }
 });
 
+test('timeout and server failures on save point to manual entry', async (t) => {
+  let error;
+  const calls = [];
+  const { render } = mount(t, { calls, handlers: { discoverCustomProviderModels: () => ({ models: [], error }) } });
+  await render();
+  await fillNew();
+  for (const [next, pattern] of [
+    [{ kind: 'timeout', message: 'x timed out' }, /did not return its model list in time.*add model IDs manually/],
+    [{ kind: 'request', status: 503, message: 'x' }, /HTTP 503.*add model IDs manually/],
+  ]) {
+    error = next;
+    await submit();
+    assert.match(alerts(), pattern);
+    assert.equal(document.querySelector('details').open, true);
+  }
+});
+
+test('a slow discovery shows progress and can be stopped, opening manual entry', async (t) => {
+  let release;
+  const calls = [];
+  const { render } = mount(t, {
+    calls,
+    handlers: {
+      discoverCustomProviderModels: () =>
+        new Promise((resolve) => {
+          release = () => resolve({ models: [{ id: 'late' }] });
+        }),
+    },
+  });
+  await render();
+  await fillNew();
+  await submit();
+  assert.match(document.querySelector('[role=status]').textContent, /Waiting for the service/);
+  await click(button('Stop waiting'));
+  assert.equal(button('Stop waiting'), undefined);
+  assert.equal(document.querySelector('details').open, true);
+  await act(async () => release());
+  assert.equal(
+    calls.some((c) => c.capability === 'saveCustomProvider'),
+    false
+  );
+  assert.equal(alerts(), '');
+  assert.equal(button('Save').disabled, false);
+});
+
 test('empty discovery on save asks for manual models; manual models are saved without discovery', async (t) => {
   const calls = [];
   const { render } = mount(t, {
@@ -462,9 +507,8 @@ const ROWS = [
   { id: 'acme-2', manual: false, hidden: true, customReasoning: {} },
 ];
 const withRows = (extra = {}) => ({ ...CUSTOM, models: ROWS, ...extra });
-const OVERRIDDEN = { 'acme-1': { maxOutputTokens: 9, reasoning: { levels: [] } } };
-const modelCheckbox = (text) =>
-  [...document.querySelectorAll('label')].find((l) => l.textContent === text).querySelector('input');
+// Consistent with ROWS, as the runtime's effective rows always are.
+const OVERRIDDEN = { 'acme-1': { maxOutputTokens: 9, reasoning: { levels: ['low', 'high'] } } };
 
 test('keyless provider disables the key field and saves auth none without a key', async (t) => {
   const calls = [];
@@ -478,9 +522,7 @@ test('keyless provider disables the key field and saves auth none without a key'
   await type(field('Base URL'), 'http://localhost:11434/v1');
   await submit();
   assert.match(alerts(), /No API key/);
-  await act(async () =>
-    document.querySelector('input[aria-label="No authentication (local server)"]').click(),
-  );
+  await act(async () => document.querySelector('input[aria-label="No authentication (local server)"]').click());
   assert.equal(field('API key').disabled, true);
   assert.equal(field('API key').required, false);
   await submit();
@@ -521,7 +563,10 @@ test('environment variable mode: control, hints, contract-shaped input and inval
   assert.equal(hint(), null);
   await submit();
   assert.match(alerts(), /valid environment variable name/);
-  assert.equal(calls.some((c) => c.capability === 'saveCustomProvider'), false);
+  assert.equal(
+    calls.some((c) => c.capability === 'saveCustomProvider'),
+    false
+  );
 
   await type(field('API key environment variable'), 'GROQ_API_KEY');
   await settle();
@@ -532,10 +577,7 @@ test('environment variable mode: control, hints, contract-shaped input and inval
   found = false;
   await type(field('API key environment variable'), 'GROQ_KEY');
   await settle();
-  assert.equal(
-    hint().textContent,
-    'GROQ_KEY was not found yet. If you just set it, restart Mixdog to apply it.'
-  );
+  assert.equal(hint().textContent, 'GROQ_KEY was not found yet. If you just set it, restart Mixdog to apply it.');
   assert.ok(hint().classList.contains('warn'));
 
   await click(button('Test connection'));
@@ -556,7 +598,10 @@ test('env mode with an unset variable still saves when discovery fails; direct m
     calls,
     handlers: {
       checkCustomProviderKeyEnv: () => ({ found: false }),
-      discoverCustomProviderModels: () => ({ models: [], error: { kind: 'authentication', status: 401, message: 'x' } }),
+      discoverCustomProviderModels: () => ({
+        models: [],
+        error: { kind: 'authentication', status: 401, message: 'x' },
+      }),
       saveCustomProvider: (i) => i,
     },
   });
@@ -566,7 +611,10 @@ test('env mode with an unset variable still saves when discovery fails; direct m
   await type(field('Base URL'), 'https://env.test/v1');
   await type(field('API key'), 'sk-x');
   await submit();
-  assert.equal(calls.some((c) => c.capability === 'saveCustomProvider'), false);
+  assert.equal(
+    calls.some((c) => c.capability === 'saveCustomProvider'),
+    false
+  );
   await click(button('Environment variable'));
   await type(field('API key environment variable'), 'UNSET_KEY');
   await submit();
@@ -697,6 +745,38 @@ test('model editor sends only touched fields: chips, explicit [], reset null', a
   assert.deepEqual(args()[2], { reasoning: { levels: null }, contextWindow: 5000, maxOutputTokens: null });
 });
 
+test('model editor image input is a tri-state: Auto sends nothing, On/Off send booleans, Reset sends null', async (t) => {
+  const calls = [];
+  const { render } = mount(t, {
+    calls,
+    api: [withRows({ modelOverrides: { 'acme-1': { supportsVision: false } } })],
+    handlers: { updateCustomProviderModel: () => ({}) },
+  });
+  await render();
+  await click(button('Edit'));
+  const args = () => calls.filter((c) => c.capability === 'updateCustomProviderModel').at(-1).args;
+  const choose = async (label) => {
+    await click(button('Image input'));
+    await click([...document.querySelectorAll('[role=option]')].find((o) => o.textContent === label));
+  };
+  // The stored override (false) shows as Off.
+  await click(button('Edit model acme-1'));
+  assert.equal(button('Image input').textContent, 'Off');
+  await choose('On');
+  await click(editorBtn('Save'));
+  assert.deepEqual(args()[2], { supportsVision: true });
+
+  await click(button('Edit model acme-1'));
+  await choose('Auto');
+  await click(editorBtn('Save'));
+  assert.deepEqual(args()[2], { supportsVision: null });
+
+  await click(button('Edit model acme-1'));
+  await click(button('Reset Image input to inherited'));
+  await click(editorBtn('Save'));
+  assert.deepEqual(args()[2], { supportsVision: null });
+});
+
 test('changing levels sends wire values pruned to the new levels (null when none remain)', async (t) => {
   const calls = [];
   const rows = [{ ...ROWS[0], customReasoning: { wireValues: { low: 'L', high: 'H' } } }, ROWS[1]];
@@ -815,4 +895,150 @@ test('reopening a model editor after a save shows the saved values and keeps uns
   assert.equal(document.querySelector('.settings-model-editor input[id$="-contextWindow"]').value, '12345');
   await click(editorBtn('Cancel'));
   assert.equal(field('Display name').value, 'Draft name');
+});
+
+test('saving the provider before the panel reloads keeps a model save made in this form', async (t) => {
+  const calls = [];
+  const saved = { 'acme-1': { manual: true, contextWindow: 12345 } };
+  const { render } = mount(t, {
+    calls,
+    // The panel's reload has not landed: the form still holds the pre-save overrides.
+    api: [withRows()],
+    handlers: {
+      updateCustomProviderModel: () => withRows({ modelOverrides: saved }),
+      saveCustomProvider: (input) => input,
+    },
+  });
+  await render();
+  await click(button('Edit'));
+  await type(field('Display name'), 'Draft name');
+  await click(button('Edit model acme-1'));
+  await type(document.querySelector('.settings-model-editor input[id$="-contextWindow"]'), '12345');
+  await click(editorBtn('Save'));
+  await click(button('Edit model acme-1'));
+  assert.ok(!button('Reset Context window to inherited').disabled, 'the reopened editor knows the saved override');
+  await click(editorBtn('Cancel'));
+  await submit();
+  const input = calls.find((c) => c.capability === 'saveCustomProvider').args[0];
+  assert.equal(input.name, 'Draft name');
+  assert.deepEqual(input.modelOverrides, saved);
+});
+
+test('reopening a discovered model after a save shows the saved values, not the discovery row', async (t) => {
+  const calls = [];
+  const saved = { contextWindow: 12345, name: 'Saved name', reasoning: { levels: ['high'] } };
+  const { render } = mount(t, {
+    calls,
+    api: [withRows()],
+    handlers: {
+      discoverCustomProviderModels: () => ({ models: ROWS }),
+      updateCustomProviderModel: () => withRows({ modelOverrides: { ...CUSTOM.modelOverrides, 'acme-1': saved } }),
+    },
+  });
+  await render();
+  await click(button('Edit'));
+  await click(button('Refresh models'));
+  await click(button('Edit model acme-1'));
+  const input = (key) => document.querySelector(`.settings-model-editor input[id$="-${key}"]`);
+  await type(input('contextWindow'), '12345');
+  await type(input('name'), 'Saved name');
+  await click([...document.querySelectorAll('.settings-model-chip')].find((c) => c.textContent === 'low'));
+  await click(editorBtn('Save'));
+  await click(button('Edit model acme-1'));
+  assert.equal(input('contextWindow').value, '12345');
+  assert.equal(input('name').value, 'Saved name');
+  assert.deepEqual(
+    [...document.querySelectorAll('.settings-model-chip[aria-pressed=true]')].map((c) => c.textContent),
+    ['high']
+  );
+});
+
+test('refresh with an empty model list shows the empty-result message', async (t) => {
+  const calls = [];
+  const { render } = mount(t, { calls, handlers: { discoverCustomProviderModels: () => ({ models: [] }) } });
+  await render();
+  await click(button('Edit'));
+  await click(button('Refresh models'));
+  assert.match(alerts(), /Automatic discovery returned no models|자동 검색에서 모델이 반환되지 않았습니다/);
+});
+
+test('IPC envelopes are stripped and known failures are localized', async (t) => {
+  const calls = [];
+  let message = '';
+  const { render } = mount(t, {
+    calls,
+    handlers: {
+      testCustomProvider: () => {
+        throw new Error(`Error invoking remote method 'mixdog:invoke-capability': Error: ${message}`);
+      },
+      saveCustomProvider: () => {
+        throw new Error(
+          "Error invoking remote method 'mixdog:invoke-capability': TypeError: custom provider name is invalid."
+        );
+      },
+      discoverCustomProviderModels: () => ({ models: [{ id: 'm' }] }),
+    },
+  });
+  await render();
+  await click(button('Add custom provider'));
+  await type(field('Display name'), 'X');
+  await type(field('Base URL'), 'https://x.test');
+  await type(field('API key'), 'k');
+  message = 'Connection error.';
+  await click(button('Test connection'));
+  assert.doesNotMatch(alerts(), /Error invoking|Connection error/);
+  assert.match(alerts(), /Could not connect|연결/);
+  message = 'custom-test first byte timed out after 60000ms';
+  await click(button('Test connection'));
+  assert.doesNotMatch(alerts(), /Error invoking|custom-test/);
+  assert.match(alerts(), /60/);
+  message = 'connection test timed out after 20s';
+  await click(button('Test connection'));
+  assert.doesNotMatch(alerts(), /connection test timed out/);
+  assert.match(alerts(), /20/);
+  await submit();
+  assert.doesNotMatch(alerts(), /Error invoking|TypeError/);
+  assert.match(alerts(), /display name|표시 이름/i);
+});
+
+test('name is trimmed, bounded and validated inline before saving', async (t) => {
+  const calls = [];
+  const { render } = mount(t, {
+    calls,
+    handlers: { saveCustomProvider: (i) => i, discoverCustomProviderModels: () => ({ models: [{ id: 'm' }] }) },
+  });
+  await render();
+  await click(button('Add custom provider'));
+  const name = field('Display name');
+  assert.equal(name.maxLength, 200);
+  await type(field('Base URL'), 'https://x.test');
+  await type(field('API key'), 'k');
+  await type(name, '   ');
+  await submit();
+  assert.ok(name.getAttribute('aria-invalid') === 'true');
+  assert.equal(calls.length, 0);
+  await type(name, 'a'.repeat(201));
+  await submit();
+  assert.equal(calls.length, 0);
+  assert.equal(name.getAttribute('aria-invalid'), 'true');
+  await type(name, '  Ok  ');
+  await submit();
+  assert.equal(calls.find((c) => c.capability === 'saveCustomProvider').args[0].name, 'Ok');
+});
+
+test('a refresh HTTP failure shows a generic status message without internal ids', async (t) => {
+  const { render } = mount(t, {
+    calls: [],
+    handlers: {
+      discoverCustomProviderModels: () => ({
+        models: [],
+        error: { kind: 'other', message: 'custom-6223a6ea-1111 models 500' },
+      }),
+    },
+  });
+  await render();
+  await click(button('Edit'));
+  await click(button('Refresh models'));
+  assert.doesNotMatch(alerts(), /custom-6223/);
+  assert.match(alerts(), /500/);
 });

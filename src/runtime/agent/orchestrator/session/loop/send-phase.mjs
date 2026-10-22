@@ -4,6 +4,7 @@
  * consume a retry verdict, and settle a completed send into the loop state.
  */
 import { traceCacheBreak } from '../../cache-break-trace.mjs';
+import { anthropicPrefixChanges } from '../../providers/lib/anthropic-prefix-trace.mjs';
 import { resolveLiveToolCwd } from './tool-exec.mjs';
 import { notifySkillsApplied, prepareExplicitSkills, recordAppliedSkills } from '../explicit-skills.mjs';
 import { addUsage, usageDeltaEvent } from './usage.mjs';
@@ -17,6 +18,14 @@ import { stripInlineImages } from '../image-strip-recovery.mjs';
 import { runWithProviderRequestToolsScope } from '../../runtime-core/provider-request-tools.mjs';
 import { REPEAT_FAIL_LIMIT } from './loop-state.mjs';
 import { createToolCallIdResolver } from './tool-call-ids.mjs';
+import { captureSideQuestionRequest } from '../side-question-store.mjs';
+import { advanceAgentRoute } from './route-fallback.mjs';
+import {
+  beginProviderToolExclusions,
+  dropSessionTool,
+  recordProviderToolExclusion,
+  withoutDroppedTools,
+} from './provider-tool-exclusions.mjs';
 
 /**
  * Open an iteration: refresh the live cwd, drain queued steering after a
@@ -73,6 +82,8 @@ export async function beginIteration(state) {
     loopUsageMetricsTurnId: state.usageMetricsTurnId,
     loopUsageMetricsEpoch: state.usageMetricsEpoch,
   });
+  // A tool the provider rejected with a schema 400 stays out of the session.
+  Object.assign(boundary, withoutDroppedTools(sessionRef, boundary));
   state.iterations = boundary.iterations;
   state.lastUsage = boundary.lastUsage;
   state.firstTurnUsage = boundary.firstTurnUsage;
@@ -92,6 +103,10 @@ export async function beginIteration(state) {
   // callers omit the flag and retain legacy live deferred resolution.
   opts.providerToolSnapshotAuthoritative = true;
   opts.providerNativeToolPrefixCount = boundary.requestToolScope.nativePrefixCount;
+  // A tool the provider leaves out of this request (a schema it cannot
+  // accept) is noticed once per session and refused if the model calls it.
+  beginProviderToolExclusions(sessionRef);
+  opts.onToolExcluded = (exclusion) => recordProviderToolExclusion(sessionRef, exclusion, opts.onStageChange);
   state.lastSendTools = boundary.sendTools;
   // Eager-dispatch queue (see ../eager-dispatch.mjs): read-only tools start
   // the instant the provider streams a tool-call event; writes and unknown
@@ -156,32 +171,67 @@ export async function sendProviderRequest(state, round) {
   try {
     opts.onProviderSendStarted?.();
   } catch {}
-  const result = await runWithProviderRequestToolsScope(round.requestToolScope, () =>
-    sendWithRecovery({
-      provider,
-      messages: providerMessages,
-      recoveryMessages: messageSource,
-      model,
-      sendTools: round.sendTools,
-      tools: round.sendTools,
-      opts,
-      sessionId,
-      sessionRef,
-      nextIteration: round.nextIteration,
-      contextOverflowRetryUsed: state.contextOverflowRetryUsed,
-      transportRetriesUsed: state.transportRetriesUsed,
-      transportRetryMax: state.transportRetryMax,
-      imageStripUsed: state.imageStripUsed,
-      thinkingReplayRepairUsed: state.thinkingReplayRepairUsed,
-      signal: state.signal,
-    })
-  );
+  // The request a /btw side question forks: kept while it is in flight, with
+  // its reply once it proceeds, and dropped again if it fails.
+  const sideQuestion = captureSideQuestionRequest({
+    sessionId,
+    sessionRef,
+    provider,
+    model,
+    messages: providerMessages,
+    tools: round.sendTools,
+    opts,
+  });
+  // The request's time for the speed figures, the wait for the first token
+  // included: the span the usage ledger recorded as `duration_ms` (stamped on
+  // the response); wall time only for a response no ledger row timed.
+  const requestStartedAt = Date.now();
+  // The output-limit escalation is one-shot: take it off the shared options
+  // before sending, so this attempt alone carries it whatever the outcome
+  // (retry, route fallback, thrown error, abort).
+  const maxOutputTokensOverride = opts.maxOutputTokensOverride;
+  delete opts.maxOutputTokensOverride;
+  let result;
+  try {
+    result = await runWithProviderRequestToolsScope(round.requestToolScope, () =>
+      sendWithRecovery({
+        maxOutputTokensOverride,
+        provider,
+        messages: providerMessages,
+        recoveryMessages: messageSource,
+        model,
+        sendTools: round.sendTools,
+        tools: round.sendTools,
+        opts,
+        sessionId,
+        sessionRef,
+        nextIteration: round.nextIteration,
+        contextOverflowRetryUsed: state.contextOverflowRetryUsed,
+        transportRetriesUsed: state.transportRetriesUsed,
+        transportRetryMax: state.transportRetryMax,
+        imageStripUsed: state.imageStripUsed,
+        thinkingReplayRepairUsed: state.thinkingReplayRepairUsed,
+        toolSchemaDropUsed: state.toolSchemaDropUsed,
+        signal: state.signal,
+      })
+    );
+  } catch (error) {
+    sideQuestion?.discard();
+    if (!(await advanceAgentRoute(state, error))) throw error;
+    result = { action: 'retry_route' };
+  }
+  if (result.action === 'proceed') sideQuestion?.settle(result.response);
+  else sideQuestion?.discard();
+  const sendEndedAt = Date.now();
   return {
     result,
     providerMessages,
     prefixGuardCandidate,
     sendStartedAt,
-    sendEndedAt: Date.now(),
+    sendEndedAt,
+    requestMs: Number.isFinite(result.response?.usageDurationMs)
+      ? Math.max(0, result.response.usageDurationMs)
+      : Math.max(0, sendEndedAt - requestStartedAt),
     preSendMs,
     toolResumeMs,
   };
@@ -200,6 +250,8 @@ function appendRecoveryNotice(state, notice) {
  *  instead of processing a response. */
 export function applyRetryAction(state, result) {
   switch (result.action) {
+    case 'retry_route':
+      return true;
     case 'retry':
       // Keep opts.cacheBreakIntent: the failed send never consumed the tag,
       // and the reactive-compact retry that follows IS the tagged transition.
@@ -216,6 +268,16 @@ export function applyRetryAction(state, result) {
       // is rebuilt from repaired history and the session keeps the fix. No
       // transport budget is consumed: nothing was generated.
       state.thinkingReplayRepairUsed = true;
+      return true;
+    case 'retry_tool_schema_drop':
+      // The provider named a tool whose schema it rejects: the session drops
+      // it (with the notice) and the turn is rebuilt without it, once. The
+      // frozen tool surface and provider state are rebuilt around the change.
+      state.toolSchemaDropUsed = true;
+      dropSessionTool(state.sessionRef, result.exclusion, state.opts.onStageChange);
+      state.fixedProviderToolSurface = null;
+      state.providerState = undefined;
+      state.providerStateUpdated = true;
       return true;
     case 'retry_image_strip':
       state.transportRetriesUsed += 1;
@@ -297,6 +359,8 @@ function traceActualCacheMiss(state, sent, response, { previousGuardState, previ
         previousCachedPrefixTokens: baseline,
         idleMs,
         missingPrefixGuardBaseline: !previousGuardState,
+        // Which wire block moved ('none': same bytes, so the cache itself dropped it).
+        ...anthropicPrefixChanges(sessionId),
       },
       state.cacheBreakTraceOptions
     );
@@ -326,6 +390,7 @@ export function settleSendResult(state, round, sent) {
   if (state.imageStrip) settleImageStrip(state, round, sent);
   opts.onToolCall = undefined;
   delete opts.cacheBreakIntent;
+  state.lastStreamedChars = sent.result.streamedChars || 0;
   state.contextOverflowRetryUsed = false;
   // A completed send ends the outage this budget was covering; the next
   // iteration is a fresh request and must get the full replay budget again.
@@ -382,6 +447,7 @@ export function settleSendResult(state, round, sent) {
             usage: reportedUsage,
             sendTools: round.sendTools,
             toolCalls: response.toolCalls?.length || 0,
+            requestMs: sent.requestMs,
           })
         )
       );

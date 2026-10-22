@@ -14,6 +14,7 @@ import { encryptWebPushPayload, sendWebPush } from './web-push';
 import type { DesktopAgentPoolRow, DesktopSessionSummary } from '../shared/contract';
 import type { DesktopSessionStateUpdate } from '../shared/contract-session';
 import type { SessionFinalAnswer } from './session-final-answer';
+import { sessionTitleLabel } from '../shared/session-title.mjs';
 
 type PushReason = NativePushReason;
 
@@ -53,12 +54,27 @@ function pendingInputKey(snapshot: PendingInputSnapshot | null | undefined): str
   return `${goalId}:parked:${parked.map((task) => String(task.id ?? '')).join(',')}`;
 }
 
+export interface HeldRequestPush {
+  /** The owning agent's home thread: a tap opens it. */
+  sessionId: string;
+  agentName: string;
+  requestId: string;
+}
+
+/** The whole text of a held-request push. */
+export function heldRequestPushText(agentName: string): string {
+  return `${String(agentName || 'Mixy').slice(0, 60)}가 승인을 기다립니다`;
+}
+
 interface PushNotifier {
   onSessions(sessions: readonly DesktopSessionSummary[]): void;
   /** Live per-session snapshots: a new tool approval wakes a background phone. */
   onSessionState(update: DesktopSessionStateUpdate): void;
   /** Child agents and shell jobs: a Lead waiting on them has not answered yet. */
   onAgentPool(agents: readonly DesktopAgentPoolRow[]): void;
+  /** A held request of an unattended run (held-request-host.mjs): pushed as
+   *  "<agent>가 승인을 기다립니다" and nothing else — no tool, args or text. */
+  onHeldRequest(event: HeldRequestPush): void;
   /** A browser lost its access: drop its endpoint with the credential. */
   forgetClient(clientId: string): void;
   dispose(): void;
@@ -71,7 +87,7 @@ interface PushNotifierOptions {
   hostId?: string;
   /** Off by default; the user opts in per browser from Settings. */
   isEnabled(): boolean;
-  readFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null>;
+  readFinalAnswer(sessionId: string, startedAt: number, signal?: AbortSignal): Promise<SessionFinalAnswer | null>;
   /** Foreground browsers suppress ordinary replies, but not scheduled ones.
    *  Takes the browser id the subscription was registered with. */
   isClientForeground(browserId: string): boolean;
@@ -97,6 +113,10 @@ interface PushNotifierOptions {
     /** Hands the encrypted body to the relay; false when it cannot take it. */
     send(target: RelayWebPushTarget, body: Buffer): boolean;
   };
+  /** Whether the agent `sessionId` belongs to is muted; muted sessions push nothing. */
+  isSessionMuted?(sessionId: string): boolean;
+  /** A bot's display name for its home chat's push title. */
+  agentName?(agentId: string): Promise<string>;
   fetchImpl?: typeof fetch;
   onError?(detail: string): void;
   /** Every decision on the way to a phone, so a missing notification can be
@@ -120,11 +140,20 @@ const VAPID_SUBJECT = 'mailto:support@tribgames.com';
 
 export function createPushNotifier(options: PushNotifierOptions): PushNotifier {
   const deliver = async (
-    completion: TurnCompletion,
+    turn: TurnCompletion,
     reason: PushReason = 'turn-finished',
     showWhenForeground = false,
     approvalId?: string
   ): Promise<void> => {
+    // An attachment-only title (`[Image]` …) goes out as its kind's label.
+    // This process has no UI language (see the body below): English.
+    const completion = { ...turn, title: sessionTitleLabel(turn.title) };
+    // A muted agent's pushes are all silenced (agent-notification-mute.ts);
+    // nothing in-app depends on this path.
+    if (options.isSessionMuted?.(completion.sessionId)) {
+      options.onDiagnostic?.('suppressed', { sessionId: completion.sessionId, reason: 'agent-muted' });
+      return;
+    }
     const nativeDelivery = deliverNative(completion, reason, showWhenForeground, approvalId);
     const hostId = options.hostId ? options.hostId.slice(0, 64) : '';
     // `hostId` names the PC that sent it: one browser hears from every PC it
@@ -151,7 +180,8 @@ export function createPushNotifier(options: PushNotifierOptions): PushNotifier {
     const relayEndpoints = new Set(relayTargets.map((target) => target.endpoint));
     const subscriptions = stored.filter(
       (subscription) =>
-        !relayEndpoints.has(subscription.endpoint) && !(subscription.clientId && relayBrowsers.has(subscription.clientId))
+        !relayEndpoints.has(subscription.endpoint) &&
+        !(subscription.clientId && relayBrowsers.has(subscription.clientId))
     );
     if (relayTargets.length === 0 && subscriptions.length === 0) {
       await nativeDelivery;
@@ -270,6 +300,7 @@ export function createPushNotifier(options: PushNotifierOptions): PushNotifier {
   const watcher = createFinalAnswerWatcher({
     isEnabled: options.isEnabled,
     readFinalAnswer: options.readFinalAnswer,
+    ...(options.agentName ? { agentName: options.agentName } : {}),
     onError: options.onError,
     onDiagnostic: options.onDiagnostic,
     onFinalAnswer: (completion) => {
@@ -351,6 +382,31 @@ export function createPushNotifier(options: PushNotifierOptions): PushNotifier {
       watcher.onSessions(sessions);
     },
     onSessionState,
+    onHeldRequest(event) {
+      const sessionId = String(event?.sessionId || '');
+      const requestId = String(event?.requestId || '');
+      if (!sessionId || !requestId) return;
+      if (!options.isEnabled()) {
+        options.onDiagnostic?.('suppressed', { sessionId, reason: 'disabled' });
+        return;
+      }
+      const now = Date.now();
+      void deliver(
+        {
+          sessionId,
+          title: 'Mixdog',
+          preview: heldRequestPushText(event.agentName),
+          startedAt: now,
+          at: now,
+          leadFinished: false,
+        },
+        'approval-pending',
+        true,
+        requestId
+      ).catch((error: unknown) => {
+        options.onError?.(error instanceof Error ? error.message : String(error));
+      });
+    },
     onAgentPool: watcher.onAgentPool,
     forgetClient(clientId) {
       void options.store.removeByClient(clientId).catch(() => false);

@@ -534,6 +534,36 @@
 .image-lightbox-nav.next {
   right: 4px;
 }
+/* Phone: previews stay inside the visible screen (notch, home bar, soft
+   keyboard) on the dialog gutter, with finger-sized controls. */
+html[data-mixdog-mobile-tabs] :is(.transcript-artifact-preview, .image-lightbox) {
+  max-width: calc(100vw - 2 * max(var(--mx-dialog-inset), env(safe-area-inset-left, 0px)));
+  max-height: calc(
+    var(--mx-visible-height, 100dvh) -
+    max(var(--mx-dialog-inset), env(safe-area-inset-top, 0px)) -
+    max(var(--mx-dialog-inset), env(safe-area-inset-bottom, 0px))
+  );
+}
+html[data-mixdog-mobile-tabs] .image-lightbox {
+  width: calc(100vw - 2 * max(var(--mx-dialog-inset), env(safe-area-inset-left, 0px)));
+  height: calc(
+    var(--mx-visible-height, 100dvh) -
+    max(var(--mx-dialog-inset), env(safe-area-inset-top, 0px)) -
+    max(var(--mx-dialog-inset), env(safe-area-inset-bottom, 0px))
+  );
+}
+html[data-mixdog-mobile-tabs] .transcript-artifact-preview {
+  padding-top: calc(var(--mx-touch) + 8px);
+}
+html[data-mixdog-mobile-tabs] .transcript-artifact-preview > :is(img, video) {
+  max-width: 100%;
+  max-height: calc(var(--mx-visible-height, 100dvh) - 120px);
+}
+html[data-mixdog-mobile-tabs]
+  :is(.transcript-artifact-preview > .icon-button, .image-lightbox-toolbar .icon-button, .image-lightbox-nav) {
+  min-width: var(--mx-touch);
+  min-height: var(--mx-touch);
+}
 /* The page a turn left open in the browser pane: site, path, and one button
    that brings the pane back to it. It wears the file artifact's plate so a
    produced page and a produced file read as the same class of object. */
@@ -657,6 +687,41 @@
   outline: 2px solid var(--mx-focus);
   outline-offset: 2px;
 }
+/* "브라우저 · 보기" (browser-peek-line.tsx): one quiet line under a turn's
+   browser work; the panel opens only when it is pressed. */
+.transcript-browser-peek {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  margin: 6px 0 2px;
+  padding: 0 10px;
+  border: 1px solid var(--mx-border);
+  border-radius: 999px;
+  color: var(--mx-text-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--mx-font-meta);
+  cursor: pointer;
+  transition: background var(--mx-motion-ink);
+}
+.transcript-browser-peek b {
+  color: var(--mx-text);
+  font-weight: 500;
+}
+.transcript-browser-peek:hover {
+  background: var(--mx-hover);
+}
+.transcript-browser-peek:focus-visible {
+  outline: 2px solid var(--mx-focus);
+  outline-offset: 2px;
+}
+/* "<site>에 저장된 로그인으로 로그인했습니다": a faint record, no control. */
+.transcript-saved-sign-in {
+  margin: 4px 0 2px;
+  color: var(--mx-text-faint, var(--mx-text-muted));
+  font-size: var(--mx-font-meta);
+}
 /* Computer Use's one-time notice under a tool group: the Extensions dialog's
    item card, so the setup prompt reads the same in chat and in Settings. */
 .transcript-computer-readiness {
@@ -764,6 +829,11 @@
   cursor: default;
 }
 .tool-activity-item-header > :not(.tool-activity-item-toggle) {
+  position: relative;
+}
+/* The title box can be `display: contents` (it makes no stacking box then):
+   its file link positions itself so a click reaches it, not the toggle. */
+.tool-activity-item-title .tool-path-link {
   position: relative;
 }
 .tool-activity-item-toggle {
@@ -938,8 +1008,7 @@
   background: color-mix(in srgb, var(--mx-danger) 20%, transparent);
 }
 /* A running call (or group) shows its elapsed time (from 5s) before the
-   chevron; it leaves with the result. A group's leading icon stays still (its
-   title shimmers); a call row shows a small twinkling sparkle here. */
+   chevron; it leaves with the result. */
 .tool-working {
   display: inline-flex;
   flex: 0 0 auto;
@@ -950,37 +1019,6 @@
   color: var(--mx-text-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-.tool-working-spark {
-  flex: none;
-  color: var(--mx-accent);
-}
-/* Sparkle: twinkles (scale + quarter turn). */
-.tool-working-spark .tool-group-icon-star {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: tool-spark-twinkle 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-@keyframes tool-spark-twinkle {
-  0%,
-  100% {
-    opacity: 0.55;
-    transform: scale(0.72) rotate(0deg);
-  }
-  45% {
-    opacity: 1;
-    transform: scale(1.08) rotate(90deg);
-  }
-  70% {
-    opacity: 0.9;
-    transform: scale(0.95) rotate(90deg);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .tool-working-spark .tool-group-icon-star {
-    animation: none;
-    opacity: 1;
-  }
 }
 /* The disclosure arrow sits right after the text, so it stays visible: a
    small 14px caret in the line's own quiet ink. */
@@ -1710,7 +1748,7 @@
   font-size: var(--mx-font-code);
   line-height: var(--mx-line-ui);
 }
-.tool-activity-markdown .markdown-table {
+.tool-activity-markdown .markdown-table-frame {
   margin: 4px 0;
 }
 .tool-activity:not([data-surface="desktop"]).failed > .tool-activity-header .tool-icon,
@@ -2015,14 +2053,19 @@ button[data-copied="true"] > svg {
   display: flex;
   flex-direction: column;
 }
-.utility-dock-empty {
+/* The one panel-level empty state: text only, centred both ways in the
+   panel's content area. `.schedules-empty` is the Agents pane's legacy alias. */
+.utility-dock-empty,
+.schedules-empty {
   flex: 1;
   min-height: 0;
   display: grid;
-  place-items: center;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
   margin: 0;
   padding: 16px 20px;
-  color: var(--mx-text-faint);
+  color: var(--mx-text-muted);
   font-size: var(--mx-font-ui);
   line-height: var(--mx-line-ui);
   text-align: center;

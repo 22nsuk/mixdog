@@ -21,7 +21,22 @@ import type {
   SessionSnapshot,
   ToolApprovalDecision,
 } from '../shared/contract';
+import { DESKTOP_READ_CAPABILITIES } from '../shared/contract';
 import { projectIdentity } from '../shared/project-identity';
+import {
+  agentHomeSessionId,
+  agentIdOfHomeSession,
+} from '../../../../src/runtime/agent/orchestrator/session/agent-home.mjs';
+import { agentDescendantIds } from '../../../../src/runtime/agent/orchestrator/session/store-summary-visibility.mjs';
+import { MIXY_AGENT_ID } from '../shared/agent-contacts';
+import { agentGreetingKickoff } from '../shared/agent-greeting';
+import { createAgentHomeSessions, startSessionOver } from './agent-home-sessions';
+import { agentGreetingsFileStore, createAgentGreetings, resolveMixyCreated } from './mixy-first';
+import { disableAgentSchedules } from './agent-schedules';
+import { createBranchMenuCache } from './branch-menu-cache';
+import { createInFlightJoin, createProviderModelsCache } from './provider-models-cache';
+import { SLOW_READ_CAPABILITIES } from './remote-call-queue';
+import { isSessionMissingError } from './session-final-answer';
 import { reportTranscriptRead, transcriptReadTraceId } from '../shared/transcript-read-diagnostics';
 import { normalizeSessionTitle, promptTitle } from '../shared/session-title.mjs';
 import { TRANSCRIPT_READ_TIMEOUT_MS } from '../shared/transcript-read-policy';
@@ -41,7 +56,12 @@ export type SessionWorkspaceResolution = {
   desktopSession: { classification: 'project'; projectPath: string } | { classification: 'task'; projectPath: null };
 };
 
+/** A fresh, unused session id for an archived copy (a reset's old conversation). */
+const mintArchiveId = () => `sess_${process.pid}_${Date.now()}_${randomUUID().replaceAll('-', '')}`;
+
 export interface SessionHostLifecycleOwner {
+  /** Take a deleted agent out of every room's members. */
+  forgetRoomMember(agentId: string): Promise<void>;
   readonly client: SessionClient;
   readonly publication: SessionHostPublication;
   readonly sessionViews: SessionViewRegistry;
@@ -51,6 +71,8 @@ export interface SessionHostLifecycleOwner {
   readonly pendingCatalogSessionIds: Set<string>;
   readonly sessionMetadata: DesktopSessionMetadata;
   readonly transcriptWindows: SessionTranscriptWindows;
+  /** agent-greetings.json in the app profile (mixy-first.ts). */
+  readonly agentGreetingsPath: string;
   isDisposed(): boolean;
   callOptions(callId?: string, timeoutMs?: number): SessionCallOptions;
   taskWorkspace(): Promise<string>;
@@ -98,13 +120,27 @@ export interface SessionHostLifecycleOwner {
   publishShell(snapshot: SessionSnapshot): void;
   ensureColdViewRefresh(): void;
   listSessions(): Promise<DesktopSessionSummary[]>;
+  /** Ids of every stored row the daemon listed, before summary filtering. */
+  storedSessionIds(): string[];
+  /** Every stored row the daemon listed, before summary filtering. */
+  storedSessionRows(): ReadonlyArray<Record<string, unknown>>;
   sessionCatalogLoaded(): boolean;
   sessionCatalog(): DesktopSessionSummary[];
   publishSessionCatalog(sessions: DesktopSessionSummary[]): void;
   publishCatalogs(): Promise<void>;
 }
 
+const READ_CAPABILITIES: ReadonlySet<string> = new Set(DESKTOP_READ_CAPABILITIES);
+/** Quota and usage sweeps (seconds each): the window and every phone ask for
+ *  them together at boot and on each refresh, and identical concurrent
+ *  requests join the one already running instead of sweeping again. */
+const SHARED_CONTROL_READS = SLOW_READ_CAPABILITIES;
+
 export class SessionHostLifecycle {
+  private readonly branchMenus = createBranchMenuCache();
+  private readonly providerModels = createProviderModelsCache<DesktopModelOption[]>();
+  private readonly controlReads = createInFlightJoin();
+
   constructor(private readonly owner: SessionHostLifecycleOwner) {}
 
   private blankSnapshot(cwd: string, projectPath: string | null): SessionSnapshot {
@@ -218,6 +254,23 @@ export class SessionHostLifecycle {
     }
   }
 
+  /** Explicit force-release of a shell job whose termination is unconfirmed,
+   *  through the runtime that holds its workspace admission. */
+  async releaseShellJob(sessionId: string, taskId: string): Promise<{ released: boolean; error?: string }> {
+    const id = sessionIdOf(sessionId);
+    try {
+      const { value } = await this.owner.invokeSession(id, 'releaseShellJob', [taskId]);
+      const result = (value && typeof value === 'object' ? value : {}) as { released?: unknown; error?: unknown };
+      if (result.released === true) return { released: true };
+      return {
+        released: false,
+        error: typeof result.error === 'string' && result.error ? result.error : 'The job was not released.',
+      };
+    } catch (error) {
+      return { released: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   async getQuotaAutoResume(): Promise<boolean> {
     return (await this.owner.invokeControl('getQuotaAutoResume', [])) === true;
   }
@@ -257,23 +310,179 @@ export class SessionHostLifecycle {
     await this.owner.publishCatalogs();
   }
 
-  async setSessionArchived(sessionId: string, archived: boolean): Promise<void> {
+  private readonly agentHomes = createAgentHomeSessions({
+    listAgents: () => this.owner.invokeControl('listAgents', []),
+    mixyRoute: () => this.owner.invokeControl('getLeadHomeRoute', []),
+    readSession: (sessionId) => this.owner.readSession(sessionId, false, false),
+    createSession: async (sessionId, params) => {
+      const created = await this.owner.client.create(
+        { ...params, sessionId },
+        this.owner.callOptions(`session-create:${sessionId}`)
+      );
+      if (sessionIdOf(created.sessionId) !== sessionId) throw new Error('Agent home returned a mismatched session id.');
+      this.owner.applySessionResult(sessionId, created);
+    },
+    setRoute: async (sessionId, route) => {
+      await this.owner.invokeSession(sessionId, 'setRoute', [{ ...route, sessionOnly: true }]);
+    },
+    setArchived: (sessionId, archived) => this.setSessionArchived(sessionId, archived),
+    isRetired: (sessionId) => this.owner.sessionMetadata.isRetired(sessionId),
+    // The catalog marks a retired home (`agentDeleted`): re-project it.
+    setRetired: async (sessionId, retired) => {
+      if (await this.owner.sessionMetadata.setRetired(sessionId, retired)) await this.republishSessionCatalog();
+    },
+    nameRetired: async (sessionId, name) => {
+      await this.owner.sessionMetadata.load();
+      this.owner.sessionMetadata.rememberRetiredTitle(sessionId, name);
+    },
+    archivedAgentName: async (agentId) => {
+      const identities = await this.owner.invokeControl('archivedAgentIdentities', [[agentId]]);
+      const identity = (identities as Record<string, { name?: unknown } | null> | null)?.[agentId];
+      return typeof identity?.name === 'string' ? identity.name : '';
+    },
+    knownSessionIds: () => [
+      ...new Set([...this.owner.storedSessionIds(), ...this.owner.publication.projections.keys()]),
+    ],
+    agentPresence: (agentIds) => this.owner.invokeControl('agentDefinitionPresence', [agentIds]),
+    taskWorkspace: () => this.owner.taskWorkspace(),
+    forgetRoomMember: (agentId) => this.owner.forgetRoomMember(agentId),
+    disableAgentSchedules: (agentId) =>
+      disableAgentSchedules((method, args) => this.owner.invokeControl(method, args), agentId),
+    clearSession: (sessionId, archiveAs) => this.resetSessionConversation(sessionId, { archiveAs }),
+    mintArchiveId,
+  });
+
+  /** "대화 초기화" of one session: cleared in place (session-ops clear) with
+   *  its prompt rebuilt from the current rules; `archiveAs` keeps the old
+   *  transcript, `fork: false` keeps none. Refused while it runs a turn. */
+  async resetSessionConversation(sessionId: string, options: { archiveAs?: string; fork?: false }): Promise<void> {
+    const live = this.owner.publication.projections.get(sessionId)?.snapshot;
+    if (live?.busy || live?.commandBusy) {
+      throw new Error('The agent is running a turn; wait for it to finish before resetting the conversation.');
+    }
+    const { value } = await this.owner.invokeSession(sessionId, 'clear', [{ ...options, rebuildPrompt: true }]);
+    if (value === false) throw new Error('The conversation could not be reset; try again in a moment.');
+    if ((value as { promptRebuilt?: unknown } | null)?.promptRebuilt === false) {
+      console.warn(`[mixdog-session] ${sessionId} was reset, but its prompt could not be rebuilt.`);
+    }
+    // Every open view of it shows the emptied conversation now: a full read,
+    // published, replaces the rows it held.
+    await this.owner.readSession(sessionId, true).catch((error) => {
+      console.warn(`[mixdog-session] Could not republish ${sessionId} after its reset:`, error);
+    });
+    void this.owner.publishCatalogs();
+  }
+
+  /** A room log's fresh start: the conversation so far kept archived. */
+  startSessionOver(sessionId: string): Promise<string | null> {
+    return startSessionOver(
+      {
+        readSession: (id) => this.owner.readSession(id, false, false),
+        setArchived: (id, archived) => this.setSessionArchived(id, archived),
+        clearSession: (id, archiveAs) => this.resetSessionConversation(id, { archiveAs }),
+        mintArchiveId,
+      },
+      sessionId
+    );
+  }
+
+  private agentGreetingsValue: ReturnType<typeof createAgentGreetings> | null = null;
+  private get agentGreetings(): ReturnType<typeof createAgentGreetings> {
+    this.agentGreetingsValue ??= createAgentGreetings({
+      ...agentGreetingsFileStore(this.owner.agentGreetingsPath),
+      listAgents: () => this.owner.invokeControl('listAgents', []),
+      greet: async (agent) => {
+        const { sessionId } = await this.agentHomes.open(agent.id);
+        await this.submitToSession(sessionId, agentGreetingKickoff(agent), { kickoff: true });
+      },
+    });
+    return this.agentGreetingsValue;
+  }
+
+  /** getLeadStatus with the once-per-profile decision applied (mixy-first.ts). */
+  private async leadStatus(status: unknown): Promise<Record<string, unknown>> {
+    const created = await resolveMixyCreated({
+      status,
+      sessionIds: async () => {
+        const mixyHome = agentHomeSessionId(MIXY_AGENT_ID);
+        return [
+          ...(await this.owner.listSessions()).map((session) => session.id),
+          ...this.owner.storedSessionIds().filter((id) => id === mixyHome),
+        ];
+      },
+      setCreated: (value) => this.owner.invokeControl('setLeadCreated', [value]),
+    });
+    return { ...(status && typeof status === 'object' ? status : {}), created };
+  }
+
+  /** The agent's one home thread, created on its first open. */
+  async openAgentHome(agentId: string): Promise<{ sessionId: string }> {
+    return this.agentHomes.open(agentId);
+  }
+
+  /** Start the agent's home thread over (agent-home-sessions.ts reset). */
+  async resetAgentHome(agentId: string): Promise<{ sessionId: string; archivedSessionId: string | null }> {
+    return this.agentHomes.reset(agentId);
+  }
+
+  private async retireAgentHomes(retire: () => Promise<void>): Promise<void> {
+    try {
+      await retire();
+    } catch (error) {
+      console.warn('[mixdog-session] Could not archive the threads of removed agents:', error);
+    }
+  }
+
+  /** Archive or restore a session with its sub-agent sessions (any depth,
+   *  from the daemon's catalog rows): a restore brings back the ones its
+   *  archive took (DesktopSessionMetadata.setArchived). `cascade: false`
+   *  changes that session alone. */
+  async setSessionArchived(sessionId: string, archived: boolean, cascade = true): Promise<void> {
     const id = sessionIdOf(sessionId);
     await this.owner.sessionMetadata.load();
-    if (!(await this.owner.sessionMetadata.setArchived(id, archived))) return;
+    if (cascade && !this.owner.sessionCatalogLoaded()) await this.owner.listSessions();
+    const descendants = cascade ? agentDescendantIds(this.owner.storedSessionRows(), id) : [];
+    if (!(await this.owner.sessionMetadata.setArchived(id, archived, descendants))) return;
     // Archive metadata does not alter daemon sessions or the process-global
     // agent pool. Re-project the resident rows instead of paying for both
     // catalogs and a full session-store identity/stat scan before replying.
     await this.republishSessionCatalog();
   }
 
+  /** A session the daemon's store deleted on its own (sub-agent retention):
+   *  its sidebar records go, as an explicit delete's do. */
+  async forgetSessionMetadata(sessionId: string): Promise<void> {
+    await this.owner.sessionMetadata.forget(sessionIdOf(sessionId));
+    await this.republishSessionCatalog();
+  }
+
+  /** The archive flags (the runtime's session list and sub-agent retention
+   *  read them through the session-sidebar host). */
+  async sessionSidebarState(): Promise<{ archived: Record<string, number> }> {
+    await this.owner.sessionMetadata.load();
+    return { archived: { ...this.owner.sessionMetadata.archived } };
+  }
+
   async deleteSession(sessionId: string): Promise<SessionSnapshot> {
     const id = sessionIdOf(sessionId);
-    if (!(await this.owner.listSessions()).some((row) => row.id === id)) {
-      throw new Error('Session is not available.');
+    // A deleted bot's archived chat deleted again: the bot goes for good too.
+    const archivedBot = agentIdOfHomeSession(id);
+    if (archivedBot && (await this.owner.sessionMetadata.isRetired(id))) {
+      await this.owner.invokeControl('purgeAgentDefinition', [archivedBot]);
     }
-    if ((await this.owner.invokeControl('deleteSession', [id])) !== true) {
-      throw new Error('Session could not be deleted.');
+    // Deleting a missing or already-deleted session is a no-op, never an error
+    // surfaced to the UI; stale local state for it is still dropped below.
+    if ((await this.owner.listSessions()).some((row) => row.id === id)) {
+      let deleted = false;
+      try {
+        deleted = (await this.owner.invokeControl('deleteSession', [id])) === true;
+      } catch (error) {
+        if (!isSessionMissingError(error)) throw error;
+        deleted = true;
+      }
+      if (!deleted && (await this.owner.listSessions()).some((row) => row.id === id)) {
+        throw new Error('Session could not be deleted.');
+      }
     }
     await this.unsubscribeQuietly(id);
     this.owner.visibleSessionIds.delete(id);
@@ -499,6 +708,7 @@ export class SessionHostLifecycle {
         ...(typeof draft.route.contextPercent === 'number' ? { contextPercent: draft.route.contextPercent } : {}),
         ...(typeof draft.route.contextTokens === 'number' ? { contextTokens: draft.route.contextTokens } : {}),
         applyToCurrentSession: true,
+        keepMainModel: false,
       },
     ]);
     const resolvedRoute =
@@ -540,6 +750,9 @@ export class SessionHostLifecycle {
     this.owner.pendingCatalogSessionIds.add(sessionId);
     this.owner.applySessionResult(sessionId, created);
     try {
+      // Record the applied draft, so a replay after an ambiguous submission
+      // goes straight to the idempotent submit even if the draft's workflow,
+      // mode or route can no longer be applied.
       if (request.phase === 'reserved') {
         await this.configureDraft(sessionId, draft);
         await request.commit('configured');
@@ -550,21 +763,39 @@ export class SessionHostLifecycle {
       // this submission and the draft stays unsent. Runs on every attempt; the
       // submission id makes a resend reuse the same worktree.
       if (draft.worktree) {
-        const provisioned = await this.owner.invokeSession(sessionId, 'requestWorktree', [
-          {
-            provision: true,
-            confirmLarge: draft.worktree.confirmLarge === true,
-            prompt: promptTitle(prompt, options.displayText || ''),
-            txId: submissionId,
-          },
-        ]);
+        const provisioned = draft.worktree.branch
+          ? await this.owner.invokeSession(sessionId, 'selectBranch', [
+              {
+                branch: draft.worktree.branch,
+                create: draft.worktree.create === true,
+                confirmLarge: draft.worktree.confirmLarge === true,
+              },
+            ])
+          : await this.owner.invokeSession(sessionId, 'requestWorktree', [
+              {
+                provision: true,
+                // A new task starts its worktree at the current commit and never
+                // takes the project folder's uncommitted changes with it.
+                carryChanges: 'leave',
+                confirmLarge: draft.worktree.confirmLarge === true,
+                prompt: promptTitle(prompt, options.displayText || ''),
+                txId: submissionId,
+              },
+            ]);
         // Only a bound session may receive the prompt. A runtime that merely
         // armed the lazy intent (pending) would run the turn in the project
         // folder, and a turn that then fails before provisioning (no model,
         // no provider) would drop the choice: refuse instead, so the draft
         // keeps its text and its "Worktree" choice.
-        const value = provisioned.value as { pending?: unknown; workspace?: { worktreeId?: unknown } } | null;
-        if (value?.pending !== false || typeof value.workspace?.worktreeId !== 'string') {
+        const value = provisioned.value as {
+          pending?: unknown;
+          workspace?: { worktreeId?: unknown; branch?: unknown };
+        } | null;
+        if (
+          draft.worktree.branch
+            ? value?.workspace?.branch !== draft.worktree.branch
+            : value?.pending !== false || typeof value.workspace?.worktreeId !== 'string'
+        ) {
           throw Object.assign(
             new Error('WORKTREE_NOT_IMPLEMENTED: The session did not enter its worktree before the first prompt.'),
             { code: 'WORKTREE_NOT_IMPLEMENTED' }
@@ -697,6 +928,10 @@ export class SessionHostLifecycle {
     const existing = this.submissions.get(key);
     if (existing) return existing;
     const run = (async () => {
+      // A deleted bot's chat is kept to read, never to talk to.
+      if (agentIdOfHomeSession(id) && (await this.owner.sessionMetadata.isRetired(id))) {
+        throw new Error('This bot was deleted.');
+      }
       const prior = this.owner.publication.projections.get(id);
       // The submitting device rides the prompt's transcript metadata. A remote
       // call arrives with the name the host read from the authenticated
@@ -768,20 +1003,30 @@ export class SessionHostLifecycle {
   }
 
   async listProviderModels(options: DesktopModelCatalogOptions = {}): Promise<DesktopModelOption[]> {
-    return normalizedProviderModels(await this.owner.invokeControl('listProviderModels', [options]));
+    const models = await this.providerModels.read(options, async () =>
+      normalizedProviderModels(await this.owner.invokeControl('listProviderModels', [options]))
+    );
+    return copyCapabilityValue(models) as DesktopModelOption[];
+  }
+
+  /** A provider, a setting or a route changed outside a capability call of
+   *  this host: no reused read answers for the state before it. */
+  invalidateReadCaches(): void {
+    this.providerModels.clear();
+    this.branchMenus.clear();
   }
 
   async setModelRoute(selection: DesktopModelSelection, sessionId?: string): Promise<SessionSnapshot> {
+    // Catalog rows carry the saved parameters and context of each model.
+    this.providerModels.clear();
     const target = sessionId || (await this.owner.ensureControlSession());
-    const { value, snapshot } = await this.owner.invokeSession(target, 'setRoute', [
+    const { snapshot } = await this.owner.invokeSession(target, 'setRoute', [
       {
         ...selection,
         applyToCurrentSession: true,
+        keepMainModel: Boolean(sessionId),
       },
     ]);
-    if (value === false) {
-      throw new Error('Model change was not applied because another session command is running.');
-    }
     return snapshot;
   }
 
@@ -796,18 +1041,75 @@ export class SessionHostLifecycle {
     sessionId?: string
   ): Promise<DesktopCapabilityResult<T>> {
     let result: { value: unknown; snapshot: SessionSnapshot };
+    const mutation = !READ_CAPABILITIES.has(capability);
+    // Whatever a mutation moves, no menu or catalog read before it answers
+    // after it: dropped before it starts and again once it settled.
+    if (mutation) this.invalidateReadCaches();
     try {
       const forwarded = await this.forwardedArgs(capability, args);
-      result = sessionId
-        ? await this.owner.invokeSession(sessionId, capability, forwarded)
-        : await this.owner.invokeControlResult(capability, forwarded);
+      const invoke = () =>
+        sessionId
+          ? this.owner.invokeSession(sessionId, capability, forwarded)
+          : this.owner.invokeControlResult(capability, forwarded);
+      if (capability === 'getBranchMenu' && sessionId) result = await this.sessionBranchMenu(sessionId, invoke);
+      else if (capability === 'getProjectBranchMenu' && !sessionId)
+        result = await this.branchMenus.read(`project:${JSON.stringify(forwarded)}`, '', invoke);
+      else if (!sessionId && SHARED_CONTROL_READS.has(capability))
+        result = await this.controlReads.run(`result:${capability}:${JSON.stringify(forwarded)}`, invoke);
+      else result = await invoke();
     } catch (error) {
       throw worktreeErrorWithCode(error);
+    } finally {
+      if (mutation) this.invalidateReadCaches();
+    }
+    // A deleted agent's home thread is archived by its fixed id once the
+    // definition is proven gone on disk. A catalog read only re-checks the
+    // known homes per id (deletions through a chat's setup tool); absence
+    // from the list itself never archives anything.
+    if (capability === 'deleteAgentDefinition') {
+      const deletedId = (result.value as { id?: unknown } | null)?.id;
+      if (typeof deletedId === 'string') void this.retireAgentHomes(() => this.agentHomes.retire([deletedId]));
+    } else if (capability === 'restoreAgentDefinition') {
+      // Its chat is back (out of 보관됨, writable) before the reply.
+      const restoredId = (result.value as { id?: unknown } | null)?.id;
+      if (typeof restoredId === 'string') await this.agentHomes.restore(restoredId);
+    } else if (capability === 'listAgents') {
+      void this.retireAgentHomes(() => this.agentHomes.reconcile());
+      // An agent a chat's setup tool just created greets the user.
+      const agents = result.value;
+      void this.agentGreetings
+        .reconcile(agents)
+        .catch((error) => console.warn('[mixdog-session] Could not check for new agents:', error));
+    } else if (capability === 'saveAgentDefinition') {
+      // The dialog that saved it greets it (or it already existed).
+      const savedId = (result.value as { id?: unknown } | null)?.id;
+      if (typeof savedId === 'string')
+        await this.agentGreetings
+          .noteCreated(savedId)
+          .catch((error) => console.warn('[mixdog-session] Could not record the new agent:', error));
+    } else if (capability === 'getLeadStatus' && !sessionId) {
+      result = { ...result, value: await this.leadStatus(result.value) };
     }
     return {
       value: copyCapabilityValue(result.value) as T,
       snapshot: result.snapshot,
     };
+  }
+
+  /** A session's branch menu, reused while its workspace revision and the
+   *  menu's git files hold still (branch-menu-cache.ts). A reused answer
+   *  carries the session's current projection, as an unchanged read does. */
+  private async sessionBranchMenu(
+    sessionId: string,
+    invoke: () => Promise<{ value: unknown; snapshot: SessionSnapshot }>
+  ): Promise<{ value: unknown; snapshot: SessionSnapshot }> {
+    const held = this.owner.publication.projections.get(sessionId)?.snapshot;
+    const workspace = held?.workspace;
+    // Without a projection this host cannot see the session move: never reuse.
+    const guard = held ? JSON.stringify([workspace?.revision ?? null, workspace?.cwd ?? null]) : null;
+    const result = await this.branchMenus.read(`session:${sessionId}`, guard, invoke);
+    const current = this.owner.publication.projections.get(sessionId)?.snapshot;
+    return current ? { value: result.value, snapshot: this.owner.snapshotWithRemoteSession(current) } : result;
   }
 
   /** Arguments as the daemon receives them. `skillsStatus({ projectPath })`
@@ -849,13 +1151,14 @@ export class SessionHostLifecycle {
     return Promise.all(
       requests.map(async (request): Promise<DesktopCapabilityReadResult> => {
         try {
+          const forwarded = await this.forwardedArgs(request.capability, request.args || []);
+          const read = () => this.owner.invokeControl(request.capability, forwarded);
           return {
             ok: true,
             value: copyCapabilityValue(
-              await this.owner.invokeControl(
-                request.capability,
-                await this.forwardedArgs(request.capability, request.args || [])
-              )
+              SHARED_CONTROL_READS.has(request.capability)
+                ? await this.controlReads.run(`value:${request.capability}:${JSON.stringify(forwarded)}`, read)
+                : await read()
             ),
           };
         } catch (error) {

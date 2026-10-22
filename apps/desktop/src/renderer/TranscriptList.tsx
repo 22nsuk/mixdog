@@ -5,6 +5,7 @@ import { useTranscriptHandles, useRememberVirtualMeasurements, useSelectionDrag 
 import { useDeferredResizes } from './transcript-list-deferred-resizes';
 import { useTranscriptEndPin } from './transcript-list-end-pin';
 import { logicalScrollOffset, type TranscriptVirtualizer } from './transcript-list-geometry';
+import { useMarkdownPrefetch } from './transcript-list-markdown-prefetch';
 import { useReadingAnchor } from './transcript-list-reading-anchor';
 import { useVirtualizerResizePatch } from './transcript-list-resize-patch';
 import { useMountedRowMeasurement } from './transcript-list-row-measure';
@@ -13,6 +14,7 @@ import { useTranscriptScrollGeometry } from './transcript-list-scroll-geometry';
 import { useSelectionPin } from './transcript-list-selection-pin';
 import { useTouchScrollDeviation } from './transcript-list-touch-deviation';
 import { useActiveRowIndexes, useTranscriptVirtualizer } from './transcript-list-virtualizer';
+import type { TranscriptRowSurface } from './transcript-row-estimates';
 import type { TranscriptRowModel } from './transcript-rows';
 import { readTranscriptVirtualSnapshot } from './transcript-virtual-cache';
 
@@ -23,24 +25,29 @@ type TranscriptListProps = {
   rows: readonly TranscriptRowModel[];
   viewport: RefObject<HTMLDivElement | null>;
   content: MutableRefObject<HTMLDivElement | null>;
-  /** Measured overlay footprint, not a reduction of the scroll viewport. */
-  bottomInset?: number;
   shouldAnchorBottom: boolean;
   scrollToEndRef: MutableRefObject<(behavior?: ScrollBehavior) => void>;
   /** The follow hook flips the anchor here the instant it decides, without
    *  waiting for the render that carries `shouldAnchorBottom`. */
   setAnchorBottomRef?: MutableRefObject<(bottom: boolean) => void>;
-  renderRow: (row: TranscriptRowModel) => ReactNode;
+  /** `index` and `rows` let a row read its neighbours (agent-mode bubble runs). */
+  renderRow: (row: TranscriptRowModel, index: number, rows: readonly TranscriptRowModel[]) => ReactNode;
   /** Every offset this list writes is reported to the follow hook, which
    *  would otherwise read the core's own scrolls as a reader gesture. */
   markProgrammaticScroll?: (top: number, intended?: number) => void;
   /** True from the first wheel/touch/drag intent through its inertial tail. */
   hasScrollGesture: () => boolean;
-  /** True while a touch scroll (finger down, then its fling) owns the
-   *  viewport: corrections are held off the native offset until it ends. */
+  /** True while a wheel ramp or a touch scroll owns the viewport:
+   *  corrections are held off the native offset until it ends
+   *  (transcript-list-touch-deviation). */
   hasTouchScroll?: () => boolean;
+  /** True while that hold belongs to a touch scroll: it lands early once the
+   *  logical offset reaches the real top. */
+  touchHoldsCorrections?: () => boolean;
   /** Claims reader ownership before this list writes selection auto-scroll. */
   onSelectionAutoScroll(delta: number): void;
+  /** Who paints the rows: an agent chat's rows learn their heights apart. */
+  surface?: TranscriptRowSurface;
 };
 
 /**
@@ -57,7 +64,6 @@ export function TranscriptList({
   rows,
   viewport,
   content,
-  bottomInset = 0,
   shouldAnchorBottom: anchorBottomProp,
   scrollToEndRef,
   setAnchorBottomRef,
@@ -65,11 +71,13 @@ export function TranscriptList({
   markProgrammaticScroll,
   hasScrollGesture,
   hasTouchScroll = noTouchScroll,
+  touchHoldsCorrections = noTouchScroll,
   onSelectionAutoScroll,
+  surface = 'coding',
 }: TranscriptListProps) {
+  const surfaceRef = useRef(surface);
+  surfaceRef.current = surface;
   const spacer = useRef<HTMLDivElement>(null);
-  const bottomInsetRef = useRef(bottomInset);
-  bottomInsetRef.current = bottomInset;
   // The viewport's scrollTop as last observed in a scroll event or written by
   // this list: every other consumer reads this instead of the DOM.
   const domTop = useRef<number | null>(null);
@@ -85,7 +93,16 @@ export function TranscriptList({
   hasScrollGestureRef.current = hasScrollGesture;
   const hasTouchScrollRef = useRef(hasTouchScroll);
   hasTouchScrollRef.current = hasTouchScroll;
-  const deviation = useTouchScrollDeviation({ viewport, spacer, hasTouchScrollRef, domTop, markProgrammaticScrollRef });
+  const touchHoldsRef = useRef(touchHoldsCorrections);
+  touchHoldsRef.current = touchHoldsCorrections;
+  const deviation = useTouchScrollDeviation({
+    viewport,
+    spacer,
+    hasTouchScrollRef,
+    touchHoldsRef,
+    domTop,
+    markProgrammaticScrollRef,
+  });
   // Rows that changed size by more than a viewport stay in the range for two
   // frames: a rewrap must never unmount the rows the reader is looking at.
   const resizePinned = useRef<number[]>([]);
@@ -107,13 +124,13 @@ export function TranscriptList({
     activeIndexesRef,
     shouldAnchorBottom,
     initialMeasurements: restored?.measurements,
-    bottomInset,
     // Resolved at call time: the end pin is built below, from this instance.
     requestEndPin: () => endPin.request(),
     noteScrollOffset,
     domTop,
     markProgrammaticScrollRef,
     deviation,
+    surfaceRef,
   });
   // Where the timeline starts inside the scroll content (the thread's top
   // padding). Static CSS, read once on the first frame the pane has a box.
@@ -140,7 +157,6 @@ export function TranscriptList({
     hasScrollGestureRef,
     domTop,
     markProgrammaticScrollRef,
-    bottomInset,
     deviation,
   });
   const { laidOutRows, pendingAnchor, anchorHold, readingAnchorHeld, restoreReadingAnchor, queueAnchorRestore } =
@@ -188,8 +204,13 @@ export function TranscriptList({
     anchorHold,
     readingAnchorHeld,
     queueAnchorRestore,
+    spacer,
+    rowsRef,
+    scrollInset,
+    indexForPendingKey,
+    restoreReadingAnchor,
   });
-  const { measureRow, bindSpacer } = useTranscriptRowRegistration({ viewport, spacer, content, virtualizerRef });
+  const { measureRow, bindSpacer } = useTranscriptRowRegistration({ spacer, content, virtualizerRef });
 
   useTranscriptScrollGeometry({ viewport, spacer, virtualizerRef, domTop, scrollInset, contentHeight, deviation });
   useRememberVirtualMeasurements({ sessionKey, viewport, virtualizerRef, flushDeferredResizes, settleHeldShrinks });
@@ -201,7 +222,7 @@ export function TranscriptList({
     anchorOverride,
     settleHeldShrinks,
   });
-  useSelectionDrag({ viewport, sessionKey, bottomInsetRef, rowsRef, setSelectionPin, onSelectionAutoScroll });
+  useSelectionDrag({ viewport, sessionKey, rowsRef, setSelectionPin, onSelectionAutoScroll });
 
   useEffect(
     () => () => {
@@ -214,31 +235,89 @@ export function TranscriptList({
   );
 
   const virtualRows = virtualizer.getVirtualItems();
+  // The core's visible range (overscan excluded), current after the read above.
+  const visible = virtualizer.range;
+  useMarkdownPrefetch(rows, visible?.startIndex ?? -1, visible?.endIndex ?? -1);
+  // Each row's node, rendered once per commit: a row's step reads whether the
+  // rows above it paint anything.
+  const nodes = new Map<number, ReactNode>();
+  const nodeAt = (index: number): ReactNode => {
+    if (!nodes.has(index)) nodes.set(index, renderRow(rows[index] as TranscriptRowModel, index, rows));
+    return nodes.get(index);
+  };
   return (
     // directDomUpdates owns this height synchronously through containerRef.
     // A React height prop can commit an older render after a native wheel
     // reaches the bottom and temporarily clip one pane at stale geometry.
     <div className="transcript-virtual-space" ref={bindSpacer}>
-      {virtualRows.map((virtualRow) => renderVirtualRow(virtualRow, rows, measureRow, renderRow))}
+      {virtualRows.map((virtualRow) =>
+        renderVirtualRow(
+          virtualRow,
+          rows,
+          measureRow,
+          nodeAt,
+          visible !== null && (virtualRow.index < visible.startIndex || virtualRow.index > visible.endIndex)
+        )
+      )}
     </div>
   );
 }
 
 const noTouchScroll = () => false;
 
+const paintsNothing = (node: ReactNode) => node === null || node === undefined || node === false;
+
+/** How a row sits against its neighbours: whether it paints, and the gaps and
+ *  bands the stylesheet keys off (12-transcript.css). */
+function rowSteps(
+  row: TranscriptRowModel,
+  index: number,
+  rows: readonly TranscriptRowModel[],
+  node: ReactNode,
+  nodeAt: (index: number) => ReactNode
+) {
+  // A row that renders nothing (an agent chat's tool round or unfinished
+  // reply) takes no room and no step, and the row below it steps from the
+  // nearest row above that paints: stepping from the empty rows, every hidden
+  // tool round moved the agent's typing bubble 8px and the reply then landed
+  // 16px above it, so the thread shook while the reply was generated.
+  const blank = paintsNothing(node);
+  let above = index - 1;
+  while (above >= 0 && paintsNothing(nodeAt(above))) above -= 1;
+  const next = rows[index + 1];
+  const before = rows[above];
+  const previous = blank ? undefined : before?._tag;
+  // The live band under a reply part or tool card is the same 40px status
+  // slot as the completion footer that replaces it (12-transcript.css): the
+  // row above it takes no step, the band leads in itself.
+  const leadsBand = (tag: TranscriptRowModel['_tag'] | undefined) => tag === 'AssistantPart' || tag === 'ToolActivity';
+  // The step after a reply part, tool card or error belongs to the row BELOW
+  // it. As the part's own bottom padding, appending the next row resized the
+  // settled part above it, and the new row was placed at the old size for a
+  // frame before jumping 8px (tool rounds shook the whole thread).
+  const part = (tag: TranscriptRowModel['_tag'] | undefined) =>
+    tag === 'AssistantPart' || tag === 'ToolActivity' || tag === 'Error';
+  const bandLead = row._tag === 'Thinking' && leadsBand(previous);
+  const stepBefore = !bandLead && row._tag !== 'TurnGap' && part(previous);
+  const turnEnd = !blank && !part(row._tag) && (!next || next._tag === 'TurnGap');
+  // A turn's changed-files card closes its stack: a row after it in the same
+  // turn takes the turn gap, never the 8px part step (12-transcript.css).
+  const afterChanges =
+    stepBefore && (before?._tag === 'AssistantPart' || before?._tag === 'Error') && Boolean(before.turnChanges);
+  return { blank, bandLead, stepBefore, turnEnd, afterChanges };
+}
+
 function renderVirtualRow(
   virtualRow: VirtualItem,
   rows: readonly TranscriptRowModel[],
   measureRow: ReturnType<typeof useTranscriptRowRegistration>['measureRow'],
-  renderRow: (row: TranscriptRowModel) => ReactNode
+  nodeAt: (index: number) => ReactNode,
+  offscreen: boolean
 ) {
   const row = rows[virtualRow.index];
   if (!row) return null;
-  const next = rows[virtualRow.index + 1];
-  const turnEnd = !next || next._tag === 'TurnGap';
-  // The live band under a reply part stands where that reply's completion
-  // footer lands (12-transcript.css).
-  const bandUnderPart = row._tag === 'Thinking' && rows[virtualRow.index - 1]?._tag === 'AssistantPart';
+  const node = nodeAt(virtualRow.index);
+  const { blank, bandLead, stepBefore, turnEnd, afterChanges } = rowSteps(row, virtualRow.index, rows, node, nodeAt);
   return (
     // A row binds position AND measurement to one element.
     // Position and measurement therefore share the
@@ -251,6 +330,13 @@ function renderVirtualRow(
       key={virtualRow.key}
       data-index={virtualRow.index}
       data-timeline-key={String(virtualRow.key)}
+      // Overscan and pinned rows outside the viewport hold their infinite
+      // loaders still (12-transcript.css). The core re-renders this list on
+      // every visible-range change, so the mark follows the reader's scroll
+      // without an IntersectionObserver: any observer in the document made
+      // Chromium run a main-thread frame on every vsync for as long as a
+      // compositor animation (spinner, shimmer) ran anywhere in the window.
+      data-offscreen={offscreen ? 'true' : undefined}
       ref={measureRow}
     >
       <div
@@ -259,9 +345,12 @@ function renderVirtualRow(
         data-index={virtualRow.index}
         data-tag={row._tag}
         data-turn-end={turnEnd ? 'true' : undefined}
-        data-under-part={bandUnderPart ? 'true' : undefined}
+        data-band-lead={bandLead ? 'true' : undefined}
+        data-step-before={stepBefore ? 'true' : undefined}
+        data-after-changes={afterChanges ? 'true' : undefined}
+        data-blank={blank ? 'true' : undefined}
       >
-        {renderRow(row)}
+        {node}
       </div>
     </div>
   );

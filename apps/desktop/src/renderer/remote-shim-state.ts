@@ -21,7 +21,7 @@ import type { SettingsChange } from '../shared/settings-changed';
 import type { DesktopVisualizeEvent } from '../shared/visualize';
 import { createKeyedListDeltaDecoder } from '../shared/list-delta';
 import { createRemoteCatalog } from '../shared/remote-catalog';
-import { createRemoteRosterCache, createIndexedDbRosterStorage } from '../shared/remote-roster-cache';
+import { createRemoteRosterCache } from '../shared/remote-roster-cache';
 import { createRemoteViewBaselineCache } from '../shared/remote-view-baseline';
 import { createSnapshotDeltaDecoder } from '../main/state-delta';
 import { newBrowserId } from './remote-browser-identity';
@@ -37,16 +37,20 @@ import {
   remotePairingKeys,
   type RemotePairingKeys,
 } from './remote-pairing-recovery';
+import { createRemotePageCache, type RemotePageCache } from './remote-file-preview';
 import { createRemoteSessionInbox } from './remote-session-inbox';
 import { createRelayPayloadLimits, showRemoteToast, type PendingCall } from './remote-shim-payload-limit';
 import type { createRemotePairingScreen } from './remote-pairing-screen';
 import type { createRemoteViewSync } from './remote-view-sync';
 import type { TerminalSizeOwnerEvent } from '../shared/terminal-size-owner';
+import type { TerminalActivityEvent } from '../shared/terminal-activity';
 
 export const DEVICE_STORAGE_KEY = REMOTE_PAIRING_STORAGE_KEYS.device;
 export const REMOTE_CREDENTIAL_READY_EVENT = 'mixdog:remote-credential-ready';
 export { REMOTE_CONNECTION_READY_EVENT };
 export const REMOTE_PAIRING_INVALID_EVENT = 'mixdog:remote-pairing-invalid';
+/** The E2EE channel to the PC is up (before any view sync). */
+export const REMOTE_SECURE_CHANNEL_READY_EVENT = 'mixdog:remote-secure-channel-ready';
 export const VISIBLE_SESSIONS_STORAGE_KEY = 'mixdog.remote-visible-sessions';
 const LAST_SESSION_STORAGE_KEY = 'mixdog.desktop-last-session.v1';
 export const MAX_RESTORED_VISIBLE_SESSIONS = 8;
@@ -89,6 +93,8 @@ export interface RemoteShimState {
   requestedViewSyncKey: string | null;
   everConnected: boolean;
   everPaired: boolean;
+  /** This container's id was already in storage when it booted. */
+  browserIdStored: boolean;
   retryMs: number;
   nextId: number;
   secureChannel: RelayE2EEChannel | null;
@@ -137,10 +143,14 @@ export interface RemoteShimState {
   legacyVisibleSessionsQueue: Promise<unknown>;
   pendingReconnectNotification: boolean;
   // Delta-lane resumption (shared/remote-view-resume.ts). The desktop issues a
-  // token with each completed view sync; it stays valid only while every
-  // decoder holds exactly what that desktop's encoders sent. A close carries
-  // it (and the decoders) over to the next connection's first sync; any gap,
-  // resync or reset clears it, and the epoch voids a sync already in flight.
+  // token with each completed view sync; it stays valid while every decoder
+  // holds a revision that desktop's encoders emitted and still retain — their
+  // latest one, or an older one kept in their bounded revision history (a
+  // frame lost in flight, updates missed while away). The desktop rewinds to
+  // that revision and sends deltas; an unknown or evicted revision gets a full
+  // snapshot instead. A close carries the token (and the decoders) over to the
+  // next connection's first sync; a local decoder gap, resync or reset clears
+  // it, and the epoch voids a sync already in flight.
   viewResumeToken: string | null;
   carriedResumeToken: string | null;
   deltaEpoch: number;
@@ -162,6 +172,12 @@ export interface RemoteShimState {
   // therefore exists ONLY for a silent socket: a busy session never spends a
   // probe, and never risks the recycle that a lost pong triggers.
   lastTrafficAt: number;
+  // The open leg the page went into the background with (or a wake probed),
+  // until a wake probe proves it again. Its death is the background's cost,
+  // so its redial runs silently instead of raising the disconnect surface.
+  unprovenSocket: WebSocket | null;
+  // The resync a wake asked for, sent once that wake's probe is answered.
+  resyncAfterWakeProbe: boolean;
   backgroundSuspended: boolean;
   resyncOnWake: boolean;
   reconnectTimer: number | null;
@@ -178,6 +194,7 @@ export interface RemoteShimCollaborators {
   sessionInbox: ReturnType<typeof createRemoteSessionInbox>;
   termListeners: Set<(event: { id: string; data: string }) => void>;
   termSizeOwnerListeners: Set<(event: TerminalSizeOwnerEvent) => void>;
+  termActivityListeners: Set<(event: TerminalActivityEvent) => void>;
   folderChangeListeners: Set<(dir: string) => void>;
   activityRailPinsListeners: Set<(state: ActivityRailPinsState) => void>;
   providerModelsListeners: Set<(change: ProviderModelsChange) => void>;
@@ -201,6 +218,8 @@ export interface RemoteShimCollaborators {
   sessionsDecoder: ReturnType<typeof createKeyedListDeltaDecoder<DesktopSessionSummary>>;
   agentPoolDecoder: ReturnType<typeof createKeyedListDeltaDecoder<DesktopAgentPoolRow>>;
   rosterCache: ReturnType<typeof createRemoteRosterCache<DesktopSessionSummary>>;
+  /** Visualize pages built over this pairing (memory-only). */
+  visualizePages: RemotePageCache;
   // State pushes ride the same identity-prefix items delta the desktop IPC
   // uses (state-delta.ts): reassemble full snapshots here, and ask the
   // desktop for a resync when a patch does not match our base revision
@@ -232,7 +251,9 @@ export interface RemoteShimServices {
   wsUrl: () => string;
   ensureClientRegistration: () => Promise<void>;
   showPairingScreen: ReturnType<typeof createRemotePairingScreen>;
-  adoptApproval: (credential: string, material: RelayE2EEPairingMaterial) => boolean;
+  adoptApproval: (credential: string, material: RelayE2EEPairingMaterial) => Promise<boolean>;
+  /** Fill a credential missing from localStorage from its durable copy. */
+  restoreDurablePairing: () => Promise<void>;
   verifyApprovedConnection: () => Promise<void>;
   resetApprovalAndAsk: (message: string) => void;
   // remote-shim-dispatch.ts
@@ -242,8 +263,9 @@ export interface RemoteShimServices {
   handleClearResync: (clear: Record<string, unknown>) => void;
   // remote-shim-liveness.ts
   clearWakePongTimer: () => void;
+  answerWakeProbe: () => void;
   wakeProbe: (event?: Event) => void;
-  scheduleReconnect: () => void;
+  scheduleReconnect: (fleet?: boolean) => void;
   // remote-shim-socket.ts
   connect: () => Promise<WebSocket>;
   // remote-shim-calls.ts
@@ -256,6 +278,11 @@ export interface RemoteShimServices {
     method: 'listSessions' | 'listAgentPool'
   ) => Promise<T[]>;
   fire: (method: string, params: unknown[]) => void;
+  /** The PC answered call `id` (or named it in a refusal): its transport
+   *  credit returns, whether or not the caller is still waiting. */
+  settleCallCredit: (id: number) => void;
+  /** The PC leg behind `ws` is gone: every credit its calls held returns. */
+  retireCallCredits: (ws: WebSocket) => void;
 }
 
 export type RemoteShimContext = RemoteShimState & RemoteShimCollaborators & RemoteShimServices;
@@ -327,8 +354,11 @@ export const createRemoteShimContext = (): RemoteShimContext => {
   const e2eePairing: RelayE2EEPairingMaterial | null =
     e2eePublicKey && e2eeSecret ? { version: 1, serverPublicKey: e2eePublicKey, pairingSecret: e2eeSecret } : null;
   let browserId = '';
+  let browserIdStored = false;
   try {
-    browserId = localStorage.getItem(keys.browserId) || newBrowserId();
+    const storedBrowserId = localStorage.getItem(keys.browserId) || '';
+    browserIdStored = Boolean(storedBrowserId);
+    browserId = storedBrowserId || newBrowserId();
     localStorage.setItem(keys.browserId, browserId);
   } catch {
     browserId = newBrowserId();
@@ -368,7 +398,8 @@ export const createRemoteShimContext = (): RemoteShimContext => {
     requestedViewSyncKey: null,
     everConnected: false,
     everPaired,
-    retryMs: 500,
+    browserIdStored,
+    retryMs: 0,
     nextId: 1,
     secureChannel: null,
     connectionReady: false,
@@ -399,11 +430,19 @@ export const createRemoteShimContext = (): RemoteShimContext => {
     awaitingPong: false,
     wakePongTimer: null,
     lastTrafficAt: 0,
+    unprovenSocket: null,
+    resyncAfterWakeProbe: false,
     backgroundSuspended: hidden,
     resyncOnWake: hidden,
     reconnectTimer: null,
     backgroundGraceTimer: null,
   };
+  // The authenticated pairing (server, device, keys) per-connection caches
+  // are keyed to; none without one.
+  const pairingScope = (): string | null =>
+    ctx.e2eePairing
+      ? [ctx.serverBase, ctx.deviceId, ctx.e2eePairing.serverPublicKey, ctx.e2eePairing.pairingSecret].join('\n')
+      : null;
   const collaborators: RemoteShimCollaborators = {
     pending,
     limits: createRelayPayloadLimits({ pending, showToast: showRemoteToast }),
@@ -413,6 +452,7 @@ export const createRemoteShimContext = (): RemoteShimContext => {
     sessionInbox: createRemoteSessionInbox({ onGap: () => ctx.requestResync() }),
     termListeners: new Set(),
     termSizeOwnerListeners: new Set(),
+    termActivityListeners: new Set(),
     folderChangeListeners: new Set(),
     activityRailPinsListeners: new Set(),
     providerModelsListeners: new Set(),
@@ -430,18 +470,19 @@ export const createRemoteShimContext = (): RemoteShimContext => {
     sessionsDecoder,
     agentPoolDecoder: createKeyedListDeltaDecoder<DesktopAgentPoolRow>(),
     // Keyed to this pairing: another desktop or a re-pair never reads it.
+    // Memory-only: the rows carry conversation titles, which the phone/browser
+    // never keeps on the device (remote-conversation-privacy.ts).
     rosterCache: createRemoteRosterCache<DesktopSessionSummary>({
-      storage: createIndexedDbRosterStorage(),
-      scope: () =>
-        ctx.e2eePairing
-          ? [ctx.serverBase, ctx.deviceId, ctx.e2eePairing.serverPublicKey, ctx.e2eePairing.pairingSecret].join('\n')
-          : null,
+      storage: null,
+      scope: pairingScope,
       decoder: sessionsDecoder,
       onMismatch: () => {
         reportRemoteConnectionIssue('sessions-gap');
         ctx.requestResync();
       },
     }),
+    // Another pairing (re-pair, another desktop, signed out) reads none of it.
+    visualizePages: createRemotePageCache(pairingScope),
     stateDecoder: createSnapshotDeltaDecoder(),
     sessionStateDecoders: new Map(),
     compactFrames: createCompactTranscriptExpander(),

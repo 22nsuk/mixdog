@@ -8,6 +8,7 @@ import {
   NATIVE_SERVER_TOOL_RESULT_BLOCK_TYPES,
 } from '../../lib/anthropic-native-blocks.mjs';
 import { parseAnthropicFallbackBlock } from '../../anthropic-server-fallback.mjs';
+import { reportStreamItemStart } from '../../lib/send-callbacks.mjs';
 
 // Detach the provider payload from the parser's event object without altering
 // any field (opaque server-tool result payloads must round-trip byte-exact).
@@ -19,7 +20,7 @@ function cloneNativeBlock(block) {
   }
 }
 
-export function createContentBlockStart({ turn, blocks, state, progress }) {
+export function createContentBlockStart({ turn, blocks, state, progress, seedText, onStreamItemStart }) {
   const seedThinkingBlock = (index, block) => {
     if (block.type === 'redacted_thinking') {
       // Opaque redacted payload: real reasoning content, exposed as a block.
@@ -59,11 +60,20 @@ export function createContentBlockStart({ turn, blocks, state, progress }) {
         name: block.name || '',
         inputJson: '',
       });
+      // The call opened; its input still streams before onToolCall.
+      reportStreamItemStart(onStreamItemStart, { kind: 'tool' });
     }
     if (block?.type === 'text') {
-      // Seed the ordered text slot (a text block may open with a non-empty
-      // `text` before any delta).
-      blocks.appendText(index, typeof block.text === 'string' ? block.text : '');
+      // Seed the ordered text slot. An empty block still needs its slot (it
+      // separates thinking runs); a non-empty opening `text` is model output
+      // and is routed exactly like a text_delta so it reaches the returned and
+      // live content once.
+      const initialText = typeof block.text === 'string' ? block.text : '';
+      if (initialText) seedText(index, initialText);
+      else blocks.appendText(index, '');
+      if (Array.isArray(block.citations)) {
+        for (const citation of block.citations) blocks.appendCitation(index, citation);
+      }
     }
     if (NATIVE_SERVER_TOOL_CALL_BLOCK_TYPES.has(block?.type)) {
       // Verbatim seed; `input` is completed from the streamed

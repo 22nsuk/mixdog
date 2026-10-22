@@ -2,6 +2,10 @@
 // Pure, self-contained schemas + the agent-hidden default helper; no runtime
 // closure dependencies.
 
+// One load_tool for every session, native and bridge, byte for byte: native
+// sessions register the named tools; bridge sessions (see tool-bridge.mjs)
+// get their definitions back and run them through call_tool. Native request
+// bytes must never change, so the bridge adds nothing to this definition.
 export const TOOL_SEARCH_TOOL = {
   name: 'load_tool',
   title: 'load_tool',
@@ -13,7 +17,8 @@ export const TOOL_SEARCH_TOOL = {
     openWorldHint: false,
     agentHidden: true,
   },
-  description: 'Load full schemas for missing deferred tool names/aliases; batch needed names in one call.',
+  description:
+    'Load full schemas for missing deferred tool names/aliases; a connector name loads all its tools; batch needed names in one call.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -27,20 +32,50 @@ export const TOOL_SEARCH_TOOL = {
   },
 };
 
+// Fixed tool bridge for non-native providers (see tool-bridge.mjs). The
+// description is static so the definition stays byte-stable: it never carries
+// catalog names, counts or listings.
+export const CALL_TOOL_TOOL = {
+  name: 'call_tool',
+  title: 'call_tool',
+  annotations: {
+    title: 'call_tool',
+    readOnlyHint: false,
+    destructiveHint: true,
+    idempotentHint: false,
+    openWorldHint: true,
+    agentHidden: true,
+  },
+  description:
+    'Run one tool that is available in this session but not directly exposed, with the arguments its schema requires. The call has the same permissions, approvals and result as calling that tool directly.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', minLength: 1, maxLength: 256, description: 'Exact tool name.' },
+      arguments: { type: 'object', description: 'Arguments for that tool.' },
+    },
+    required: ['name', 'arguments'],
+    additionalProperties: false,
+  },
+};
+
+// The fixed bridge for non-native providers: the shared load_tool plus call_tool.
+export const TOOL_BRIDGE_TOOLS = Object.freeze([TOOL_SEARCH_TOOL, CALL_TOOL_TOOL]);
+
 export const SESSION_TOOL = {
   name: 'session',
   title: 'Session',
   annotations: {
     title: 'Session',
     readOnlyHint: false,
-    destructiveHint: false,
+    destructiveHint: true,
     idempotentHint: false,
     openWorldHint: false,
     agentHidden: true,
   },
-  trigger: 'Session status, rename the title, compact, fork into a new session, switch Project, worktrees.',
+  trigger: 'Session lookup/control, bot status, agent task sessions and their initial location, title, compact, fork, Project.',
   description:
-    'Manage the current session. status shows session id, title, Project and model; rename sets the session title; compact runs after this turn ends; fork copies this conversation into a new session. set-project switches the active Project; list-projects returns the registered projects (name, path); a project name instead of a path → list-projects first, then set-project with the matching path, ask only if several match. path must be an existing directory. A shell-local cd does not change the Project. Worktree actions act on this session’s git worktree only when the user explicitly asks.',
+    'Inspect sessions or control another by exact ID, never a guessed one. send acknowledges queue intake, not completion: promise a report of it only when its result has reportsBack: true. create returns status: started — started, not done yet; it reports its final answer, after the agents it started finish, unless its result says reportsBack: false. reportsBack: false carries reportsBackReason, the reason to tell the user. Cancel/delete require the user’s request. Other actions affect only the current session. A new session’s initial location (Project folder branch or its own worktree) is set here, with create’s worktree; worktree operations on existing sessions (enter, return, merge, remove, list, prune) use the git tool’s action:"worktree". Pass files on with attachments; a reported turn returns the files it produced as attachments.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -48,6 +83,13 @@ export const SESSION_TOOL = {
         type: 'string',
         enum: [
           'status',
+          'list',
+          'bots',
+          'read',
+          'send',
+          'cancel',
+          'delete',
+          'create',
           'rename',
           'compact',
           'fork',
@@ -55,22 +97,90 @@ export const SESSION_TOOL = {
           'list-projects',
           'favorite',
           'archive',
-          'merge-worktree',
-          'remove-worktree',
-          'list-worktrees',
-          'prune-worktrees',
         ],
         description:
-          'status (default without path) shows the session; rename sets title; compact schedules a compaction right after this turn; fork creates a new session copying this conversation (returns its sessionId; this session stays current); set-project switches to path; list-projects returns registered projects; favorite/archive set this session’s sidebar flag to value; merge-worktree merges this session’s worktree into the project folder’s checked-out branch, remove-worktree deletes it (returning to the project folder; call again if it reports WORKTREE_REMOVAL_INCOMPLETE); list-worktrees lists every managed worktree and who retains it; prune-worktrees removes clean, merged ones no session retains.',
+          'status defaults to current; list pages sessions, without sub-agent or archived ones unless include_agents/include_archived; bots shows each bot’s activity, work, approvals, routines and attention flags, or with session_id (a bot id or its chat) its routines and recent sessions; read returns latest items; send queues prompt (reportsBack: the turn result reports back here); cancel stops the turn; delete removes the session. create (bot conversations) starts a visible agent task session from brief (started, not done yet); unknown Project: list-projects first, still ambiguous: ask the user. compact runs after this turn; fork copies it without switching.',
       },
-      title: { type: 'string', description: 'rename: the new session title.' },
-      path: { type: 'string', description: 'Existing directory to switch to (implies action=set-project).' },
-      compact: { type: 'boolean', description: 'fork: compact the copied conversation.' },
-      force: {
+      title: { type: 'string', description: 'rename: new current-session title; create: task title.' },
+      session_id: {
+        type: 'string',
+        description:
+          'ID from list; required for read/send/cancel/delete, optional for status/bots. send/cancel/delete cannot target the caller.',
+      },
+      prompt: { type: 'string', description: 'send: message to enqueue; loads a cold session.' },
+      to: {
+        type: 'string',
+        description:
+          'send to a group room (sess_room_*): the member bot it is for, by agent id or room name (or start prompt with @name); only that member answers. A member session (sess_rmem_*) is never a send target.',
+      },
+      limit: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 100,
+        description:
+          'list/read: maximum rows, default 25; bots: sessions, default 10. Output: 8KiB per page, 12KiB for initial read tail; follow nextOffset/nextTextOffset for more.',
+      },
+      cursor: { type: 'string', description: 'list: returned nextCursor.' },
+      include_agents: {
         type: 'boolean',
-        description: 'remove-worktree: delete even with uncommitted or unmerged work (only when the user says so).',
+        description: 'list: also sub-agent sessions, default false; your own agents: agent list/status.',
       },
+      include_archived: {
+        type: 'boolean',
+        description: 'list: also archived sessions (archived: true), default false.',
+      },
+      offset: {
+        type: 'integer',
+        minimum: 0,
+        description:
+          'read: newest items to skip, default 0 (tail). Use nextOffset for older pages; appends/rewinds shift positions.',
+      },
+      text_offset: {
+        type: 'integer',
+        minimum: 0,
+        description: 'read: UTF-16 text position from nextTextOffset; requires offset, limit:1, item_id.',
+      },
+      item_id: {
+        type: 'string',
+        description: 'read: returned item id; rejects a shifted position instead of reading another item.',
+      },
+      path: {
+        type: 'string',
+        description:
+          'Existing directory; implies set-project. Resolve names with list-projects first. Shell cd does not switch Project.',
+      },
+      compact: { type: 'boolean', description: 'fork: compact the copy.' },
       value: { type: 'boolean', description: 'favorite/archive: on or off.' },
+      brief: { type: 'string', description: 'create: self-contained instruction, the first message.' },
+      project: { type: 'string', description: 'create: registered Project name or existing directory.' },
+      worktree: {
+        type: 'object',
+        description:
+          'create: where the new session starts, never carrying uncommitted changes. {mode:"branch"}: the Project folder on its current branch. {mode:"worktree", name?}: its own new managed worktree (name: letters, digits, ".", "_", "-"; default from the title); a non-git folder or unregistered Project is an error. Omitted: the user’s New task default. The brief is sent only once the session is placed.',
+        properties: {
+          mode: { type: 'string', enum: ['branch', 'worktree'] },
+          name: { type: 'string', maxLength: 64, description: 'mode worktree: worktree name.' },
+        },
+        required: ['mode'],
+        additionalProperties: false,
+      },
+      confirm_large: {
+        type: 'boolean',
+        description:
+          'create: only after the user confirmed the large-repository warning (WORKTREE_LARGE_REPO_CONFIRM, with its size) for the worktree.',
+      },
+      model: {
+        type: 'string',
+        description: 'create: provider/model or preset; default is the Lead model (else the last-used one).',
+      },
+      notify: { type: 'boolean', description: 'create: report results back, default true.' },
+      attachments: {
+        type: 'array',
+        items: { type: 'string' },
+        maxItems: 8,
+        description:
+          'send/create: files the target turn receives as real attachments (images, PDF/Office, text): an attachment of this conversation by its file name (a user upload, e.g. its [Image: source: name]) or id (a reported file’s [attachment:id]), or a file path inside this session’s folders. Secret files are refused.',
+      },
     },
     additionalProperties: false,
   },

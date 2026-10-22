@@ -17,6 +17,7 @@ import {
   resolveAutoClearIdleMs,
   autoClearIdleMsForProvider,
   autoClearProviderDefaults,
+  parseDurationMs,
 } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { createMcpGlue } from '../mcp-glue.mjs';
 import {
@@ -30,8 +31,16 @@ import { schemaValueError } from '../../runtime/shared/schema-value-error.mjs';
 import { saveSchedule } from '../services/channel-admin.mjs';
 import { createStandaloneHookBus } from '../services/hook-bus.mjs';
 
+// The caller is an ordinary Lead session (the human's own) unless a test says otherwise.
+const LEAD_CALLER = { id: 'sess_lead_fixture', owner: 'user' };
 const run = async (api, args, options = {}) =>
-  JSON.parse(await createSetupToolExecutor({ getApi: () => api, ...options }).execute(args));
+  JSON.parse(
+    await createSetupToolExecutor({
+      getApi: () => api,
+      getCallerSession: (id) => (id === LEAD_CALLER.id ? LEAD_CALLER : null),
+      ...options,
+    }).execute(args, { callerSessionId: LEAD_CALLER.id })
+  );
 
 test('every registered action field is exposed, and every extended action has an implementation', () => {
   const fields = SETUP_TOOL_DEFS[0].inputSchema.properties;
@@ -144,6 +153,11 @@ test('Main context and model parameters reach the route API, while agent-only fl
   const agentApi = { ...api, setAgentRoute: async (id, next) => agentCalls.push([id, next]) };
   await run(agentApi, { action: 'set_agent_route', agent: 'worker', route: { contextPercent: 70 } });
   assert.deepEqual(agentCalls, [['worker', { contextPercent: 70 }]]);
+  await run(api, { action: 'set_route', route: { autoEffort: false } });
+  assert.deepEqual(calls.at(-1), { autoEffort: false });
+  await run(agentApi, { action: 'set_agent_route', agent: 'worker', route: { autoEffort: true } });
+  assert.deepEqual(agentCalls.at(-1), ['worker', { autoEffort: true }]);
+  await assert.rejects(run(api, { action: 'set_web_search_route', route: { autoEffort: false } }), /only accepted/);
 });
 
 test('auto-clear resets preserve unrelated overrides; percentage budgets replace tokens in config and live session', async () => {
@@ -160,6 +174,7 @@ test('auto-clear resets preserve unrelated overrides; percentage budgets replace
   const api = createSettingsApi({
     getConfig: () => config,
     getSession: () => session,
+    getSessionGeneration: () => 0,
     hasOwn: (value, key) => Object.hasOwn(value, key),
     normalizeAutoClearConfig,
     normalizeCompactionConfig,
@@ -361,62 +376,28 @@ test('definition partial edits preserve names and bodies not requested for chang
   );
 });
 
-test('schedule creation rejects missing or blank models', async () => {
-  for (const modelFields of [{}, { model: '' }, { model: ' \t ' }]) {
+test("a schedule or webhook takes no model: every run is a turn in its bot's chat", async () => {
+  for (const automationKind of ['schedule', 'webhook']) {
     await assert.rejects(
       run(
         { saveSchedule },
         {
           action: 'save_automation',
-          automationKind: 'schedule',
-          entry: {
-            name: 'missing-model',
-            instructions: 'Test schedule',
-            at: '2035-01-01T09:00:00.000Z',
-            ...modelFields,
-          },
+          automationKind,
+          entry: { name: 'with-model', instructions: 'Test', model: 'openai/gpt-5' },
         }
       ),
-      /schedule model is required/
+      /does not accept field\(s\): model/
     );
   }
 });
 
-test('schedule edits reject a missing saved model or explicitly clearing a saved model', async () => {
-  for (const savedModel of [undefined, 'openai/audit-model']) {
-    for (const modelFields of [{}, { model: '' }, { model: ' \t ' }]) {
-      if (savedModel && !Object.hasOwn(modelFields, 'model')) continue;
-      const api = {
-        saveSchedule,
-        getChannelSetup: async () => ({
-          schedules: [
-            {
-              name: 'fixture',
-              instructions: 'Keep prompt',
-              whenAt: '2035-01-01T09:00:00.000Z',
-              model: savedModel,
-            },
-          ],
-        }),
-      };
-      await assert.rejects(
-        run(api, {
-          action: 'save_automation',
-          automationKind: 'schedule',
-          entry: { name: 'fixture', overwrite: true, description: 'New', ...modelFields },
-        }),
-        /schedule model is required/
-      );
-    }
-  }
-});
-
-test('automation partial edits preserve model, one-shot timing and attachments; signing secrets never reach receipts', async () => {
+test('automation partial edits preserve the owner, one-shot timing and attachments; signing secrets never reach receipts', async () => {
   const attachment = { kind: 'text', name: 'keep.txt', data: 'attachment-canary' };
   const entry = {
     name: 'fixture',
     instructions: 'Keep prompt',
-    model: 'openai/audit-model',
+    owner: 'reviewer',
     whenAt: '2035-01-01T09:00:00.000Z',
     time: 'at 2035-01-01T09:00:00.000Z',
     attachments: [attachment],
@@ -445,7 +426,8 @@ test('automation partial edits preserve model, one-shot timing and attachments; 
   assert.deepEqual(received.attachments, [attachment]);
   assert.equal(received.enabled, false);
   assert.equal(received.instructions, entry.instructions);
-  assert.equal(received.model, entry.model);
+  assert.equal(received.owner, 'reviewer');
+  assert.equal(Object.hasOwn(received, 'model'), false);
   assert.doesNotMatch(JSON.stringify(result), /attachment-canary/);
   const hook = await run(api, {
     action: 'save_automation',
@@ -894,9 +876,61 @@ test('getAutoClear: provider override beats global idleMs and is flagged', () =>
       resolveAutoClearIdleMs,
       autoClearIdleMsForProvider,
       autoClearProviderDefaults,
+      formatDurationMs: String,
     });
     const result = api.getAutoClear();
     assert.equal(result.idleMs, idleMs);
     assert.equal(result.providerCustom, providerCustom);
   }
+});
+
+test('Desktop schema accepts font, skin transparency and color theme options', () => {
+  const { appearance } = SETUP_TOOL_DEFS[0].inputSchema.properties;
+  const valid = { uiFont: 'Inter', codeFont: '', skinTransparency: 0, colorTheme: 'builtin' };
+  assert.equal(schemaValueError(valid, appearance, 'appearance'), null);
+  assert.match(schemaValueError({ skinTransparency: 101 }, appearance, 'appearance'), /at most 100/);
+  assert.match(schemaValueError({ skinTransparency: -1 }, appearance, 'appearance'), /at least 0/);
+  assert.match(schemaValueError({ skinTransparency: 50.5 }, appearance, 'appearance'), /integer/);
+  assert.equal(
+    schemaValueError({ skinOuterTransparency: 0, skinMainTransparency: 100 }, appearance, 'appearance'),
+    null
+  );
+  assert.match(schemaValueError({ skinOuterTransparency: 101 }, appearance, 'appearance'), /at most 100/);
+  assert.match(schemaValueError({ skinMainTransparency: -1 }, appearance, 'appearance'), /at least 0/);
+  assert.match(schemaValueError({ skinMainTransparency: 1.5 }, appearance, 'appearance'), /integer/);
+  assert.match(schemaValueError({ uiFont: 3 }, appearance, 'appearance'), /string/);
+});
+
+test('auto-clear unlimited reaches the provider window; a bare unlimited means the current route provider', async () => {
+  let config = { autoClear: { enabled: true, idleMs: null, providerIdleMs: {}, minContextPercent: 10 } };
+  const api = createSettingsApi({
+    getConfig: () => config,
+    getRoute: () => ({ provider: 'openai' }),
+    getSession: () => null,
+    getSessionGeneration: () => 0,
+    hasOwn: (value, key) => Object.hasOwn(value, key),
+    normalizeAutoClearConfig,
+    normalizeCompactionConfig,
+    resolveAutoClearIdleMs,
+    autoClearIdleMsForProvider,
+    autoClearProviderDefaults,
+    parseDurationMs,
+    saveConfigAndAdopt: (next) => {
+      config = next;
+    },
+    formatDurationMs: String,
+    invalidateContextStatusCache: () => {},
+  });
+  const status = await run(api, { action: 'set_autoclear', autoclear: { duration: 'unlimited' } });
+  assert.deepEqual(config.autoClear.providerIdleMs, { openai: 0 });
+  assert.equal(status.unlimited, true);
+  assert.equal(status.label, 'unlimited');
+  await run(api, { action: 'set_autoclear', autoclear: { provider: 'gemini', duration: 'never' } });
+  assert.deepEqual(config.autoClear.providerIdleMs, { openai: 0, gemini: 0 });
+  await run(api, { action: 'set_autoclear', autoclear: { provider: 'openai', duration: '30m' } });
+  assert.equal(config.autoClear.providerIdleMs.openai, 1800000);
+  assert.equal(api.getAutoClear().unlimited, false);
+  const codex = api.getAutoClear.call(api);
+  assert.equal(codex.provider, 'openai');
+  assert.equal(autoClearProviderDefaults(null).find((row) => row.provider === 'openai-oauth').unlimited, true);
 });

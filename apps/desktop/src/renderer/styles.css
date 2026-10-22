@@ -71,15 +71,11 @@ button {
   align-items: center;
   user-select: none;
 }
-.titlebar-leading,
 .workspace-tabs,
 .workspace-tab,
 .workspace-tab-main {
   display: flex;
   align-items: center;
-}
-.titlebar-leading {
-  flex: 0 0 auto;
 }
 .titlebar-spacer {
   flex: 1;
@@ -251,7 +247,7 @@ button {
   display: flex;
   flex-direction: column;
 }
-/* The viewport keeps its size while the composer overlays its bottom. */
+/* The transcript takes the room the composer dock below it leaves. */
 .transcript-shell {
   position: relative;
   flex: 1;
@@ -266,7 +262,6 @@ button {
   min-height: 0;
   overflow-y: auto;
   overflow-anchor: none;
-  scroll-padding-bottom: var(--composer-dock-height, 0px);
 }
 .thread {
   min-height: 100%;
@@ -295,6 +290,25 @@ button {
 }
 .message-body p {
   white-space: pre-wrap;
+}
+/* The island's git request: the user's own bubble, one line (icon, action,
+   muted scope). */
+.message.user .message-body.island-git-request {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.island-git-request svg {
+  flex: none;
+  color: var(--mx-accent, var(--mx-text-muted));
+}
+.island-git-request b {
+  font-weight: 600;
+}
+.island-git-request-meta {
+  color: var(--mx-text-muted);
+  font-size: 13px;
 }
 .message-body .message-tweaks-line svg {
   display: inline-block;
@@ -515,55 +529,11 @@ button {
 .effort-control select {
   height: 28px;
 }
-.queue-list,
-.queue-items {
-  display: flex;
-  flex-direction: column;
-}
-.queue-item {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-}
-.queue-item-text {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .inline-error {
   display: flex;
   align-items: flex-start;
 }
 
-.approval-heading {
-  display: flex;
-  align-items: center;
-}
-.approval-heading > span {
-  display: grid;
-  place-items: center;
-}
-.approval-heading div {
-  display: grid;
-}
-.approval-card dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.approval-card code {
-  white-space: pre-wrap;
-}
-.approval-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-.approval-actions button {
-  display: flex;
-  align-items: center;
-}
 .code-diff {
   overflow: hidden;
 }

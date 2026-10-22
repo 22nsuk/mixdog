@@ -7,6 +7,7 @@ import { createRuntimeFacade } from '../runtime-facade.mjs';
 import { bootProfile } from '../boot-profile.mjs';
 import { assertAdmissionOpen, bindSessionAddress } from '../session-address.mjs';
 import { dataDirOf, workflowHelpers } from './shared.mjs';
+import { publicWorkspaceMethods } from '../workspace/transitions.mjs';
 
 export function buildFacade(boot) {
   const { rt, setupTool } = boot;
@@ -38,16 +39,18 @@ export function buildFacade(boot) {
       },
       applyWorkspaceTransition: boot.workspaceApi.applyWorkspaceTransition,
       getWorkspace: boot.workspaceApi.getWorkspace,
+      getLiveWorkspace: boot.workspaceApi.getLiveWorkspace,
       getBranchMenu: boot.workspaceApi.getBranchMenu,
       getProjectBranchMenu: boot.workspaceApi.getProjectBranchMenu,
-      selectBranch: boot.workspaceApi.selectBranch,
       selectProjectBranch: boot.workspaceApi.selectProjectBranch,
       mergeProjectBranch: boot.workspaceApi.mergeProjectBranch,
-      requestWorktree: boot.workspaceApi.requestWorktree,
-      mergeWorkspace: boot.workspaceApi.mergeWorkspace,
-      removeWorktree: boot.workspaceApi.removeWorktree,
-      listWorktrees: boot.workspaceApi.listWorktrees,
-      pruneWorktrees: boot.workspaceApi.pruneWorktrees,
+      inspectProjectBranch: boot.workspaceApi.inspectProjectBranch,
+      manageProjectBranch: boot.workspaceApi.manageProjectBranch,
+      // selectBranch, requestWorktree, mergeWorkspace, removeWorktree,
+      // listWorktrees, pruneWorktrees: the public arity only, so no external
+      // caller (desktop IPC, the daemon's configure lane) reaches `ownTurn`.
+      ...publicWorkspaceMethods(boot.workspaceApi),
+      onWorktreeSetup: boot.workspaceApi.onWorktreeSetup,
       claimSetupRequest: setupTool.claimSetupRequest,
       isSetupRequestActive: setupTool.isSetupRequestActive,
       completeSetupRequest: setupTool.completeSetupRequest,
@@ -81,17 +84,22 @@ function reserveSessionId(boot, id) {
 }
 
 // Every session's 2 s status pulse lands here; activeWorkflowSummary reads
-// through the process-wide shared caches, so no per-session file I/O.
+// through the process-wide shared caches, so no per-session file I/O. A
+// session presents its own workflow (set at creation, or switched in it);
+// the configured one is the default for new sessions.
 function currentWorkflow(boot) {
   const { rt, cfgMod } = boot;
-  const active = workflowHelpers.activeWorkflowSummary(rt.config, dataDirOf(cfgMod));
-  if (rt.session?.workflow && typeof rt.session.workflow === 'object') {
-    const current = rt.session.workflow;
-    return current?.id && active?.id && current.id !== active.id
-      ? { ...active, currentSession: current, appliedToCurrentSession: false }
-      : active;
+  // A switch chosen while a turn runs shows at once; it applies next turn.
+  const pending = rt.session?.pendingWorkflowId;
+  if (pending) {
+    return workflowHelpers.activeWorkflowSummary(
+      { ...rt.config, workflow: { ...(rt.config?.workflow || {}), active: pending } },
+      dataDirOf(cfgMod)
+    );
   }
-  return active;
+  const active = workflowHelpers.activeWorkflowSummary(rt.config, dataDirOf(cfgMod));
+  const current = rt.session?.workflow;
+  return current?.id && active?.id && current.id !== active.id ? current : active;
 }
 
 function facadeGetters(boot) {
@@ -105,7 +113,9 @@ function facadeGetters(boot) {
     },
     getWorkflow: () => currentWorkflow(boot),
     getOrchestrationMode: () =>
-      rt.session?.id ? sessionOrchestrationMode(rt.session) : configuredOrchestrationMode(rt.config),
+      rt.session?.id
+        ? (rt.session.pendingOrchestrationMode ?? sessionOrchestrationMode(rt.session))
+        : configuredOrchestrationMode(rt.config),
     getOutputStyle: () => boot.getOutputStyleStatusCached().current,
     getContextStatus: boot.computeContextStatus,
     getContextStatusForSession: boot.computeContextStatusForSession,

@@ -5,10 +5,17 @@
  *  registers the tool executor before it finishes assembling the API object. */
 import { builtinFeatureActive } from '../../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 import { ORCHESTRATION_MODES } from '../../runtime/shared/orchestration.mjs';
+import { AUTO_EFFORT_BASES } from '../../runtime/agent/orchestrator/providers/auto-effort.mjs';
 import { INSTRUCTION_FILES_MODES } from '../../runtime/shared/instruction-files-mode.mjs';
 import { MEDIA_KINDS } from '../../runtime/media/tool-defs.mjs';
 import { SETUP_DESKTOP_DOMAINS, SETUP_HANDOFFS } from './settings-contract.mjs';
 import { executeExtendedSetupAction, publicAutomation, publicHookRule, validateMcpInput } from './extended-actions.mjs';
+import {
+  assertAgentEditorAccess,
+  assertInteractiveCaller,
+  assertOwnAgentSettings,
+  scheduleCallerScope,
+} from '../services/schedule-access.mjs';
 import { SETUP_DESKTOP_UNCLAIMED, createSetupUiRequests } from './ui-requests.mjs';
 import {
   SETUP_ACTIONS,
@@ -20,7 +27,10 @@ import {
 } from './tool-defs.mjs';
 import { schemaValueError } from '../../runtime/shared/schema-value-error.mjs';
 import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { CONNECTOR_IDS, connectorById } from '../../runtime/shared/connector-catalog.mjs';
 import profileConfig from '../../runtime/shared/profile-config.cjs';
+
+const AGENT_DEFINITION_ACTIONS = new Set(['create_definition', 'save_definition', 'delete_definition']);
 
 const PROFILE_VALUE_IDS = Object.freeze({
   language: profileConfig.PROFILE_LANGUAGES.map((entry) => entry.id),
@@ -28,6 +38,10 @@ const PROFILE_VALUE_IDS = Object.freeze({
 });
 
 const ACTION_APPLIES_TO = {
+  set_agent_route:
+    "the bot's chats from their next turn (a running turn finishes on the old model); an agent switched on or off reaches open conversations from their next turn as an agent list reminder",
+  set_orchestration_mode:
+    "new sessions and an empty current one (the default mode); a conversation keeps its own mode until it is switched with the composer's mode selector",
   set_recap_enabled: 'background Memory cycles; no restart required',
   set_auto_update: 'subsequent automatic update checks',
   set_worktree_settings: 'new tasks and worktrees created afterwards; existing worktrees are unchanged',
@@ -35,6 +49,7 @@ const ACTION_APPLIES_TO = {
   save_automation: 'the automation worker; scheduled runs follow the saved timing',
   delete_automation: 'future automation runs',
   set_automation_enabled: 'future automation runs',
+  run_automation: "one run now; its result posts into the owning agent's thread",
   set_webhook_config: 'the webhook worker after configuration reload',
   add_hook_rule: 'subsequent tool calls; no restart required',
   set_hook_rule_enabled: 'subsequent tool calls; no restart required',
@@ -55,9 +70,10 @@ const OPEN_TARGET_HINTS = Object.freeze({
   autoclear: 'Desktop: Settings → Context · TUI: /autoclear',
   memory:
     'Desktop: Extensions → Plugin → Built-in (Memory); core memories under Projects → project → Memories · TUI: /memory',
-  mcp: 'Desktop: Extensions → Skill tab → MCP · TUI: /mcp',
-  skills: 'Desktop: Extensions → Skill tab → Skills · TUI: /skills',
-  plugins: 'Desktop: Extensions → Plugin tab → Plugins · TUI: /plugins',
+  mcp: 'Desktop: Extensions → Connectors tab · TUI: /mcp',
+  skills: 'Desktop: Skills (activity rail) · TUI: /skills',
+  plugins:
+    'Desktop: Extensions → Extensions tab (plugins that bring MCP servers: Connectors tab → Custom connectors) · TUI: /plugins',
   update: 'Desktop: Settings → System → Update · TUI: /update',
   usage: 'Desktop: /usage in the composer · TUI: /usage',
   doctor: 'Desktop: Settings → System → Doctor, or /doctor in the composer · TUI: /doctor',
@@ -92,10 +108,12 @@ function routeInput(source) {
   if (clean(source.model)) next.model = clean(source.model);
   if (clean(source.effort)) next.effort = clean(source.effort);
   if (typeof source.fast === 'boolean') next.fast = source.fast;
+  if (typeof source.autoEffort === 'boolean') next.autoEffort = source.autoEffort;
   if (Object.hasOwn(source, 'modelParameters')) next.modelParameters = { ...source.modelParameters };
   if (Object.hasOwn(source, 'contextPercent')) next.contextPercent = source.contextPercent;
   if (Object.hasOwn(source, 'contextTokens')) next.contextTokens = source.contextTokens;
   if (Object.hasOwn(source, 'disabled')) next.disabled = source.disabled;
+  if (Object.hasOwn(source, 'fallbacks')) next.fallbacks = source.fallbacks.map(routeInput);
   return next;
 }
 
@@ -118,6 +136,7 @@ function publicProviderRows(setup) {
     ...extra,
   });
   return {
+    ...(setup?.managedByClient === true ? { managedByClient: true, unavailable: setup.unavailable === true } : {}),
     pendingSecrets: setup?.pendingSecrets === true,
     api: (setup?.api || []).map((row) =>
       pick(row, {
@@ -130,6 +149,7 @@ function publicProviderRows(setup) {
       pick(row, {
         reauthRequired: row.reauthRequired === true,
         expiresAt: row.expiresAt || null,
+        plan: row.plan || null,
       })
     ),
     local: (setup?.local || []).map((row) =>
@@ -139,6 +159,38 @@ function publicProviderRows(setup) {
       })
     ),
   };
+}
+
+/** Minimal provider rows for the model: only providers with a credential (or
+ *  one needing re-authentication), counts instead of account rosters. Without
+ *  `accountCount` (desktop-owned accounts) no counts are reported. */
+function configuredProviderRows(rows, accountCount) {
+  const providers = [];
+  let notConfigured = 0;
+  for (const [kind, list] of [
+    ['api', rows.api],
+    ['oauth', rows.oauth],
+    ['local', rows.local],
+  ]) {
+    for (const row of list) {
+      if (!row.authenticated && !row.reauthRequired) {
+        notConfigured += 1;
+        continue;
+      }
+      let accounts = {};
+      if (kind === 'oauth' && accountCount) accounts = { accounts: row.authenticated ? accountCount(row.id) : 0 };
+      providers.push({
+        id: row.id,
+        kind,
+        authenticated: row.authenticated,
+        status: row.status,
+        ...(kind === 'oauth' ? { plan: row.plan || null } : {}),
+        ...(row.reauthRequired ? { reauthRequired: true } : {}),
+        ...accounts,
+      });
+    }
+  }
+  return { ...(rows.pendingSecrets ? { pendingSecrets: true } : {}), providers, notConfigured };
 }
 
 /** OAuth account roster without usage meters or provider-side identities. */
@@ -300,8 +352,14 @@ const SETUP_STATUS_READERS = {
   'local-provider': (rt) => rt.getToolModuleSettings().localProvider,
   features: (rt, { getConfig }) => featureStatus(rt, getConfig),
   shell: (rt) => rt.getSystemShell?.() || {},
-  providers: async (rt) => {
+  providers: async (rt, { detail }) => {
     const rows = publicProviderRows(await rt.getProviderSetup?.({}));
+    // Client mode: the desktop owns accounts, so the server roster is never read.
+    if (rows.managedByClient) {
+      if (detail) return rows;
+      return { managedByClient: true, unavailable: rows.unavailable, ...configuredProviderRows(rows) };
+    }
+    if (!detail) return configuredProviderRows(rows, (id) => rt.getProviderAccounts(id).accounts.length);
     rows.oauth = rows.oauth.map((row) =>
       row.authenticated ? { ...row, accounts: publicAccounts(rt.getProviderAccounts(row.id)) } : row
     );
@@ -324,6 +382,17 @@ const SETUP_STATUS_READERS = {
 // schema, the per-action field list and the route/object-argument minimums.
 function validateSetupInput(args) {
   const action = requireEnum(args?.action, SETUP_ACTIONS, 'action');
+  // Old callers still ask to connect GitHub: it is the signed-in GitHub CLI, not a catalog connector.
+  if (
+    action === 'connect_connector' &&
+    String(args.connector ?? '')
+      .trim()
+      .toLowerCase() === 'github'
+  ) {
+    throw new Error(
+      'GitHub uses the signed-in GitHub CLI; no connector needed. Use the github tool or Settings → Git.'
+    );
+  }
   const validationError = schemaValueError({ ...args, action }, SETUP_TOOL_DEFS[0].inputSchema, 'setup');
   if (validationError) throw new Error(`[tool-input-validation] ${validationError}`);
   const fields = SETUP_ACTION_FIELDS[action].split(' ').filter(Boolean);
@@ -339,7 +408,13 @@ function validateSetupInput(args) {
     if (action !== 'set_agent_route' && Object.hasOwn(args.route, 'disabled')) {
       throw new Error('route.disabled is only accepted by set_agent_route');
     }
-    for (const field of ['contextPercent', 'contextTokens']) {
+    if (
+      Object.hasOwn(args.route, 'fallbacks') &&
+      !['set_route', 'set_agent_route', 'set_web_search_route'].includes(action)
+    ) {
+      throw new Error('route.fallbacks is only accepted by set_route, set_agent_route and set_web_search_route');
+    }
+    for (const field of ['contextPercent', 'contextTokens', 'autoEffort']) {
       if (action !== 'set_route' && action !== 'set_agent_route' && Object.hasOwn(args.route, field)) {
         throw new Error(`route.${field} is only accepted by set_route and set_agent_route`);
       }
@@ -401,12 +476,12 @@ const SETUP_ACTION_HANDLERS = {
   status: async (_rt, args, { readStatus, requestDesktop }) => {
     const domain = clean(args.domain) || 'summary';
     requireEnum(domain, SETUP_STATUS_DOMAINS, 'domain');
-    return { domain, ...(await readStatus(domain, requestDesktop)) };
+    return { domain, ...(await readStatus(domain, requestDesktop, args.detail === true)) };
   },
   open: (_rt, args, { openSurface }) => openSurface(args.target),
   set_route: async (rt, args) => {
     const route = routeInput(args.route);
-    const next = await rt.setRoute(route);
+    const next = await rt.setRoute(route, { keepMainModel: false });
     return { route: next, appliesTo: 'next session (a conversation keeps its frozen route)' };
   },
   set_agent_route: async (rt, args) => {
@@ -466,6 +541,8 @@ const SETUP_ACTION_HANDLERS = {
   set_web_search_enabled: (rt, args) => rt.setWebSearchEnabled(requireBoolean(args.enabled)),
   set_instruction_files: (rt, args) =>
     rt.setInstructionFiles(requireEnum(args.instructionFiles, INSTRUCTION_FILES_MODES, 'instructionFiles')),
+  set_auto_effort_base: (rt, args) =>
+    rt.setAutoEffortBase(requireEnum(args.autoEffortBase, AUTO_EFFORT_BASES, 'autoEffortBase')),
   set_builtin_enabled: (rt, args, { requestDesktop }) => {
     const name = requireEnum(args.name, SETUP_BUILTIN_TOGGLE_FEATURES, 'name');
     if (DESKTOP_HOSTED_FEATURES.includes(name)) return requestDesktop(args);
@@ -524,6 +601,7 @@ const SETUP_ACTION_HANDLERS = {
   forget_provider_auth: async (rt, args) => {
     const name = requireText(args.name, 'name');
     const setup = await rt.getProviderSetup({});
+    if (setup?.managedByClient) throw new Error('Manage provider accounts in the local desktop window.');
     if (!(setup?.oauth || []).some((row) => row.id === name)) {
       if (Object.hasOwn(args, 'accountId')) throw new Error('accountId applies only to OAuth providers');
       return rt.forgetProviderAuth(name);
@@ -536,8 +614,12 @@ const SETUP_ACTION_HANDLERS = {
     const accountId = Object.hasOwn(args, 'accountId') ? requireText(args.accountId, 'accountId') : accounts[0].id;
     return { ...(await rt.forgetProviderAuth(name, accountId)), accountId };
   },
-  set_provider_account: async (rt, args) =>
-    publicAccounts(await rt.updateProviderAccounts(requireText(args.name, 'name'), args.providerAccount)),
+  set_provider_account: async (rt, args) => {
+    if ((await rt.getProviderSetup?.({}))?.managedByClient) {
+      throw new Error('Manage provider accounts in the local desktop window.');
+    }
+    return publicAccounts(await rt.updateProviderAccounts(requireText(args.name, 'name'), args.providerAccount));
+  },
   add_mcp_server: async (rt, args) => {
     const server = mcpServerInput(args);
     requireText(server.name, 'server.name');
@@ -579,6 +661,25 @@ const SETUP_ACTION_HANDLERS = {
   remove_plugin: async (rt, args) => ({
     plugin: (await rt.removePlugin(requireText(args.name, 'name')))?.plugin || null,
   }),
+  // The chat path of the one-click connect: the attached Desktop renders this
+  // call as a connect card (agent-chat connector card) that runs the same flow
+  // as Extensions → 커넥터. Nothing is connected here.
+  connect_connector: async (rt, args) => {
+    const entry = connectorById(requireText(args.connector, 'connector'));
+    if (!entry || entry.ownKey) throw new Error(`connector must be one of ${CONNECTOR_IDS.join(', ')}`);
+    const server = (rt.mcpStatus?.()?.servers || []).find((row) => row.connector === entry.id) || null;
+    const connected = server?.connected === true;
+    return {
+      connector: entry.id,
+      name: entry.name,
+      backend: entry.backend.kind,
+      ...(server ? { server: server.name } : {}),
+      connected,
+      note: connected
+        ? `${entry.name} is already connected.`
+        : `A connect card for ${entry.name} is shown in this conversation; the user presses it (Desktop: Extensions → 커넥터). Check status mcp afterwards.`,
+    };
+  },
   enable_plugin_mcp: async (rt, args) => {
     const name = requireText(args.name, 'name');
     const plugin = ((await rt.pluginsStatus())?.plugins || []).find((row) => row.name === name || row.id === name);
@@ -597,6 +698,7 @@ const READ_ONLY_SETUP_ACTIONS = new Set([
   'open',
   'list_models',
   'get_mcp_server',
+  'connect_connector',
   'read_definition',
   'search_local_models',
   'inspect_hf_model',
@@ -608,6 +710,7 @@ const BACKGROUND_SETUP_ACTIONS = new Set([
   'maintain_local_model',
   'cancel_local_installation',
   'reconnect_mcp',
+  'run_automation',
 ]);
 
 function setupMutationReceipt(action, result) {
@@ -623,7 +726,16 @@ function setupMutationReceipt(action, result) {
   );
 }
 
-export function createSetupToolExecutor({ getApi, getConfig, notifySessionUi, getSessionId, flushSettings }) {
+/** `getCallerSession(id)` returns the calling session's record (null when it
+ *  cannot be resolved): automation actions authorize by its provenance. */
+export function createSetupToolExecutor({
+  getApi,
+  getConfig,
+  notifySessionUi,
+  getSessionId,
+  getCallerSession,
+  flushSettings,
+}) {
   const desktop = createSetupUiRequests({ notifySessionUi, getSessionId });
   const api = () => {
     const facade = getApi?.();
@@ -631,11 +743,11 @@ export function createSetupToolExecutor({ getApi, getConfig, notifySessionUi, ge
     return facade;
   };
 
-  async function readStatus(domain, requestDesktop) {
+  async function readStatus(domain, requestDesktop, detail) {
     const rt = api();
     if (SETUP_DESKTOP_DOMAINS.includes(domain)) return requestDesktop({ action: 'status', domain });
     if (!Object.hasOwn(SETUP_STATUS_READERS, domain)) throw new Error(`setup: unknown status domain "${domain}"`);
-    return SETUP_STATUS_READERS[domain](rt, { domain, getConfig: () => getConfig?.() || {} });
+    return SETUP_STATUS_READERS[domain](rt, { domain, detail, getConfig: () => getConfig?.() || {} });
   }
 
   function openSurface(target) {
@@ -653,12 +765,31 @@ export function createSetupToolExecutor({ getApi, getConfig, notifySessionUi, ge
     };
   }
 
-  async function execute(args, { signal }) {
+  async function execute(args, { signal, callerSessionId }) {
     signal?.throwIfAborted();
     const requestDesktop = (request) => desktop.request(request, { signal });
     const action = validateSetupInput(args);
+    // The session that made this call, not just the runtime's own Lead.
+    const sessionId = clean(callerSessionId) || clean(getSessionId?.());
+    const caller = (sessionId && getCallerSession?.(sessionId)) || null;
+    // A headless run (schedule, webhook, delegated agent) only reads settings:
+    // it never creates agents, definitions or automations, nor changes any
+    // other setting. Hosts without session provenance (no getCallerSession)
+    // skip this gate; automation actions still refuse an unknown caller.
+    if (getCallerSession && !READ_ONLY_SETUP_ACTIONS.has(action)) {
+      const scope = scheduleCallerScope(caller);
+      assertInteractiveCaller(scope, action);
+      // Agent definitions (contacts) change only from Mixy; another agent's
+      // home changes only its own agent settings.
+      if (AGENT_DEFINITION_ACTIONS.has(action) && args.definitionKind === 'agent') {
+        assertAgentEditorAccess(scope, caller, action);
+      }
+      if (action === 'set_agent_route') assertOwnAgentSettings(scope, args.agent, action);
+    }
     const rt = action === 'status' || action === 'open' ? null : api();
-    if (!Object.hasOwn(SETUP_ACTION_HANDLERS, action)) return executeExtendedSetupAction(rt, args, requestDesktop);
+    if (!Object.hasOwn(SETUP_ACTION_HANDLERS, action)) {
+      return executeExtendedSetupAction(rt, args, requestDesktop, { sessionId, caller });
+    }
     return SETUP_ACTION_HANDLERS[action](rt, args, { requestDesktop, readStatus, openSurface });
   }
 
@@ -669,7 +800,7 @@ export function createSetupToolExecutor({ getApi, getConfig, notifySessionUi, ge
     dispose: desktop.dispose,
     async execute(args = {}, options = {}) {
       const result = await execute(args, options);
-      if (READ_ONLY_SETUP_ACTIONS.has(args.action)) return JSON.stringify(result ?? {}, null, 2);
+      if (READ_ONLY_SETUP_ACTIONS.has(args.action)) return JSON.stringify(result ?? {});
       await flushSettings?.();
       // Attached surfaces re-read what changed instead of waiting for their
       // next open or cache expiry.

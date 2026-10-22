@@ -9,7 +9,7 @@ export const CUSTOM_PROVIDER_PROTOCOLS = Object.freeze(['openai-chat', 'openai-r
 export const CUSTOM_PROVIDER_SCHEMA_VERSION = 2;
 // Ranked weakest → strongest.
 export const CUSTOM_REASONING_LEVELS = CUSTOM_EFFORT_LEVELS;
-export const CUSTOM_REASONING_WIRE_FORMATS = Object.freeze(['standard', 'deepseek']);
+export const CUSTOM_REASONING_WIRE_FORMATS = Object.freeze(['standard', 'deepseek', 'together', 'vllm']);
 export const CUSTOM_PROVIDER_AUTH_MODES = Object.freeze(['key', 'none']);
 export const CUSTOM_MODEL_OVERRIDE_LIMIT = 500;
 
@@ -58,7 +58,15 @@ function strictPositiveInt(value, label) {
   return value;
 }
 
-const OVERRIDE_KEYS = new Set(['manual', 'hidden', 'name', 'contextWindow', 'maxOutputTokens', 'reasoning']);
+const OVERRIDE_KEYS = new Set([
+  'manual',
+  'hidden',
+  'name',
+  'contextWindow',
+  'maxOutputTokens',
+  'supportsVision',
+  'reasoning',
+]);
 const REASONING_KEYS = new Set(['levels', 'wireFormat', 'wireValues', 'replay']);
 const DISCOVERY_KEYS = new Set(['newModelsHidden']);
 // v2 config fields, plus the transport fields callers pass alongside them and
@@ -74,6 +82,8 @@ const V2_TOP_LEVEL_KEYS = new Set([
   'auth',
   'discovery',
   'modelOverrides',
+  'wires',
+  'modelWires',
   'id',
   'apiKey',
   'apiKeyEnv',
@@ -218,6 +228,9 @@ function normalizeOverride(id, raw, protocol, legacy) {
   if (contextWindow) out.contextWindow = contextWindow;
   const maxOutputTokens = positiveInt(raw.maxOutputTokens, `${label}.maxOutputTokens`);
   if (maxOutputTokens) out.maxOutputTokens = maxOutputTokens;
+  // Tri-state image input: absent = auto (catalog / default), true / false = the user's word.
+  const supportsVision = optionalBoolean(raw.supportsVision, `${label}.supportsVision`);
+  if (supportsVision !== undefined) out.supportsVision = supportsVision;
   if (raw.reasoning !== undefined) {
     const reasoning = normalizeReasoning(raw.reasoning, `${label}.reasoning`, protocol);
     if (Object.keys(reasoning).length) out.reasoning = reasoning;
@@ -235,6 +248,49 @@ function normalizeOverrides(raw, protocol, legacy) {
   for (const key of keys) {
     const id = modelIdKey(key, 'modelOverrides key');
     out[id] = normalizeOverride(id, raw[key], protocol, legacy);
+  }
+  return out;
+}
+
+// The wire each OpenAI-compatible protocol speaks (wire-route.mjs WIRES).
+export const CUSTOM_PROTOCOL_WIRES = Object.freeze({
+  'openai-chat': 'chat',
+  'openai-responses': 'responses',
+  anthropic: 'messages',
+});
+// Wires a user-defined OpenAI-compatible endpoint can be declared to serve.
+export const CUSTOM_PROVIDER_WIRES = Object.freeze(['chat', 'responses', 'messages']);
+
+// `wires`: the wires the endpoint serves (the protocol's own wire included);
+// absent = the protocol's wire only. Anthropic-protocol providers speak one wire.
+function normalizeWires(raw, protocol) {
+  if (raw === undefined) return null;
+  if (protocol === 'anthropic') fail("wires requires an 'openai-chat' or 'openai-responses' protocol");
+  if (!Array.isArray(raw) || raw.length === 0) fail('wires must be a non-empty array');
+  const seen = new Set();
+  for (const wire of raw) {
+    if (!CUSTOM_PROVIDER_WIRES.includes(wire)) fail(`wires has unsupported wire: ${String(wire)}`);
+    if (seen.has(wire)) fail(`wires has duplicate wire: ${wire}`);
+    seen.add(wire);
+  }
+  if (!seen.has(CUSTOM_PROTOCOL_WIRES[protocol]))
+    fail(`wires must include the protocol wire: ${CUSTOM_PROTOCOL_WIRES[protocol]}`);
+  return CUSTOM_PROVIDER_WIRES.filter((wire) => seen.has(wire));
+}
+
+// `modelWires`: per-model wire override, each one of the served wires.
+function normalizeModelWires(raw, protocol, wires) {
+  if (raw === undefined) return {};
+  if (protocol === 'anthropic') fail("modelWires requires an 'openai-chat' or 'openai-responses' protocol");
+  if (!isPlainObject(raw)) fail('modelWires must be an object');
+  const keys = Object.keys(raw);
+  if (keys.length > CUSTOM_MODEL_OVERRIDE_LIMIT) fail(`at most ${CUSTOM_MODEL_OVERRIDE_LIMIT} model wires are allowed`);
+  const served = wires || [CUSTOM_PROTOCOL_WIRES[protocol]];
+  const out = {};
+  for (const key of keys) {
+    const id = modelIdKey(key, 'modelWires key');
+    if (!served.includes(raw[key])) fail(`modelWires[${id}] must be one of the served wires: ${served.join(', ')}`);
+    out[id] = raw[key];
   }
   return out;
 }
@@ -278,6 +334,8 @@ export function normalizeCustomProviderConfig(input) {
     // v2 fields without the version would be silently dropped by migration.
     if (input.modelOverrides !== undefined || input.discovery !== undefined)
       fail('modelOverrides and discovery require schemaVersion 2');
+    if (input.wires !== undefined || input.modelWires !== undefined)
+      fail('wires and modelWires require schemaVersion 2');
     source = migrateLegacy(input);
   } else if (Number.isInteger(version) && version > CUSTOM_PROVIDER_SCHEMA_VERSION)
     fail(`unsupported schemaVersion ${version}; update mixdog to use this provider`);
@@ -308,6 +366,8 @@ export function normalizeCustomProviderConfig(input) {
   if (!isPlainObject(discovery)) fail('discovery must be an object');
   onlyKnownKeys(discovery, DISCOVERY_KEYS, 'discovery');
   const newModelsHidden = optionalBoolean(discovery.newModelsHidden, 'discovery.newModelsHidden') ?? false;
+  const wires = normalizeWires(source.wires, protocol);
+  const modelWires = normalizeModelWires(source.modelWires, protocol, wires);
   return {
     type: 'custom',
     schemaVersion: CUSTOM_PROVIDER_SCHEMA_VERSION,
@@ -319,6 +379,8 @@ export function normalizeCustomProviderConfig(input) {
     ...(apiKeyEnv && auth === 'key' ? { apiKeyEnv } : {}),
     discovery: { newModelsHidden },
     modelOverrides: normalizeOverrides(source.modelOverrides, protocol, legacy),
+    ...(wires ? { wires } : {}),
+    ...(Object.keys(modelWires).length ? { modelWires } : {}),
   };
 }
 
@@ -333,6 +395,14 @@ function catalogLevels(row) {
     }
   }
   return levels.size ? [...levels].sort(byRank) : null;
+}
+
+function reasoningLevelFields(levels) {
+  if (!levels) return {};
+  return {
+    reasoningOptions: levels.length ? [{ type: 'effort', values: [...levels] }] : [],
+    reasoningLevels: [...levels],
+  };
 }
 
 function effectiveRow(base, override, { providerId, discovered, newModelsHidden }) {
@@ -361,13 +431,10 @@ function effectiveRow(base, override, { providerId, discovered, newModelsHidden 
     outputTokens: ov.maxOutputTokens ?? (Number(base.outputTokens) > 0 ? Number(base.outputTokens) : null),
     hidden,
     manual: ov.manual === true,
+    // An explicit override (false included) beats the catalog; unset keeps the base.
+    ...(typeof ov.supportsVision === 'boolean' ? { supportsVision: ov.supportsVision } : {}),
     supportsReasoning: levels ? levels.some((level) => level !== 'none') : base.supportsReasoning === true,
-    ...(levels
-      ? {
-          reasoningOptions: levels.length ? [{ type: 'effort', values: [...levels] }] : [],
-          reasoningLevels: [...levels],
-        }
-      : {}),
+    ...reasoningLevelFields(levels),
     customReasoning: { wireFormat: reasoning.wireFormat ?? 'standard', wireValues, replay },
     ...(replay ? { reasoningContentField: 'reasoning_content' } : {}),
   };

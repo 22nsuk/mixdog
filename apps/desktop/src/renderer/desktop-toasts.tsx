@@ -14,6 +14,8 @@ function toastTitle(tone: string): string {
   return tone === 'warn' || tone === 'warning' ? t('Attention') : 'Mixdog';
 }
 
+/** Shown (translated) when an always-allow choice was applied once but not saved. */
+export const ALLOW_NOT_SAVED_TEXT = 'Allowed this once. The setting could not be saved.';
 export const DESKTOP_TOAST_EVENT = 'mixdog:desktop-toast';
 export const DESKTOP_TOAST_DISMISS_EVENT = 'mixdog:desktop-toast-dismiss';
 type DesktopToastTone = 'info' | 'success' | 'warn' | 'error';
@@ -63,7 +65,19 @@ export function DesktopToastRegion({
   const expiryTimers = useRef(new Map<string, { record: (typeof records)[number]; timer: number }>());
   const [placement, setPlacement] = useState({ right: 16, top: 54, width: 320, maxHeight: 400 });
   const hostToasts = [
-    ...toasts,
+    // The main process owns the lasting-outage toast and sends its English key.
+    ...toasts.map((toast) => {
+      if (
+        toast.id === 'service-connection-stopped' &&
+        toast.text === 'The service connection has been lost for a while. Still retrying automatically.'
+      ) {
+        return { ...toast, text: t('The service connection has been lost for a while. Still retrying automatically.') };
+      }
+      // The runtime sends its English key when a "항상 허용" could not be saved.
+      return toast.text === ALLOW_NOT_SAVED_TEXT
+        ? { ...toast, text: t('Allowed this once. The setting could not be saved.') }
+        : toast;
+    }),
     ...(bridgeError ? [{ id: 'desktop-bridge', text: bridgeError, tone: 'error', lifetime: 'state' }] : []),
   ];
   const hostToken = JSON.stringify(hostToasts);
@@ -138,6 +152,9 @@ export function DesktopToastRegion({
   const hasEntries = entryCount > 0;
   // biome-ignore lint/correctness/useExhaustiveDependencies: hasEntries/entryCount re-measure the lane when toasts appear or disappear; measure reads the DOM, not these values.
   useLayoutEffect(() => {
+    // No lane, nothing to place: an idle lane watching every resize step and
+    // body mutation forced a layout per frame of a window drag.
+    if (!hasEntries) return undefined;
     // Anchor to the single main panel, below its tab strip. Every open tab
     // keeps its own `.workspace` sheet mounted (parked ones included), so the
     // first sheet in the document is not the visible one.
@@ -154,6 +171,9 @@ export function DesktopToastRegion({
       const header = presentedModalDialog()
         ?.querySelector(':scope > header, .mixdog-settings__header')
         ?.getBoundingClientRect();
+      // The phone app-update banner floats in the same lane: sit below it.
+      const banner = document.querySelector('.app-update-banner')?.getBoundingClientRect();
+      if (banner?.height) top = Math.max(top, Math.round(banner.bottom + 8));
       const region = document.querySelector('.mx-toast-region');
       const first = region?.firstElementChild?.getBoundingClientRect();
       const last = region?.lastElementChild?.getBoundingClientRect();
@@ -176,10 +196,13 @@ export function DesktopToastRegion({
       );
     };
     measure();
-    window.addEventListener('resize', measure);
+    // The panel's observer reports every window resize after that frame's
+    // layout, where these reads are free; a resize-event read forced a second
+    // layout per step of a window drag.
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
     const panel = document.querySelector('.main-panel');
     if (observer && panel) observer.observe(panel);
+    else window.addEventListener('resize', measure);
     // Dialogs portal in as body children or flip their modal state in place;
     // a second pass lands after their entrance motion settles.
     let settle = 0;
@@ -193,8 +216,8 @@ export function DesktopToastRegion({
     const modality = new MutationObserver(remeasure);
     modality.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['aria-modal'] });
     return () => {
-      window.removeEventListener('resize', measure);
       observer?.disconnect();
+      window.removeEventListener('resize', measure);
       mounts.disconnect();
       modality.disconnect();
       window.clearTimeout(settle);

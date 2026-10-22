@@ -43,8 +43,11 @@ test('shell, edit, and task keep their execution contracts', () => {
     !/^Run programs, builds, tests and computation/i.test(shellDescription) ||
     !/Never use shell commands or scripts for work covered by dedicated tools/i.test(shellDescription) ||
     !/Tool names are not shell commands/i.test(shellDescription) ||
-    !/10s foreground window.*not a timeout/i.test(shellDescription) ||
-    !/use task wait, not read polling/i.test(shellDescription)
+    !/Holds up to 60s for the result/i.test(shellDescription) ||
+    !/new user input or a task notification arrives: it moves to the background \(never killed\)/i.test(
+      shellDescription
+    ) ||
+    !/Completion is delivered automatically/i.test(shellDescription)
   ) {
     throw new Error(
       `shell description must keep its execution-routing and async-completion phrases: ${shellDescription}`
@@ -71,10 +74,12 @@ test('shell, edit, and task keep their execution contracts', () => {
   }
   const shellProps = shellTool?.inputSchema?.properties || {};
   if (
-    JSON.stringify(Object.keys(shellProps)) !== JSON.stringify(['command', 'timeout_ms', 'wait_ms']) ||
+    JSON.stringify(Object.keys(shellProps)) !== JSON.stringify(['command', 'timeout_ms', 'wait_ms', 'background']) ||
     shellProps.command?.minLength !== undefined
   ) {
-    throw new Error(`shell schema must expose only command, optional timeout_ms and wait_ms: ${JSON.stringify(shellProps)}`);
+    throw new Error(
+      `shell schema must expose only command, optional timeout_ms, wait_ms and background: ${JSON.stringify(shellProps)}`
+    );
   }
   // timeout_ms is DECLARED in the model-facing schema (the schema states the
   // contract) while the default stays "no deadline" — the description and
@@ -92,8 +97,8 @@ test('shell, edit, and task keep their execution contracts', () => {
   const publicTaskTool = BUILTIN_TOOLS.find((tool) => tool.name === 'task');
   const publicTaskProps = publicTaskTool?.inputSchema?.properties || {};
   if (
-    !/Completion notifications are automatic/i.test(publicTaskTool?.description || '') ||
-    !/Wait instead of polling/i.test(publicTaskTool?.description || '')
+    !/Completion is delivered automatically/i.test(publicTaskTool?.description || '') ||
+    !/never poll with read/i.test(publicTaskTool?.description || '')
   ) {
     throw new Error(`task description must prohibit unsolicited progress checks: ${publicTaskTool?.description || ''}`);
   }
@@ -298,10 +303,19 @@ test('read schema exposes canonical scalar and batch windows', () => {
     throw new Error('read range args must use the scalar integer contract with Mixdog descriptions');
   }
   if (
-    Object.keys(readProps).some((key) => !['file_path', 'offset', 'limit'].includes(key)) ||
+    Object.keys(readProps).some((key) => !['file_path', 'offset', 'limit', 'pages'].includes(key)) ||
     readSchema.additionalProperties !== false
   ) {
     throw new Error('read schema must not expose legacy arguments');
+  }
+  // PDFs page by `pages`, never by line windows; the description says so.
+  if (
+    readProps.pages?.type !== 'string' ||
+    !/"N-M"/.test(readProps.pages?.description || '') ||
+    !/scanned pages/i.test(readProps.pages?.description || '') ||
+    !/PDFs use pages/i.test(readProps.limit?.description || '')
+  ) {
+    throw new Error('read must expose the PDF pages range and say that limit does not page PDFs');
   }
 });
 
@@ -447,19 +461,39 @@ test('session and memory schemas stay minimal and direct', () => {
     SESSION_TOOL.title !== 'Session' ||
     SESSION_TOOL.annotations?.title !== 'Session' ||
     SESSION_TOOL.annotations?.agentHidden !== true ||
-    !/active Project/i.test(SESSION_TOOL.description || '') ||
-    !/shell-local cd does not change the Project/i.test(SESSION_TOOL.description || '') ||
-    Object.keys(sessionProps).join(',') !== 'action,title,path,compact,force,value' ||
+    SESSION_TOOL.annotations?.destructiveHint !== true ||
+    !/exact ID, never a guessed one/i.test(SESSION_TOOL.description || '') ||
+    !/Cancel\/delete require the user/i.test(SESSION_TOOL.description || '') ||
+    !/initial location/i.test(SESSION_TOOL.description || '') ||
+    !/git tool’s action:"worktree"/.test(SESSION_TOOL.description || '') ||
+    !/Shell cd does not switch Project/i.test(sessionProps.path?.description || '') ||
+    Object.keys(sessionProps).join(',') !==
+      'action,title,session_id,prompt,to,limit,cursor,include_agents,include_archived,offset,text_offset,item_id,path,compact,value,brief,project,worktree,confirm_large,model,notify,attachments' ||
+    sessionProps.worktree?.type !== 'object' ||
+    sessionProps.worktree?.additionalProperties !== false ||
+    sessionProps.worktree?.required?.join(',') !== 'mode' ||
+    sessionProps.worktree?.properties?.mode?.enum?.join(',') !== 'branch,worktree' ||
+    sessionProps.worktree?.properties?.name?.type !== 'string' ||
+    sessionProps.confirm_large?.type !== 'boolean' ||
+    sessionProps.to?.type !== 'string' ||
+    !/group room \(sess_room_\*\)/.test(sessionProps.to?.description || '') ||
+    sessionProps.include_agents?.type !== 'boolean' ||
+    sessionProps.include_archived?.type !== 'boolean' ||
+    sessionProps.attachments?.type !== 'array' ||
     sessionProps.action?.enum?.join(',') !==
-      'status,rename,compact,fork,set-project,list-projects,favorite,archive,merge-worktree,remove-worktree,list-worktrees,prune-worktrees' ||
+      'status,list,bots,read,send,cancel,delete,create,rename,compact,fork,set-project,list-projects,favorite,archive' ||
+    !/cannot target the caller/i.test(sessionProps.session_id?.description || '') ||
+    sessionProps.limit?.minimum !== 1 ||
+    sessionProps.limit?.maximum !== 100 ||
     sessionProps.path?.minLength !== undefined ||
     sessionProps.path?.type !== 'string' ||
     sessionProps.compact?.type !== 'boolean' ||
-    sessionProps.force?.type !== 'boolean' ||
     sessionProps.value?.type !== 'boolean' ||
     SESSION_TOOL.inputSchema?.additionalProperties !== false
   ) {
-    throw new Error('session schema must expose status/rename/compact/fork, the Project and worktree actions');
+    throw new Error(
+      'session schema must expose session lookup/control by exact id, status/rename/compact/fork, the Project action and create’s initial worktree location'
+    );
   }
   const memoryTool = MEMORY_TOOL_DEFS.find((tool) => tool.name === 'memory');
   const memoryProps = memoryTool?.inputSchema?.properties || {};
@@ -469,7 +503,7 @@ test('session and memory schemas stay minimal and direct', () => {
     !/standing user preferences/i.test(memoryTool?.description || '') ||
     // Direct curated memory and the revisioned per-project edit/delete index.
     Object.keys(memoryProps).sort().join(',') !==
-      'id,include_inactive,index_revision,limit,offset,op,project_id,summary' ||
+      'agent_id,id,include_inactive,index_revision,limit,offset,op,project_id,summary' ||
     memoryProps.op?.enum?.join(',') !== 'add,edit,delete,list' ||
     memoryTool?.inputSchema?.required?.join(',') !== 'op' ||
     memoryProps.id?.type !== 'integer' ||
@@ -551,7 +585,7 @@ test('web_search and web_fetch schemas keep sync fan-out contracts', () => {
     !/default 0/i.test(webFetchProps.startIndex?.description || '') ||
     webFetchProps.maxLength?.type !== 'integer' ||
     webFetchProps.maxLength?.minimum !== 0 ||
-    !/default 50000/i.test(webFetchProps.maxLength?.description || '') ||
+    !/default 20000/i.test(webFetchProps.maxLength?.description || '') ||
     !/0 unlimited/i.test(webFetchProps.maxLength?.description || '')
   ) {
     throw new Error('web_fetch schema must describe paging window fields');

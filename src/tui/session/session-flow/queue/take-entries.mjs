@@ -13,6 +13,12 @@ import {
 import { hydratePastedAttachments, hydrateRestorableFileParts } from '../../../../runtime/attachments/store.mjs';
 import { dropTuiSteeringPersist } from '../../tui-steering-persist.mjs';
 
+/** Who an entry's words are attributed to (its `sender`, sending bot and chain hop). */
+const attributionOf = (entry) =>
+  `${String(entry?.transcriptMeta?.sender || '').toLowerCase()}|${entry?.transcriptMeta?.fromAgent || ''}|${
+    entry?.transcriptMeta?.hop || 0
+  }`;
+
 export function createTakeEntriesOps({ pending, pendingNotificationKeys, removeQueuedEntries, leadSessionId }) {
   function dequeueQueueBatch(maxPriority = 'later', options = {}) {
     if (pending.length === 0) return [];
@@ -39,10 +45,14 @@ export function createTakeEntriesOps({ pending, pendingNotificationKeys, removeQ
         (entry.mode || 'prompt') === targetMode &&
         queuePriorityValue(entry.priority) === bestPriority
       ) {
+        if (batch.length > 0 && entry.retryTurnId) break;
+        // One turn records one sender: a bot's message never merges with the user's.
+        if (batch.length > 0 && attributionOf(entry) !== attributionOf(batch[0])) break;
         batch.push(entry);
         pending.splice(i, 1);
         if (entry.mode === 'task-notification' && entry.key) pendingNotificationKeys.delete(entry.key);
-        if (batch.length >= limit) break;
+        // A routine fire is a turn of its own, never merged with another.
+        if (entry.retryTurnId || entry.mode === 'routine' || batch.length >= limit) break;
       } else {
         i += 1;
       }
@@ -72,7 +82,7 @@ export function createTakeEntriesOps({ pending, pendingNotificationKeys, removeQ
     // A reclaimed prompt goes back to the draft, so its durable steering
     // mirror goes with it; otherwise the next runtime restore re-queues a
     // prompt the user already took back.
-    const mirrored = queued.filter((entry) => entry.steeringPersistId && !entry.steeringPersistRestored);
+    const mirrored = queued.filter((entry) => entry.steeringPersistId);
     if (mirrored.length > 0) void dropTuiSteeringPersist(leadSessionId(), mirrored);
     const queuedText = queued
       .map((item) => item.text)

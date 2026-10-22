@@ -12,6 +12,8 @@ import android.content.pm.SigningInfo;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import androidx.core.content.FileProvider;
 import androidx.core.content.pm.PackageInfoCompat;
@@ -31,6 +33,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -56,13 +59,21 @@ final class MixdogAppUpdater {
   private static final String TARGET = "target";
   private static final String DOWNLOAD_ID = "download_id";
   private static final String DISMISSED = "dismissed_version";
+  private static final String AUTO = "auto_download";
+  private static final String AUTO_BLOCKED = "auto_blocked_version";
 
   private static final String RELEASES_API = "https://api.github.com/repos/tribgames/mixdog/releases?per_page=20";
   private static final String DOWNLOAD_PREFIX = "https://github.com/tribgames/mixdog/releases/download/";
   private static final String TAG_PREFIX = "mobile-v";
   private static final String APK_MIME = "application/vnd.android.package-archive";
   private static final String UPDATES_DIR = "updates";
-  private static final long CHECK_INTERVAL_MS = 6L * 60 * 60 * 1000;
+  // The relay (same default origin as the desktop) names the newest published
+  // version; GitHub's 60/h anonymous limit is only touched when that is newer
+  // than the installed app, or as a once-an-hour fallback if the relay is down.
+  private static final String RELAY_LATEST = "https://192-255-139-161.sslip.io/app/latest.json";
+  private static final String GITHUB_CHECK = "github_check";
+  private static final long CHECK_INTERVAL_MS = 10L * 60 * 1000;
+  private static final long GITHUB_FALLBACK_MS = 60L * 60 * 1000;
   // Progress reaches the web app at most ~4 times a second.
   private static final long POLL_MS = 250;
   private static final int MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -125,6 +136,13 @@ final class MixdogAppUpdater {
   private long pollGeneration = 0;
   private boolean installerLaunched = false;
   private boolean closed = false;
+  private boolean foreground = false;
+  private boolean auto = false; // the current download was started automatically
+  private final Handler handler = new Handler(Looper.getMainLooper());
+  private final Runnable tick = this::tick;
+  // The last finished lookup: when, and "network" if it failed (cleared by a success).
+  private String lastCheckError = null;
+  private long lastCheckAt = 0;
 
   MixdogAppUpdater(MainActivity activity, Runnable onChange) {
     this.activity = activity;
@@ -142,6 +160,7 @@ final class MixdogAppUpdater {
     // The update was installed (or a newer build sideloaded): nothing to resume.
     if (target != null && (downloadId < 0 || compareVersions(target.version, installed) <= 0)) dropDownload();
     if (target != null) {
+      auto = prefs.getBoolean(AUTO, false);
       status = "downloading";
       total = target.size;
     } else if (available != null) {
@@ -164,6 +183,8 @@ final class MixdogAppUpdater {
   void close() {
     synchronized (this) {
       closed = true;
+      foreground = false;
+      handler.removeCallbacks(tick);
     }
   }
 
@@ -184,10 +205,16 @@ final class MixdogAppUpdater {
 
   synchronized JSONObject start() throws JSONException {
     if (available == null || !("available".equals(status) || "failed".equals(status))) return state();
+    startDownload(false);
+    return state();
+  }
+
+  /** Enqueue the download of `available` (the verified path is the same for a tap and for an automatic start). */
+  private void startDownload(boolean automatic) throws JSONException {
     File dir = updatesDir();
     if (dir == null) {
       fail("storage");
-      return state();
+      return;
     }
     dropDownload();
     try {
@@ -200,21 +227,27 @@ final class MixdogAppUpdater {
       downloadId = downloads().enqueue(request);
     } catch (RuntimeException e) {
       fail("storage");
-      return state();
+      return;
     }
     target = available;
+    auto = automatic;
     received = 0;
     total = target.size;
     prefs()
         .edit()
         .putString(TARGET, target.toJson().toString())
         .putLong(DOWNLOAD_ID, downloadId)
+        .putBoolean(AUTO, automatic)
         .apply();
     status = "downloading";
     error = null;
     changed();
     schedulePoll();
-    return state();
+  }
+
+  /** Never auto-download this version again (explicit cancel, or its auto-download failed verification). */
+  private void blockAuto(String version) {
+    prefs().edit().putString(AUTO_BLOCKED, version).apply();
   }
 
   synchronized JSONObject cancel() throws JSONException {
@@ -224,6 +257,10 @@ final class MixdogAppUpdater {
             || "ready".equals(status)
             || "needs-permission".equals(status)
             || "failed".equals(status);
+    if (busy) {
+      Release shown = target != null ? target : available;
+      if (shown != null) blockAuto(shown.version);
+    }
     dropDownload();
     if (busy) {
       status = available != null ? "available" : "idle";
@@ -281,8 +318,34 @@ final class MixdogAppUpdater {
     }
   }
 
-  /** Back from the unknown-sources settings or from the system installer. */
+  /** Delay until the next foreground check: the time left of the interval, a full interval when that makes no sense (clock moved). */
+  static long nextCheckDelay(long lastCheck, long now) {
+    long due = lastCheck + CHECK_INTERVAL_MS - now;
+    return due > 0 && due < CHECK_INTERVAL_MS ? due : CHECK_INTERVAL_MS;
+  }
+
+  /** Foreground timer (main thread): the throttled `get(false)` check, then again when it is due. */
+  private synchronized void tick() {
+    if (closed || !foreground) return;
+    try {
+      get(false);
+    } catch (JSONException e) {
+      // state() only fails on a JSON key problem; nothing to report.
+    }
+    handler.postDelayed(tick, nextCheckDelay(prefs().getLong(LAST_CHECK, 0), System.currentTimeMillis()));
+  }
+
+  /** The activity left the foreground: stop the timer. */
+  synchronized void onPause() {
+    foreground = false;
+    handler.removeCallbacks(tick);
+  }
+
+  /** Back from the unknown-sources settings or from the system installer; also the foreground check. */
   synchronized void onResume() {
+    foreground = true;
+    handler.removeCallbacks(tick);
+    tick();
     if ("needs-permission".equals(status)) {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.getPackageManager().canRequestPackageInstalls()) {
         status = "ready";
@@ -306,11 +369,13 @@ final class MixdogAppUpdater {
       if (shown.version.equals(prefs().getString(DISMISSED, ""))) json.put("dismissed", true);
     }
     if (target != null) {
+      if (auto) json.put("auto", true);
       json.put("receivedBytes", received);
       long totalBytes = total > 0 ? total : target.size;
       if (totalBytes > 0) json.put("totalBytes", totalBytes);
     }
     if ("failed".equals(status) && error != null) json.put("error", error);
+    if (lastCheckError != null) json.put("lastCheckError", lastCheckError).put("lastCheckAt", lastCheckAt);
     return json;
   }
 
@@ -373,10 +438,17 @@ final class MixdogAppUpdater {
       return; // a download took over meanwhile
     }
     if (!ok) {
-      // A background lookup that fails stays silent; a manual one reports it.
+      // A background lookup that fails keeps the status (a manual one reports
+      // it) but is recorded for `state()`.
+      lastCheckError = "network";
+      lastCheckAt = System.currentTimeMillis();
       if ("checking".equals(status)) fail("network");
+      else changed();
       return;
     }
+    boolean hadError = lastCheckError != null;
+    lastCheckError = null;
+    lastCheckAt = System.currentTimeMillis();
     boolean same = found == null ? available == null : available != null && available.version.equals(found.version);
     available = found;
     if (found == null) prefs().edit().remove(AVAILABLE).apply();
@@ -392,10 +464,101 @@ final class MixdogAppUpdater {
       status = next;
       error = null;
       changed();
+    } else if (hadError) {
+      changed();
+    }
+    // Download by itself; the user still taps Install. `dismissed` only hides the toast.
+    if (found != null && "available".equals(status) && !found.version.equals(prefs().getString(AUTO_BLOCKED, ""))) {
+      try {
+        startDownload(true);
+      } catch (JSONException e) {
+        // Not started: the next lookup tries again.
+      }
     }
   }
 
+  /**
+   * The relay is asked every interval (it is not rate limited); GitHub only when
+   * the relay reports a newer version, or, with the relay unreachable, at most
+   * once per GITHUB_FALLBACK_MS. The relay answer is only a hint: the release
+   * itself still comes from the GitHub lookup and is verified as before.
+   */
   private Release lookup() throws Exception {
+    String relayVersion = null; // null = relay unavailable
+    try {
+      relayVersion = relayLatestVersion();
+    } catch (Exception e) {
+      // Unreachable, 404 (old relay or no release known), any non-200 or a bad body.
+    }
+    switch (planLookup(relayVersion, installed, System.currentTimeMillis(), prefs().getLong(GITHUB_CHECK, 0))) {
+      case PLAN_GITHUB:
+        return githubLookup();
+      case PLAN_UP_TO_DATE:
+        return null;
+      default:
+        throw new IOException("relay unavailable, GitHub fallback not due");
+    }
+  }
+
+  private static final int PLAN_UP_TO_DATE = 0;
+  private static final int PLAN_GITHUB = 1;
+  private static final int PLAN_SKIP = 2;
+
+  /**
+   * What a lookup does. relayVersion is the version from a valid 200 relay
+   * answer, or null when the relay is unavailable (unreachable, 404, any other
+   * non-200, malformed body).
+   *  - valid answer, not newer than installed -> PLAN_UP_TO_DATE (no GitHub call)
+   *  - valid answer, newer                    -> PLAN_GITHUB
+   *  - unavailable, last GitHub call >= 1 h ago (or clock went back) -> PLAN_GITHUB
+   *  - unavailable, last GitHub call < 1 h ago -> PLAN_SKIP (counts as a failed check)
+   */
+  static int planLookup(String relayVersion, String installedVersion, long now, long lastGithubCheck) {
+    if (relayVersion != null) {
+      return compareVersions(relayVersion, installedVersion) > 0 ? PLAN_GITHUB : PLAN_UP_TO_DATE;
+    }
+    boolean recent = now >= lastGithubCheck && now - lastGithubCheck < GITHUB_FALLBACK_MS;
+    return recent ? PLAN_SKIP : PLAN_GITHUB;
+  }
+
+  /** The version from a valid 200 relay answer; throws on anything else (404 included) so the caller treats the relay as unavailable. */
+  private String relayLatestVersion() throws Exception {
+    HttpURLConnection connection = (HttpURLConnection) new URL(RELAY_LATEST).openConnection();
+    try {
+      connection.setInstanceFollowRedirects(false);
+      connection.setConnectTimeout(10_000);
+      connection.setReadTimeout(15_000);
+      connection.setRequestProperty("Accept", "application/json");
+      connection.setRequestProperty("User-Agent", "MixdogApp/" + installed);
+      int code = connection.getResponseCode();
+      if (code != 200) throw new IOException("HTTP " + code);
+      String version = parseRelayLatest(readBody(connection));
+      if (version == null) throw new IOException("bad relay answer");
+      return version;
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  /** The version of a well-formed relay answer (version matches the strict APK url), else null. */
+  static String parseRelayLatest(String json) {
+    try {
+      JSONObject o = new JSONObject(json);
+      String version = o.optString("version", "");
+      String url = o.optString("url", "");
+      if (!version.matches("\\d+\\.\\d+\\.\\d+")) return null;
+      if (!url.matches(
+          Pattern.quote(DOWNLOAD_PREFIX + TAG_PREFIX + version + "/") + "[A-Za-z0-9_.-]+\\.apk")) {
+        return null;
+      }
+      return version;
+    } catch (JSONException e) {
+      return null;
+    }
+  }
+
+  private Release githubLookup() throws Exception {
+    prefs().edit().putLong(GITHUB_CHECK, System.currentTimeMillis()).commit();
     HttpURLConnection connection = (HttpURLConnection) new URL(RELEASES_API).openConnection();
     try {
       connection.setConnectTimeout(10_000);
@@ -403,18 +566,22 @@ final class MixdogAppUpdater {
       connection.setRequestProperty("Accept", "application/vnd.github+json");
       connection.setRequestProperty("User-Agent", "MixdogApp/" + installed);
       if (connection.getResponseCode() != 200) throw new IOException("HTTP " + connection.getResponseCode());
-      try (InputStream in = connection.getInputStream()) {
-        ByteArrayOutputStream body = new ByteArrayOutputStream();
-        byte[] buffer = new byte[16 * 1024];
-        int n;
-        while ((n = in.read(buffer)) > 0) {
-          body.write(buffer, 0, n);
-          if (body.size() > MAX_RESPONSE_BYTES) throw new IOException("response too large");
-        }
-        return pick(new JSONArray(new String(body.toByteArray(), StandardCharsets.UTF_8)), installed);
-      }
+      return pick(new JSONArray(readBody(connection)), installed);
     } finally {
       connection.disconnect();
+    }
+  }
+
+  private static String readBody(HttpURLConnection connection) throws IOException {
+    try (InputStream in = connection.getInputStream()) {
+      ByteArrayOutputStream body = new ByteArrayOutputStream();
+      byte[] buffer = new byte[16 * 1024];
+      int n;
+      while ((n = in.read(buffer)) > 0) {
+        body.write(buffer, 0, n);
+        if (body.size() > MAX_RESPONSE_BYTES) throw new IOException("response too large");
+      }
+      return new String(body.toByteArray(), StandardCharsets.UTF_8);
     }
   }
 
@@ -494,10 +661,11 @@ final class MixdogAppUpdater {
     }
     downloadId = -1;
     target = null;
+    auto = false;
     pollGeneration++;
     received = 0;
     total = 0;
-    prefs().edit().remove(TARGET).remove(DOWNLOAD_ID).apply();
+    prefs().edit().remove(TARGET).remove(DOWNLOAD_ID).remove(AUTO).apply();
     cleanup(null);
   }
 
@@ -588,6 +756,7 @@ final class MixdogAppUpdater {
         status = "ready";
         error = null;
       } else {
+        if (auto) blockAuto(release.version);
         dropDownload();
         status = "failed";
         error = "verify";
@@ -607,6 +776,7 @@ final class MixdogAppUpdater {
     synchronized (this) {
       if (closed || !"installing".equals(status)) return;
       if (!ok) {
+        if (auto && release != null) blockAuto(release.version);
         dropDownload();
         status = "failed";
         error = "verify";

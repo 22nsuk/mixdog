@@ -8,11 +8,10 @@ import {
   setBuiltinInstalledInConfig,
 } from '../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 import { featureEnvOverride, moduleEnabled } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
+import { normalizeAgentAvatar } from '../runtime/shared/agent-avatar.mjs';
 import { LOCAL_PROVIDER_ID } from '../runtime/local-provider/managed-runtime.mjs';
-import {
-  INSTRUCTION_FILES_MODES,
-  normalizeInstructionFilesMode,
-} from '../runtime/shared/instruction-files-mode.mjs';
+import { INSTRUCTION_FILES_MODES, normalizeInstructionFilesMode } from '../runtime/shared/instruction-files-mode.mjs';
+import { AUTO_EFFORT_BASES, autoEffortBase } from '../runtime/agent/orchestrator/providers/auto-effort.mjs';
 import { getEmbeddingInfo } from '../runtime/memory/lib/embedding-provider.mjs';
 import { onnxRuntimeSupported } from '../runtime/shared/onnx-runtime-support.mjs';
 import {
@@ -20,11 +19,20 @@ import {
   effortJudgeAvailable,
   effortJudgeInfo,
   effortJudgeInstalling,
+  effortJudgeLastError,
   effortJudgeReady,
   shutdownEffortJudge,
 } from '../runtime/effort-judge/judge-client.mjs';
 
-const TOGGLEABLE_BUILTINS = ['git', 'office', 'tidy', 'localProvider', 'autoEffort', 'visualize'];
+const MAX_BOT_ORDER_IDS = 500;
+const isBotOrderId = (id) => typeof id === 'string' && id.trim().length > 0 && id.trim().length <= 128;
+/** A stored bot order as trimmed, de-duplicated ids; anything else is no order (null). */
+function normalizeBotOrder(value) {
+  if (!Array.isArray(value)) return null;
+  return [...new Set(value.filter(isBotOrderId).map((id) => id.trim()))].slice(0, MAX_BOT_ORDER_IDS);
+}
+
+const TOGGLEABLE_BUILTINS = ['git', 'office', 'tidy', 'localProvider', 'autoEffort', 'visualize', 'media'];
 
 function setLocalProviderEnabledInConfig(configLike, enabled) {
   const next = { ...(configLike || {}) };
@@ -88,12 +96,50 @@ export function createBuiltinToolSettings(
       saveConfigAndAdopt({ ...getConfig(), aiSessionTitles: enabled !== false });
       return this.getSessionTitleSettings();
     },
+    // The one pixel face every Lead row on the bot page wears, shared by every
+    // device that follows this host. Only a mascot look counts; null (the
+    // default grey pup) is stored as no key.
+    getLeadAppearance() {
+      const avatar = normalizeAgentAvatar(getConfig()?.leadAvatar);
+      return { avatar: avatar?.kind === 'mascot' ? avatar : null };
+    },
+    setLeadAppearance(avatar) {
+      const config = { ...getConfig() };
+      if (avatar == null) {
+        delete config.leadAvatar;
+      } else {
+        const normalized = normalizeAgentAvatar(avatar);
+        if (normalized?.kind !== 'mascot') throw new Error('usage: setLeadAppearance(a mascot appearance or null)');
+        config.leadAvatar = normalized;
+      }
+      saveConfigAndAdopt(config);
+      return this.getLeadAppearance();
+    },
+    // The one bot order every device that follows this host shows (Bots page
+    // and the Sessions bot section): agent ids only. Mixy is pinned first by
+    // the UI and is not part of it; ids of unknown or deleted bots are ignored
+    // where the order is applied. No key = the UI's current order.
+    getBotOrder() {
+      return { order: normalizeBotOrder(getConfig()?.botOrder) ?? [] };
+    },
+    setBotOrder(order) {
+      if (!Array.isArray(order) || order.length > MAX_BOT_ORDER_IDS || order.some((id) => !isBotOrderId(id))) {
+        throw new Error('usage: setBotOrder(an array of agent ids)');
+      }
+      const config = { ...getConfig() };
+      const ids = normalizeBotOrder(order);
+      if (!ids.length) delete config.botOrder;
+      else config.botOrder = ids;
+      saveConfigAndAdopt(config);
+      return this.getBotOrder();
+    },
     getToolModuleSettings() {
       const config = getConfig();
       const localProvider = getLocalProviderStatus?.() || {};
       const localProviderRuntimeInstalled = localProvider?.runtime?.installed === true;
       return {
         instructionFiles: normalizeInstructionFilesMode(config?.instructionFiles),
+        autoEffortBase: autoEffortBase(config?.autoEffortBase),
         webSearch: { enabled: webSearchEnabled() },
         memory: {
           enabled: memoryToolsEnabledFn(),
@@ -113,6 +159,12 @@ export function createBuiltinToolSettings(
           enabled: featureEnvOverride('MIXDOG_FEATURE_VISUALIZE') ?? moduleEnabled(config, 'visualize', true),
           installed: true,
         },
+        // Image and video generation ships with the runtime and is on unless
+        // switched off; the image/video skills follow it (`requires: media`).
+        media: {
+          enabled: featureEnvOverride('MIXDOG_FEATURE_MEDIA') ?? moduleEnabled(config, 'media', true),
+          installed: true,
+        },
         localProvider: {
           ...localProvider,
           ...localSettings.status(),
@@ -127,6 +179,7 @@ export function createBuiltinToolSettings(
           installed: effortJudgeAvailable(),
           installing: effortJudgeInstalling(),
           ready: effortJudgeReady(),
+          lastError: effortJudgeLastError(),
           info: effortJudgeInfo(),
         },
       };
@@ -149,6 +202,14 @@ export function createBuiltinToolSettings(
       await refreshEmptySessionToolPolicy?.();
       return this.getToolModuleSettings();
     },
+    /** The global "Auto reasoning base": the effort Auto works around. */
+    setAutoEffortBase(level) {
+      if (!AUTO_EFFORT_BASES.includes(level)) {
+        throw new TypeError(`Auto reasoning base must be one of ${AUTO_EFFORT_BASES.join(', ')}.`);
+      }
+      saveConfigAndAdopt({ ...getConfig(), autoEffortBase: level });
+      return this.getToolModuleSettings();
+    },
     async setMemoryToolsEnabled(enabled) {
       const config = getConfig();
       const memoryEnabled = enabled !== false;
@@ -168,7 +229,7 @@ export function createBuiltinToolSettings(
     },
     async setBuiltinToolEnabled(name, enabled) {
       if (!TOGGLEABLE_BUILTINS.includes(name)) {
-        throw new TypeError('Built-in tool must be git, office, tidy, localProvider, autoEffort, or visualize.');
+        throw new TypeError('Built-in tool must be git, office, tidy, localProvider, autoEffort, visualize, or media.');
       }
       if (name === 'autoEffort' && enabled !== false && !onnxRuntimeSupported()) {
         throw new Error(EFFORT_JUDGE_UNSUPPORTED);
@@ -199,11 +260,17 @@ export function createBuiltinToolSettings(
     /** Extensions → Built-in Install: run the feature's preparation adapter
      *  (model pre-download, component verification), then mark it installed
      *  and enabled in one step. New sessions pick up the tool surface. */
-    async installBuiltinFeature(name) {
+    async installBuiltinFeature(name, options = null) {
       if (!INSTALLABLE_BUILTIN_IDS.includes(name)) {
         throw new TypeError('Built-in feature must be git, memory, office, tidy, localProvider, or autoEffort.');
       }
       if (name === 'autoEffort' && !onnxRuntimeSupported()) throw new Error(EFFORT_JUDGE_UNSUPPORTED);
+      // Code Tidy retry for named engines: fetch just those and leave the
+      // feature's installed/enabled state exactly as the user set it.
+      if (name === 'tidy' && Array.isArray(options?.engines)) {
+        await prepareBuiltinFeature?.(name, { engines: options.engines });
+        return this.getToolModuleSettings();
+      }
       await prepareBuiltinFeature?.(name);
       const config = getConfig();
       let nextConfig = setBuiltinInstalledInConfig({ ...config }, name, true);

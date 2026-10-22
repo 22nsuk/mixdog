@@ -2,8 +2,10 @@
 // What a persisted session row contains and where each field comes from: the
 // compaction budget, the origin/permission/cache metadata analytics slice on,
 // the desktop classification, and the record assembled from them. Everything
-// here is field derivation — no I/O, no ownership, no prompt text.
+// here is field derivation — no ownership, no prompt text; the only read is the
+// parent's record a delegated session takes its root from.
 import { toSessionWorkflowMeta } from '../../runtime-core/workflow.mjs';
+import { delegationForNewSession, runForNewSession } from '../human-gate/delegation.mjs';
 import { sessionOrchestrationMode } from '../../../../shared/orchestration.mjs';
 import { preserveBufferConfigFields } from './context-meta.mjs';
 import { positiveInt } from '../../../../shared/numbers.mjs';
@@ -70,6 +72,20 @@ export function sessionOriginFields(opts, { profile, presetObj, providerCacheOpt
     // scheduler/daily-standup, webhook/github-push, lead/worker.
     sourceType: opts.sourceType || null,
     sourceName: opts.sourceName || null,
+    // The agent a schedule/webhook run acts for: whose memory it may write
+    // (session-runtime/services/memory-access.mjs). Absent on other sessions.
+    ...(opts.ownerAgentId ? { ownerAgentId: String(opts.ownerAgentId) } : {}),
+    // A coding task session an agent created (session create): who asked, from
+    // which thread, the request, and the title it was given.
+    ...(opts.taskOrigin
+      ? {
+          taskOrigin: opts.taskOrigin,
+          title: opts.taskOrigin.title,
+          titleLocked: true,
+          titleSource: 'ai',
+          titleUpdatedAt: Date.now(),
+        }
+      : {}),
     // Provider-scoped unified cache key — one shard per provider,
     // shared across all roles / sources (agent/maintenance/mcp/
     // scheduler/webhook). Role or source-specific context must be
@@ -87,7 +103,18 @@ export function sessionOriginFields(opts, { profile, presetObj, providerCacheOpt
     ownerSessionId: opts.ownerSessionId || null,
     visibility: opts.visibility || null,
     clientHostPid: opts.clientHostPid || null,
+    // A sub-agent's root and the run (if any) that started a sub-agent or a
+    // bot-created task session, derived from its creator — the one read here —
+    // never taken from the options (human-gate/delegation.mjs).
+    ...delegationFields(opts),
   };
+}
+
+function delegationFields(opts) {
+  const delegation = delegationForNewSession(opts);
+  // Work a schedule/webhook run started (a sub-agent, a task session) stays the run's.
+  const run = runForNewSession(opts);
+  return { ...(delegation ? { delegation } : {}), ...(run ? { run } : {}) };
 }
 
 // The persisted session record.
@@ -109,6 +136,9 @@ export function buildSessionRecord({ opts, route, presetObj, surface, prompt, me
     codexWireSessionId: providerName === 'openai-oauth' ? mintUuidV7() : null,
     provider: providerName,
     model: modelName,
+    // Resolved and pinned before the first request (wire-route.mjs). null —
+    // not absent — marks a session created under the per-model wire table.
+    wireRoute: null,
     messages,
     contextWindow: contextMeta.contextWindow,
     rawContextWindow: contextMeta.rawContextWindow,
@@ -134,7 +164,11 @@ export function buildSessionRecord({ opts, route, presetObj, surface, prompt, me
     selectedContextWindow: opts.selectedContextWindow || null,
     agent: opts.agent,
     owner: opts.owner || 'user',
+    // 'agent' | 'coding' (session/agent-mode.mjs), resolved at creation.
+    sessionMode: opts.sessionMode,
     bp3CoreContext: prompt.sessionMarkerCore,
+    promptIdentity: prompt.promptIdentity,
+    callerDisallowedTools: [...(opts.callerDisallowedTools ?? opts.disallowedTools ?? [])],
     bp3EnvironmentContext: prompt.environmentTailContext,
     // BP3 core and the volatile environment live in SEPARATE system
     // blocks (cacheTier 'tier3' vs 'env'). Legacy persisted sessions
@@ -159,9 +193,7 @@ export function buildSessionRecord({ opts, route, presetObj, surface, prompt, me
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalToolCalls: 0,
-    // Refreshed on each completed ask() — surfaced by agent type=list for
-    // debugging + consumed by store.mjs's idle-sweep to reclaim stalled
-    // agent sessions past RUNNING_STALL_MS.
+    // Refreshed on each completed ask() — surfaced by agent type=list.
     lastUsedAt: Date.now(),
     tokensCumulative: 0,
     ...origin,

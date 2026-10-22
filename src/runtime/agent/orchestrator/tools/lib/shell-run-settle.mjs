@@ -3,19 +3,79 @@
 // lease cleanup that a promoted or unconfirmed-kill child defers to its own
 // real exit.
 import { ExecResult, SHELL_OUTPUT_INLINE_CAP } from '../shell-exec-output.mjs';
-import { probeShellDescendants, STDIO_HELD_AFTER_EXIT_MS } from './shell-descendants.mjs';
+import { createProcessTreeTracker, probeShellDescendants, watchTermination } from './shell-descendants.mjs';
+import { unregisterOwnedShellTree } from './owned-shell-trees.mjs';
+import {
+  adoptShellWorkspaceAdmission,
+  clearTerminationHold,
+  registerTerminationHold,
+  takeReleaseRequest,
+} from '../builtin/lib/shell-job-records.mjs';
 import {
   clearForegroundRecord,
   clearForegroundTimers,
   detachAbortHandler,
+  keepTerminationUnconfirmedRecord,
   releaseResourceLease,
 } from './shell-run-state.mjs';
 
 // Unconfirmed-kill cleanup ceiling: the result is already reported, but the
-// tree may still be alive, so closing the capture and returning the
-// admission lease wait for the child's real exit — bounded so an unkillable
-// tree cannot pin the shell lane forever.
+// tree may still be alive, so closing the capture and returning the resource
+// lease wait for the child's real exit — bounded so an unkillable tree cannot
+// pin the shell lane forever. The workspace admission is NOT bounded by it:
+// it follows confirmed termination only (see below).
 const UNCONFIRMED_KILL_CLEANUP_CEILING_MS = 60_000;
+
+/** Settles once a held run's whole tree is confirmed gone (or its hold was
+ *  force-released): what its result left in use defers to this. */
+function treeSettled(run) {
+  if (!run.treeSettled) {
+    run.treeSettled = new Promise((resolve) => {
+      run.resolveTreeSettled = resolve;
+    });
+  }
+  return run.treeSettled;
+}
+
+/** Lifecycle completion of a run whose result is already reported: release
+ *  `run.workspaceAdmission` and retire the live record only once the root AND
+ *  every descendant identity captured before the kill are confirmed gone. One
+ *  observation loop at the termination cadence; running, unknown (incomplete
+ *  snapshot, failed table read) and a failing release all re-check, and no
+ *  timer ever releases on its own. */
+export function releaseAdmissionOnConfirmedTermination(run, { markNow = true, sweep = run.killed === true } = {}) {
+  const { child } = run;
+  if (!child || run.stopTerminationWatch) return;
+  // Visible as "termination unconfirmed" until the lifecycle ends, with an
+  // explicit user force-release as the only other way out. An unconfirmed
+  // kill is marked at once; an owner-cancelled tree whose root is already
+  // gone only once its first observation is not 'gone'.
+  if (markNow) keepTerminationUnconfirmedRecord(run);
+  treeSettled(run);
+  const release = () => {
+    run.workspaceAdmission?.();
+    run.workspaceAdmission = null;
+    run.stopTerminationWatch?.();
+    clearTerminationHold(run.foregroundRecordId);
+    clearForegroundRecord(run);
+    run.resolveTreeSettled();
+  };
+  registerTerminationHold(run.foregroundRecordId, {
+    ownerSessionId: run.foregroundRecordInput?.ownerSessionId || null,
+    cwd: run.foregroundRecordInput?.cwd || null,
+    release,
+  });
+  run.terminationTracker = run.terminationTracker || createProcessTreeTracker({ pid: child.pid });
+  run.stopTerminationWatch = watchTermination({
+    tracker: run.terminationTracker,
+    rootExited: () => child.exitCode != null || child.signalCode != null,
+    // A killed run is not over while processes it started still run.
+    sweep,
+    onTerminated: release,
+    onUnconfirmed: markNow ? null : () => keepTerminationUnconfirmedRecord(run),
+    releaseRequested: () => takeReleaseRequest(run.foregroundRecordId),
+  });
+}
 
 // Promotion resolves the call and hands the child's lifecycle to the
 // shell-jobs registry, but the spill FDs stay owned by THIS runner and
@@ -49,9 +109,17 @@ export function createPromotedCaptureRelease(run) {
 
 function deferCleanupToChildExit(run) {
   let done = false;
+  let ceiling = null;
   const cleanup = () => {
     if (done) return;
     done = true;
+    clearTimeout(ceiling);
+    try {
+      run.child.removeListener('close', cleanup);
+      run.child.removeListener('exit', cleanup);
+    } catch {
+      /* not an emitter */
+    }
     try {
       run.taskOutput.closeFds();
     } catch {
@@ -65,8 +133,9 @@ function deferCleanupToChildExit(run) {
   } catch {
     /* child may already be gone */
   }
-  const ceiling = setTimeout(cleanup, UNCONFIRMED_KILL_CLEANUP_CEILING_MS);
+  ceiling = setTimeout(cleanup, UNCONFIRMED_KILL_CLEANUP_CEILING_MS);
   if (ceiling.unref) ceiling.unref();
+  releaseAdmissionOnConfirmedTermination(run);
 }
 
 // getStdout/getStderr can throw on a spilled-file read failure (EBADF after
@@ -96,22 +165,20 @@ export async function readCapturedOutput(taskOutput, final = false) {
 // instead of a clean finish; null means nothing survived.
 async function probeSurvivingDescendants(run) {
   if (run.killed || run.timedOut || !run.child?.pid) return null;
-  try {
-    const descendants = await probeShellDescendants({
-      pid: run.child.pid,
-      stdioHeld: run.rootExitAtMs > 0 && Date.now() - run.rootExitAtMs >= STDIO_HELD_AFTER_EXIT_MS,
-    });
-    if (descendants) descendants.taskId = run.foregroundRecordId;
-    return descendants;
-  } catch {
-    return null;
-  }
+  const descendants = await probeShellDescendants({
+    pid: run.child.pid,
+  });
+  if (descendants) descendants.taskId = run.foregroundRecordId;
+  return descendants;
 }
 
 export function createSettle(run, releasePromotedCapture) {
   return async (exitCode, signal) => {
     if (run.settled) return;
+    if (run.ownedTree) unregisterOwnedShellTree(run.foregroundRecordId, run.ownedTree);
     if (run.autoBackgrounded) {
+      // A failed promotion settles the run with this close instead.
+      run.promotionClose = [exitCode, signal];
       releasePromotedCapture();
       return;
     }
@@ -119,7 +186,15 @@ export function createSettle(run, releasePromotedCapture) {
     const { taskOutput } = run;
     // Off the readouts the instant the command is over, before any awaited
     // output capture — a finished command must never linger as "running".
-    clearForegroundRecord(run);
+    // An unconfirmed kill is NOT over: its record stays, marked unconfirmed
+    // (releaseAdmissionOnConfirmedTermination), until every process is
+    // confirmed gone or the user releases it.
+    // Every other killed run (timeout, abort, session close) completes the
+    // same way: its pre-kill snapshot, not the root's exit, decides when it
+    // is over — a captured descendant can outlive the root it was killed with.
+    const confirmKill = run.killed === true && !run.killUnconfirmed && Boolean(run.child?.pid);
+    const lifecycleHeld = run.killUnconfirmed || confirmKill;
+    if (!lifecycleHeld) clearForegroundRecord(run);
     clearForegroundTimers(run);
     detachAbortHandler(run);
     const stdoutTail = run.stdoutDecoder.end();
@@ -136,19 +211,53 @@ export function createSettle(run, releasePromotedCapture) {
     // The test compares captured BYTES, not rendered UTF-16 length: a CJK
     // head+tail holds ~1/3 the char count of its byte size and under a
     // length test would delete the very file its own marker names.
+    const dropCapture =
+      !run.killUnconfirmed && taskOutput.spilled && taskOutput.totalDiskBytes() <= SHELL_OUTPUT_INLINE_CAP;
     if (run.killUnconfirmed) {
       // Never confirmed dead: deleting the capture files or handing back the
       // lease now would release resources a live process still owns. The
-      // spilled paths therefore survive and travel with the result below.
+      // spilled paths therefore survive and travel with the result below, and
+      // the workspace admission stays held until termination is confirmed.
       deferCleanupToChildExit(run);
-    } else if (taskOutput.spilled && taskOutput.totalDiskBytes() <= SHELL_OUTPUT_INLINE_CAP) {
-      taskOutput.deleteFiles();
-      void releaseResourceLease(run);
     } else {
-      taskOutput.closeFds();
+      const releaseCapture = () => (dropCapture ? taskOutput.deleteFiles() : taskOutput.closeFds());
+      // A captured descendant of a killed tree may still write the capture.
+      if (confirmKill) void treeSettled(run).then(releaseCapture);
+      else releaseCapture();
       void releaseResourceLease(run);
     }
-    const descendants = await probeSurvivingDescendants(run);
+    let descendants = null;
+    let descendantsUnknown = false;
+    try {
+      descendants = await probeSurvivingDescendants(run);
+    } catch (error) {
+      descendantsUnknown = true;
+      taskOutput.writeError = taskOutput.writeError || error;
+      exitCode = exitCode || 1;
+      run.failureReason = 'Remaining child processes could not be verified; workspace cleanup is blocked.';
+      // The root exited on its own, so it is observed after exit like any
+      // settle; the held admission joins the termination watch and the
+      // explicit force-release, and the record is kept, marked unconfirmed.
+      // (The probe runs only for an unkilled root, so the lifecycle is not
+      // already held here.)
+      run.terminationTracker = run.terminationTracker || createProcessTreeTracker({ pid: run.child.pid });
+      run.terminationTracker.acceptExitObservation();
+      releaseAdmissionOnConfirmedTermination(run);
+    }
+    // Marked unconfirmed (with its force-release) only once an observation
+    // finds a captured identity still alive or cannot tell.
+    if (confirmKill) releaseAdmissionOnConfirmedTermination(run, { markNow: false });
+    if (!lifecycleHeld && !descendantsUnknown && run.workspaceAdmission) {
+      try {
+        if (descendants) adoptShellWorkspaceAdmission(run.foregroundRecordId, run.workspaceAdmission);
+        else run.workspaceAdmission();
+        run.workspaceAdmission = null;
+      } catch (error) {
+        taskOutput.writeError = taskOutput.writeError || error;
+        exitCode = exitCode || 1;
+        run.failureReason = 'workspace admission cleanup failed';
+      }
+    }
     run.resolveResult(
       new ExecResult({
         stdout,
@@ -158,9 +267,9 @@ export function createSettle(run, releasePromotedCapture) {
         timedOut: run.timedOut,
         killed: run.killed,
         killCause: run.killCause,
-        stdoutPath: taskOutput.spilled ? taskOutput.stdoutPath : null,
+        stdoutPath: taskOutput.spilled && !dropCapture ? taskOutput.stdoutPath : null,
         stdoutFileSize: taskOutput.stdoutFileSize,
-        stderrPath: taskOutput.spilled ? taskOutput.stderrPath : null,
+        stderrPath: taskOutput.spilled && !dropCapture ? taskOutput.stderrPath : null,
         stderrFileSize: taskOutput.stderrFileSize,
         taskId: run.taskId,
         partialOutput: run.partialOutput,
@@ -168,6 +277,7 @@ export function createSettle(run, releasePromotedCapture) {
         failurePhase: run.failurePhase,
         failureReason: run.failureReason,
         descendants,
+        settled: run.treeSettled,
       })
     );
   };

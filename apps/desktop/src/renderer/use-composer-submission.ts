@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type RefObject, type SetStateAction } from 'react';
+import { useCallback, useRef, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import type {
   DesktopAbortOptions,
   DesktopPastedText,
@@ -14,6 +14,8 @@ import { asRecord } from './text-format';
 import { hasSendablePromptContent, shouldBlockPromptSubmit } from './renderer-logic.mjs';
 import { registerSentAttachments, sentAttachmentData } from './attachment-menu';
 import { t } from './i18n';
+import { requestOpenModelPicker } from './model-picker-event';
+import { recognisedAgentRoomSlash, recognisedSlashSpan } from './slash-commands';
 import { registerImagePreview } from './transcript-metrics';
 import { MAX_SUBMIT_TEXT_LENGTH, type ComposerAttachment } from './composer-support';
 import {
@@ -141,38 +143,7 @@ function prepareMessageSubmission(
   };
 }
 
-export function useComposerSubmission({
-  turnBusy,
-  commandBusy,
-  draftMode,
-  queued,
-  recoveryScope,
-  textarea,
-  draftRef,
-  attachmentsRef,
-  transitioningRef,
-  composingRef,
-  submittingRef,
-  submissionRetryRef,
-  mountedRef,
-  historyNavigation,
-  setDraft,
-  setSubmitting,
-  setSubmissionRecoveryVersion,
-  clearNotice,
-  setAttachmentError,
-  removeAttachments,
-  mergeRestoredAttachments,
-  restoredAttachments,
-  executeSlash,
-  rememberPrompt,
-  submit,
-  abort,
-  onQueuedRestored,
-  selectedSkill = '',
-  onSkillSubmitted,
-  sessionId,
-}: {
+interface ComposerSubmissionOptions {
   turnBusy: boolean;
   commandBusy: boolean;
   draftMode?: boolean;
@@ -181,6 +152,8 @@ export function useComposerSubmission({
   textarea: RefObject<HTMLTextAreaElement | null>;
   draftRef: RefObject<string>;
   attachmentsRef: RefObject<ComposerAttachment[]>;
+  /** Attachment loads still in flight for this composer. */
+  pendingLoads: RefObject<number>;
   transitioningRef: RefObject<boolean>;
   composingRef: RefObject<boolean>;
   submittingRef: RefObject<boolean>;
@@ -210,30 +183,93 @@ export function useComposerSubmission({
   onSkillSubmitted?(name: string): void;
   /** The pane's session: its queued visualize feedback rides with the send. */
   sessionId?: string;
-}) {
+  /** The conversation the composer shows (`draft:<id>` for a new-task draft,
+   *  the route for a session): two drafts share an empty session id and a
+   *  recovery scope, never this. */
+  identityScope?: string;
+  /** Agent mode: a leading `/` is text, except the room's /compact and /clear. */
+  plainText?: boolean;
+  /** The composer's route has no model: a message send opens the model picker. */
+  modelMissing?: boolean;
+}
+
+export function useComposerSubmission({
+  turnBusy,
+  commandBusy,
+  draftMode,
+  queued,
+  recoveryScope,
+  textarea,
+  draftRef,
+  attachmentsRef,
+  pendingLoads,
+  transitioningRef,
+  composingRef,
+  submittingRef,
+  submissionRetryRef,
+  mountedRef,
+  historyNavigation,
+  setDraft,
+  setSubmitting,
+  setSubmissionRecoveryVersion,
+  clearNotice,
+  setAttachmentError,
+  removeAttachments,
+  mergeRestoredAttachments,
+  restoredAttachments,
+  executeSlash,
+  rememberPrompt,
+  submit,
+  abort,
+  onQueuedRestored,
+  selectedSkill = '',
+  onSkillSubmitted,
+  sessionId,
+  identityScope = '',
+  plainText = false,
+  modelMissing = false,
+}: ComposerSubmissionOptions) {
+  // A send is working out its retry key (it awaits chip digests).
+  const keyingRef = useRef(false);
+  // The conversation this composer sends into now: the one it shows, its
+  // pane and its session.
+  const routeRef = useRef('');
+  routeRef.current = `${identityScope}\u0000${recoveryScope}\u0000${sessionId ?? ''}`;
   const send = useCallback(
     async (slashOverride = '', source: DesktopRendererComposerActionDiagnostic['source'] = 'form-submit') => {
+      const origin = routeRef.current;
       const submittedDraft = textarea.current?.value ?? draftRef.current;
       const submittedAttachments = [...attachmentsRef.current];
       const text = (slashOverride || submittedDraft).trim();
+      const slashCommand = plainText ? recognisedAgentRoomSlash(text) : recognisedSlashSpan(text) !== null;
+      // An attachment still reading would be left out of the message. Keep the
+      // draft in place and say so; the user sends once the chip has landed.
+      if (!slashCommand && pendingLoads.current > 0 && !transitioningRef.current) {
+        setAttachmentError(t('Attachments are still loading. Send again once they finish.'));
+        return;
+      }
       // Pins and picks from the session's visualize panel ride along with a
       // message (never with a slash command), and alone make one sendable.
-      const feedback = visualizeFeedbackFor(text.startsWith('/') ? undefined : sessionId);
+      const feedback = visualizeFeedbackFor(slashCommand ? undefined : sessionId);
       const hasFeedback = visualizeFeedbackPending(feedback);
       // Draft materialization and slash commands own the submit indicator;
       // only slash commands still serialize. Blocking a draft's follow-up here
       // just dropped it — the submit router joins the session the first submit
       // is minting instead of creating a second one.
-      const showsSubmitProgress = Boolean(draftMode || text.startsWith('/'));
+      const showsSubmitProgress = Boolean(draftMode || slashCommand);
       if (
         (!hasFeedback && !hasSendablePromptContent({ text, attachments: submittedAttachments })) ||
         transitioningRef.current ||
         shouldBlockPromptSubmit({
           submitting: submittingRef.current,
-          slashCommand: text.startsWith('/'),
+          slashCommand,
         })
       )
         return;
+      // No model is never auto-picked: open the model picker and keep the
+      // draft. An unanswered request (no picker on this surface) falls through
+      // so the runtime's model-required error surfaces.
+      if (!slashCommand && modelMissing && requestOpenModelPicker()) return;
       reportComposerAction({
         kind: 'composer-action',
         action: 'submit',
@@ -250,7 +286,7 @@ export function useComposerSubmission({
       }
       try {
         clearNotice();
-        if (text.startsWith('/')) {
+        if (slashCommand) {
           if (commandBusy) {
             setAttachmentError('Wait for the current command to finish. Your command is still in the editor.');
             return;
@@ -282,10 +318,23 @@ export function useComposerSubmission({
           setAttachmentError('This prompt is too large to send. Remove or shorten an inline text attachment.');
           return;
         }
-        const retryKey = submissionRetryKey(
-          JSON.stringify(feedbackText ? [selectedSkill, expandedText, feedbackText] : [selectedSkill, expandedText]),
-          committedAttachments
-        );
+        // The key waits for any chip digest still being worked out; a second
+        // send of the same draft meanwhile is dropped.
+        if (keyingRef.current) return;
+        keyingRef.current = true;
+        let retryKey: string;
+        try {
+          retryKey = await submissionRetryKey(
+            feedbackText ? [selectedSkill, expandedText, feedbackText] : [selectedSkill, expandedText],
+            committedAttachments
+          );
+        } finally {
+          keyingRef.current = false;
+        }
+        // The composer moved to another conversation (or went away) while the
+        // key was worked out: this message belongs to the one it was typed in.
+        // Nothing is sent and nothing is cleared — it stays that draft.
+        if (!mountedRef.current || routeRef.current !== origin) return;
         const submittedDisplayText = [
           [selectedSkill ? `[${skillTitle(selectedSkill)}]` : '', expandedText.trim()].filter(Boolean).join(' '),
           visualizePrompt?.display ?? '',
@@ -310,7 +359,16 @@ export function useComposerSubmission({
           attachments: committedAttachments,
         });
         setDraft((current) => (current === submittedDraft ? '' : current));
-        removeAttachments(new Set(committedAttachments.map((attachment) => attachment.id)));
+        // Only the chips that went out: same id and the same content as was
+        // sent (one edited meanwhile stays in the editor).
+        const sentContent = new Map(committedAttachments.map((sent) => [sent.id, sent.data]));
+        removeAttachments(
+          new Set(
+            attachmentsRef.current
+              .filter((live) => sentContent.has(live.id) && live.data === sentContent.get(live.id))
+              .map((live) => live.id)
+          )
+        );
         historyNavigation.current = { index: -1, seed: '' };
         const restoreSubmitted = () => {
           rejectComposerSubmissionRecovery(submissionId);
@@ -368,6 +426,7 @@ export function useComposerSubmission({
       historyNavigation,
       mergeRestoredAttachments,
       mountedRef,
+      pendingLoads,
       queued,
       recoveryScope,
       rememberPrompt,
@@ -385,6 +444,8 @@ export function useComposerSubmission({
       selectedSkill,
       onSkillSubmitted,
       sessionId,
+      plainText,
+      modelMissing,
     ]
   );
 

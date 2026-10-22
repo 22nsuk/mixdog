@@ -9,7 +9,7 @@ import {
 } from './loop/tool-helpers.mjs';
 import { repairTranscriptBeforeProviderSend } from './loop/transcript-repair.mjs';
 import { resetAccountProbePacing } from '../providers/account-pool.mjs';
-import { createLoopState, finishLoop, shouldSuppressAgentMidTurnText } from './loop/loop-state.mjs';
+import { createLoopState, finishLoop } from './loop/loop-state.mjs';
 import { applyRetryAction, beginIteration, sendProviderRequest, settleSendResult } from './loop/send-phase.mjs';
 import { runToolPhase } from './loop/tool-phase.mjs';
 
@@ -25,7 +25,6 @@ export {
   resolvePreToolAskApproval,
   approvalGranted,
   approvalReason,
-  shouldSuppressAgentMidTurnText,
 };
 
 /**
@@ -62,7 +61,7 @@ export async function agentLoop(provider, messages, model, tools, onToolCall, cw
     // owns a bounded recovery ladder in ./loop/no-tool-turn.mjs, which either
     // appended a recovery turn ('continue') or produced the terminal response.
     if (!state.response.toolCalls?.length) {
-      const outcome = state.noToolTurn.resolve(state.response, state.iterations);
+      const outcome = await state.noToolTurn.resolve(state.response, state.iterations);
       state.response = outcome.response;
       if (outcome.action === 'continue') continue;
       break;

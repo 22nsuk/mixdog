@@ -2,12 +2,14 @@
  * Unified config reader/writer.
  * Single file: mixdog-config.json with sections such as channels, agent, and memory.
  */
-import { readFileSync, statSync, mkdirSync, existsSync, watch as fsWatch } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, readdirSync, statSync, mkdirSync, existsSync, watch as fsWatch } from 'node:fs';
+import { basename, join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { resolvePluginData } from './plugin-paths.mjs';
 import { hasOwn, isPlainObject } from './object.mjs';
 import {
+  parseJsonText,
+  quarantinePath,
   renameWithRetrySync,
   writeJsonAtomicSync,
   writeJsonAtomicAsync,
@@ -18,8 +20,10 @@ import {
   backupUserData,
   backupUserDataAsync,
   markUserDataInitialized,
+  ensureUserDataInitialized,
   loadLatestMixdogConfigFromBackup,
-  hasUserDataInitMarker,
+  isUserDataRecoveryExpected,
+  findLegacyUserDataEvidence,
 } from './user-data-guard.mjs';
 import { AGENT_PROVIDER_ENV, AGENT_PROVIDER_ENV_ALIASES, getAgentApiKey } from './provider-api-key.mjs';
 
@@ -224,7 +228,7 @@ function readConfigFile() {
   const raw = readConfigRawCached();
   if (raw == null) return null;
   try {
-    return JSON.parse(raw);
+    return parseJsonText(raw);
   } catch (err) {
     // Quarantine a malformed mixdog-config.json so the next boot starts fresh
     // instead of looping on a broken file. A cached raw string that fails to
@@ -236,7 +240,7 @@ function readConfigFile() {
   }
 }
 
-function writeConfigFile(data) {
+function writeConfigFile(data, postBackupReason = 'post-config-write') {
   // R4 data-at-rest: mixdog-config.json holds provider apiKeys; clamp to
   // owner-only on POSIX via 0o600/0o700 mode bits, AND fail-closed on
   // Windows where those bits are advisory — `secret: true` makes the
@@ -261,49 +265,140 @@ function writeConfigFile(data) {
     markUserDataInitialized(resolvePluginData());
   } catch {}
   try {
-    backupUserData(resolvePluginData(), 'post-config-write');
+    backupUserData(resolvePluginData(), postBackupReason);
   } catch {}
+}
+
+// Config paths whose restore could not be persisted: the in-memory restore is
+// still served, but the failure is logged (and the write retried) only once
+// per process instead of on every read.
+const _restorePersistFailed = new Set();
+
+/**
+ * Write a config restored on a plain read back to disk through the normal save
+ * path (atomic write + backups), so later reads hit the file instead of
+ * restoring again. Try-once lock: a contended lock means a writer (possibly
+ * this process's own outer RMW) is about to persist, so the next read retries.
+ */
+function persistRestoredConfig(restored) {
+  const path = configPath();
+  if (_restorePersistFailed.has(path)) return;
+  try {
+    const wrote = withFileLockSync(
+      `${path}.lock`,
+      () => {
+        if (existsSync(path)) return false;
+        writeAll(restored, 'post-restore');
+        return true;
+      },
+      { timeoutMs: 0 }
+    );
+    if (wrote) {
+      process.stderr.write(
+        '[config] read: restored mixdog-config.json from latest user-data backup (missing after init) and saved it\n'
+      );
+    }
+  } catch (err) {
+    if (err?.code === 'ELOCKCONTENDED') return;
+    _restorePersistFailed.add(path);
+    process.stderr.write(
+      `[config] read: restored mixdog-config.json from latest user-data backup (missing after init); saving it failed, serving it from memory: ${err?.message || err}\n`
+    );
+  }
 }
 
 function readAll() {
   const parsed = readConfigFile();
-  if (parsed != null) return canonicalizeUnifiedConfig(parsed);
+  if (parsed != null) {
+    // A data dir from before the in-dir init marker gets one (plus a first
+    // scoped snapshot) once per process, so its config stays recoverable.
+    try {
+      ensureUserDataInitialized(resolvePluginData());
+    } catch {}
+    return canonicalizeUnifiedConfig(parsed);
+  }
   // Symmetric with readAllForRmW(): a missing/unreadable config on a data
   // dir that was previously initialized means the file was LOST (deleted,
-  // failed write), not a fresh install. Self-heal from the newest
+  // failed write), not a fresh install. A recreated data dir has no marker
+  // and starts fresh. Self-heal from this data dir's newest
   // structurally-complete backup instead of silently collapsing to {} —
   // which callers (readSection/getCapabilities) merge with in-memory
-  // defaults, dropping the user's presets/agent routes/sections. In-memory only:
-  // readAll() runs OUTSIDE the config lock (unlike the RMW path), so we do
-  // not write here to avoid an unlocked-write race; the next updateSection
-  // re-persists the file under the lock.
-  if (hasUserDataInitMarker(resolvePluginData())) {
-    const restored = loadLatestMixdogConfigFromBackup(resolvePluginData());
+  // defaults, dropping the user's presets/agent routes/sections. The restore
+  // is persisted under the config lock (only if the file is still missing) so
+  // later reads hit the file instead of restoring and logging again.
+  // An upgraded data dir (legacy marker / matching legacy backup, no in-dir
+  // marker yet) is a recovery case too; without a verifiable backup reads stay
+  // empty and RMW writes refuse (see readAllForRmW).
+  if (isUserDataRecoveryExpected(resolvePluginData())) {
+    let restored = null;
+    try {
+      restored = loadLatestMixdogConfigFromBackup(resolvePluginData());
+    } catch (err) {
+      // A transient backup read failure: this read stays empty and the next
+      // one retries (an RMW write refuses instead).
+      process.stderr.write(`[config] backup restore lookup failed: ${err.message}\n`);
+    }
     if (restored && isPlainObject(restored)) {
-      process.stderr.write(
-        '[config] read: restored mixdog-config.json from latest user-data backup (missing after init)\n'
-      );
-      return canonicalizeUnifiedConfig(restored);
+      const config = canonicalizeUnifiedConfig(restored);
+      persistRestoredConfig(config);
+      return config;
     }
   }
   return {};
 }
 
 function quarantineMalformedConfig(parseErr) {
-  const corrupt = `${configPath()}.corrupt-${Date.now()}`;
+  const corrupt = quarantinePath(configPath());
+  let keptAside = false;
   try {
     if (existsSync(configPath())) renameWithRetrySync(configPath(), corrupt);
+    keptAside = existsSync(corrupt);
   } catch {}
   process.stderr.write(
     `[config] mixdog-config.json is malformed (${parseErr.message}). Renamed to ${corrupt}. Restore it or delete to start fresh.\n`
   );
+  return keptAside;
 }
 
-function restoreAllForRmWOrThrow(reason) {
-  const restored = loadLatestMixdogConfigFromBackup(resolvePluginData());
+// A damaged config that was kept aside (its bytes preserved as
+// mixdog-config.json.corrupt-<ts>) is not a lost config: those bytes are the
+// safety net, so with no backup to restore a save may start from an empty
+// config. Every save also snapshots a backup, so a stale copy from an earlier
+// incident never reaches this point while a backup of a later config exists.
+function hasQuarantinedCopy() {
+  const dir = dirname(configPath());
+  const prefix = `${basename(configPath())}.corrupt-`;
+  try {
+    return readdirSync(dir).some((name) => name.startsWith(prefix));
+  } catch {
+    return false;
+  }
+}
+
+// `keptAside`: the unusable config's bytes are preserved on disk, so with no
+// backup to restore a save starts from an empty config instead of refusing.
+function restoreAllForRmWOrThrow(reason, keptAside = false) {
+  const restored = loadLatestMixdogConfigFromBackup(resolvePluginData(), { fresh: true });
   if (restored && isPlainObject(restored)) {
     process.stderr.write(`[config] RMW read: restored mixdog-config.json from latest user-data backup (${reason})\n`);
     return restored;
+  }
+  if (keptAside) {
+    process.stderr.write(
+      `[config] RMW read: mixdog-config.json is unusable (${reason}); its bytes are kept aside and no backup exists; starting empty\n`
+    );
+    return {};
+  }
+  const legacy = findLegacyUserDataEvidence(resolvePluginData(), { fresh: true });
+  if (legacy) {
+    const err = new Error(
+      `[config] mixdog-config.json is missing but this data dir (${resolvePluginData()}) was initialized by an older ` +
+        `Mixdog build and no backup verified to belong to it was found; refusing to write a fresh config over a ` +
+        `recoverable state. Restore mixdog-config.json from a backup under ${legacy.roots.join(' or ')}, or delete ` +
+        `the legacy marker(s) to start fresh: ${legacy.markers.join(', ') || '(none; matching legacy backups are incomplete)'}`
+    );
+    err.code = 'EUSERDATARECOVERY';
+    throw err;
   }
   throw new Error(
     `[config] mixdog-config.json is unreadable and no valid backup was found (${reason}); refusing section write that would wipe other sections`
@@ -314,6 +409,9 @@ function restoreAllForRmWOrThrow(reason) {
  * Read-modify-write baseline. ENOENT on a never-initialized data dir → {}.
  * Malformed on-disk config (or missing config after prior init) → restore
  * from backup or throw; never silently collapse to a one-section overwrite.
+ * The exception is a damaged config whose bytes were kept aside as
+ * .corrupt-<ts>: with no backup to restore, the save starts from an empty
+ * config. A config that cannot be READ (I/O error) still throws.
  */
 function readAllForRmW() {
   let raw;
@@ -321,8 +419,8 @@ function readAllForRmW() {
     raw = readFileSync(configPath(), 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') {
-      if (hasUserDataInitMarker(resolvePluginData())) {
-        return restoreAllForRmWOrThrow('config file missing after user-data was initialized');
+      if (isUserDataRecoveryExpected(resolvePluginData(), { fresh: true })) {
+        return restoreAllForRmWOrThrow('config file missing after user-data was initialized', hasQuarantinedCopy());
       }
       return {};
     }
@@ -330,12 +428,11 @@ function readAllForRmW() {
     throw err;
   }
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = parseJsonText(raw);
     if (!isPlainObject(parsed)) throw new SyntaxError('config root must be a JSON object');
     return parsed;
   } catch (parseErr) {
-    quarantineMalformedConfig(parseErr);
-    return restoreAllForRmWOrThrow(parseErr.message);
+    return restoreAllForRmWOrThrow(parseErr.message, quarantineMalformedConfig(parseErr));
   }
 }
 
@@ -402,8 +499,8 @@ export function subscribeConfigChange(listener) {
   };
 }
 
-function writeAll(data) {
-  writeConfigFile(canonicalizeUnifiedConfig(data));
+function writeAll(data, postBackupReason) {
+  writeConfigFile(canonicalizeUnifiedConfig(data), postBackupReason);
   notifyConfigChanged();
 }
 
@@ -548,7 +645,6 @@ export function updateSectionAsync(section, updater) {
 export const SECRET_ACCOUNTS = Object.freeze({
   agentApiKey: (provider) => `agent.${provider}.apiKey`,
   openaiUsageSessionKey: 'agent.openai.usageSessionKey',
-  opencodeGoConsoleKey: 'agent.opencode-go.consoleKey',
 });
 
 // ── Secret-aware getters ─────────────────────────────────────────────────────
@@ -576,15 +672,6 @@ export function getOpenAIUsageSessionKey() {
     process.env.OPENAI_SESSION_KEY ||
     process.env.MIXDOG_OPENAI_USAGE_SESSION_KEY ||
     _readSecret(SECRET_ACCOUNTS.openaiUsageSessionKey)
-  );
-}
-
-export function getOpenCodeGoConsoleKey() {
-  return (
-    process.env.OPENCODE_CONSOLE_API_KEY ||
-    process.env.OPENCODE_GO_CONSOLE_API_KEY ||
-    process.env.MIXDOG_OPENCODE_CONSOLE_API_KEY ||
-    _readSecret(SECRET_ACCOUNTS.opencodeGoConsoleKey)
   );
 }
 

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import fs, { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { syncBuiltinESMExports } from 'node:module';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { createSessionIntakeApi } from './intake.mjs';
+import { USER_CANCEL_KEEP_PROMPT_REASON } from '../../../runtime/agent/orchestrator/session/manager/turn-interruption.mjs';
 
 // Pins the prompt intake surface: how a submission is queued or deferred, how
 // Esc reclaims an idle or in-flight prompt back into the draft, and the
@@ -33,8 +38,10 @@ function createHarness({
       routeSessionId = id;
       return id;
     },
-    rewindMessages: async ({ text }) => {
-      calls.push(['rewindMessages', text]);
+    // A dry run only resolves the target (nothing is committed, so it is not
+    // recorded as a call); the committing call is what history sees.
+    rewindMessages: async ({ text, dryRun }) => {
+      if (dryRun !== true) calls.push(['rewindMessages', text]);
       return { removed: 3 };
     },
     interruptTaskWait: (reason) => calls.push(['interruptTaskWait', reason]),
@@ -198,7 +205,6 @@ test('an idle submit starts auto-clear first and enqueues at once with a minted 
     ['enqueue', 'hello world', 'auto-1', 'prompt', false],
     'cancelGoalContinuations',
     'archiveCompletedGoal',
-    ['interruptTaskWait', 'user-message'],
   ]);
   assert.equal(h.api.submit('   '), false);
 });
@@ -206,10 +212,7 @@ test('an idle submit starts auto-clear first and enqueues at once with a minted 
 test('a submit during a busy turn or a session command is queued immediately', () => {
   const busy = createHarness({ state: { busy: true } });
   assert.equal(busy.api.submit('steer', { id: 'given', mode: 'steer' }), true);
-  assert.deepEqual(busy.calls, [
-    ['enqueue', 'steer', 'given', 'steer', false],
-    ['interruptTaskWait', 'user-message'],
-  ]);
+  assert.deepEqual(busy.calls, [['enqueue', 'steer', 'given', 'steer', false]]);
 
   const command = createHarness({ state: { commandBusy: true } });
   assert.equal(command.api.submit('after command'), true);
@@ -223,7 +226,6 @@ test('a submit during auto-clear is queued immediately', () => {
     ['enqueue', 'after auto-clear', 'auto-1', 'prompt', false],
     'cancelGoalContinuations',
     'archiveCompletedGoal',
-    ['interruptTaskWait', 'user-message'],
   ]);
   assert.equal(h.flags.autoClearRunning, true);
 });
@@ -314,6 +316,56 @@ test('aborting a live turn restores the in-flight prompt, its history slot and i
   assert.deepEqual(restoreState.requeueEntries, []);
 });
 
+test('a Stop that does not hand the prompt back keeps it in the stored transcript and in view', () => {
+  const restoreState = {
+    restorable: true,
+    committed: false,
+    text: 'first message',
+    submittedIds: ['u1'],
+    requeueEntries: [],
+    pastedImages: null,
+    pastedTexts: null,
+  };
+  const h = createHarness({
+    state: {
+      busy: true,
+      items: [{ id: 'u1', kind: 'user', text: 'first message' }],
+      promptHistoryList: ['first message'],
+    },
+    flags: { activePromptRestore: restoreState },
+  });
+  const result = h.api.abort({ restorePrompt: false });
+  // The runtime is told nobody will return the prompt to an input box, so it
+  // must not rewind it out of the stored transcript.
+  assert.deepEqual(
+    h.calls.filter((call) => call[0] === 'runtime.abort'),
+    [['runtime.abort', USER_CANCEL_KEEP_PROMPT_REASON]]
+  );
+  assert.equal(result.aborted, true);
+  assert.equal(result.restoreText, '');
+  assert.equal(h.state.items.length, 1);
+  assert.deepEqual(h.state.promptHistoryList, ['first message']);
+});
+
+test('a Stop that does hand the prompt back, or one for a hidden turn, still lets the runtime rewind it', () => {
+  const live = (restorable) => ({
+    restorable,
+    committed: false,
+    text: 'draft me',
+    submittedIds: ['u1'],
+    requeueEntries: [],
+    pastedImages: null,
+    pastedTexts: null,
+  });
+  const reasonOf = (options, restorable) => {
+    const h = createHarness({ state: { busy: true }, flags: { activePromptRestore: live(restorable) } });
+    h.api.abort(options);
+    return h.calls.find((call) => call[0] === 'runtime.abort')[1];
+  };
+  assert.equal(reasonOf(undefined, true), 'user-cancel');
+  assert.equal(reasonOf({ restorePrompt: false }, false), 'user-cancel');
+});
+
 test('a queued steering prompt suppresses the restore and hands pasted attachments back for cleanup', () => {
   const pastedImages = { img1: { id: 'img1' } };
   const restoreState = {
@@ -376,6 +428,214 @@ test('rewindToItem trims the transcript to the chosen prompt and returns it for 
   assert.equal(await h.api.rewindToItem('a1'), null);
   h.set({ busy: true });
   assert.equal(await h.api.rewindToItem('u1'), null);
+});
+
+test('rewindToItem finds the prompt by message id and returns its attachments for the composer', async () => {
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = mkdtempSync(join(tmpdir(), 'mixdog-intake-rewind-'));
+  try {
+    const { materializePromptSubmission } = await import('../../../runtime/attachments/store.mjs');
+    const text = 'see [Pasted text #1 +3 lines]';
+    const body = 'one\ntwo\nthree\n'.repeat(80);
+    const { prompt } = materializePromptSubmission(text, {
+      pastedTexts: { 1: { id: 1, text: body, source: 'paste', filename: 'Pasted text #1' } },
+    });
+    const seen = [];
+    const h = createHarness({
+      state: { items: [{ id: 'u1', kind: 'user', text, messageId: 'msg_1' }] },
+      runtime: {
+        rewindMessages: async (options) => {
+          seen.push(options);
+          return { removed: 1, message: { content: prompt } };
+        },
+      },
+    });
+    const result = await h.api.rewindToItem('u1');
+    assert.deepEqual(seen, [
+      { text, messageId: 'msg_1', dryRun: true },
+      { text, messageId: 'msg_1' },
+    ]);
+    assert.equal(result.text, text);
+    assert.equal(result.pastedTexts[1].text, body);
+    assert.equal(result.pastedTexts[1].source, 'paste');
+    assert.equal(result.pastedImages, undefined);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+  }
+});
+
+// A stored attachment whose read fails with a NON-permanent error (EBUSY,
+// like a locked blob), which hydration must propagate.
+async function unreadableAttachmentRef(t) {
+  const { storeAttachmentBuffer, attachmentFilePath, clearAttachmentBufferCache } = await import(
+    '../../../runtime/attachments/store.mjs'
+  );
+  const { attachmentRef } = storeAttachmentBuffer(Buffer.from('blob that is busy\n'.repeat(60)));
+  clearAttachmentBufferCache();
+  const path = attachmentFilePath(attachmentRef);
+  const originalStat = fs.statSync;
+  t.mock.method(fs, 'statSync', (target, ...args) => {
+    if (target === path) throw Object.assign(new Error('resource busy'), { code: 'EBUSY' });
+    return originalStat(target, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => syncBuiltinESMExports());
+  return attachmentRef;
+}
+
+async function withDataDir(run) {
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = mkdtempSync(join(tmpdir(), 'mixdog-intake-unreadable-'));
+  try {
+    return await run();
+  } finally {
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+  }
+}
+
+test('rewindToItem commits nothing when the attachment payload cannot be prepared', async (t) => {
+  await withDataDir(async () => {
+    const attachmentRef = await unreadableAttachmentRef(t);
+    const text = 'see [Pasted text #1 +3 lines]';
+    const content = [{ type: 'text', text: 'body', attachmentRef, textKind: 'paste', sizeBytes: 900 }];
+    const rewinds = [];
+    const items = [
+      { id: 'u0', kind: 'user', text: 'earlier' },
+      { id: 'u1', kind: 'user', text, messageId: 'msg_1' },
+    ];
+    const h = createHarness({
+      state: { items, promptHistoryList: ['earlier', text] },
+      runtime: {
+        rewindMessages: async (options) => {
+          rewinds.push(options);
+          return { removed: 1, message: { content } };
+        },
+      },
+    });
+    await assert.rejects(h.api.rewindToItem('u1'));
+    // Only the non-committing dry run reached the history.
+    assert.deepEqual(rewinds, [{ text, messageId: 'msg_1', dryRun: true }]);
+    assert.equal(h.state.items, items);
+    assert.deepEqual(h.state.promptHistoryList, ['earlier', text]);
+    assert.equal(h.state.commandBusy, false);
+  });
+});
+
+test('rewindToItem commits against the history the preview saw and refuses once it changed', async () => {
+  const items = [{ id: 'u1', kind: 'user', text: 'hello', messageId: 'msg_1' }];
+  const seen = [];
+  const h = createHarness({
+    state: { items, promptHistoryList: ['hello'] },
+    runtime: {
+      rewindMessages: async (options) => {
+        seen.push(options);
+        if (options.dryRun === true) return { removed: 1, message: { content: 'hello' }, historyMarker: 'm1' };
+        // History changed after the preview: the marker no longer matches.
+        return options.expectedHistoryMarker === 'm1' ? null : { removed: 1 };
+      },
+    },
+  });
+  await assert.rejects(h.api.rewindToItem('u1'), /conversation changed; select the message again/);
+  assert.equal(seen[1].expectedHistoryMarker, 'm1');
+  assert.equal(h.state.items, items);
+  assert.deepEqual(h.state.promptHistoryList, ['hello']);
+  assert.equal(h.state.commandBusy, false);
+});
+
+test('a composer that cannot hold file parts refuses the rewind before anything is truncated', async () => {
+  const content = [
+    { type: 'text', text: 'see [File #1: spec.pdf]' },
+    {
+      type: 'file',
+      data: Buffer.from('%PDF-1.7').toString('base64'),
+      mimeType: 'application/pdf',
+      filename: 'spec.pdf',
+    },
+  ];
+  const rewinds = [];
+  const items = [{ id: 'u1', kind: 'user', text: 'see [File #1: spec.pdf]', messageId: 'msg_1' }];
+  const h = createHarness({
+    state: { items },
+    runtime: {
+      rewindMessages: async (options) => {
+        rewinds.push(options);
+        return { removed: 1, message: { content } };
+      },
+    },
+  });
+  await assert.rejects(h.api.rewindToItem('u1', { restoreFiles: false }), /PDF\/Office/);
+  assert.equal(rewinds.length, 1);
+  assert.equal(rewinds[0].dryRun, true);
+  assert.equal(h.state.items, items);
+  assert.equal(h.state.commandBusy, false);
+
+  // The desktop composer restores files, so it still rewinds and gets them back.
+  const restored = await h.api.rewindToItem('u1');
+  assert.equal(rewinds.length, 3);
+  assert.equal(restored.content[0].filename, 'spec.pdf');
+  assert.deepEqual(h.state.items, []);
+});
+
+test('an unreadable attachment on Esc keeps the in-flight prompt instead of stranding it', async (t) => {
+  await withDataDir(async () => {
+    const attachmentRef = await unreadableAttachmentRef(t);
+    const restoreState = {
+      restorable: true,
+      committed: false,
+      text: 'draft me',
+      submittedIds: ['u1'],
+      requeueEntries: [],
+      pastedImages: null,
+      pastedTexts: { 1: { id: 1, source: 'paste', attachmentRef, sizeBytes: 900 } },
+    };
+    const items = [{ id: 'u1', kind: 'user', text: 'draft me' }];
+    const h = createHarness({
+      state: { busy: true, items, promptHistoryList: ['draft me'] },
+      flags: { activePromptRestore: restoreState },
+    });
+    const result = h.api.abort();
+    assert.deepEqual(
+      h.calls.filter((call) => call[0] === 'runtime.abort'),
+      [['runtime.abort', USER_CANCEL_KEEP_PROMPT_REASON]]
+    );
+    assert.equal(result.aborted, true);
+    assert.equal(result.restoreText, '');
+    assert.match(result.notice, /Could not restore the attachments/);
+    assert.equal(h.state.items, items);
+    assert.deepEqual(h.state.promptHistoryList, ['draft me']);
+  });
+});
+
+test('an unreadable attachment keeps the submitted rows even when the turn also requeues entries', async (t) => {
+  await withDataDir(async () => {
+    const attachmentRef = await unreadableAttachmentRef(t);
+    const restoreState = {
+      restorable: true,
+      committed: false,
+      text: 'draft me',
+      submittedIds: ['u1'],
+      requeueEntries: [{ text: 'again' }],
+      pastedImages: null,
+      pastedTexts: { 1: { id: 1, source: 'paste', attachmentRef, sizeBytes: 900 } },
+    };
+    const items = [{ id: 'u1', kind: 'user', text: 'draft me' }];
+    const h = createHarness({
+      state: { busy: true, items, promptHistoryList: ['draft me'] },
+      flags: { activePromptRestore: restoreState },
+    });
+    const result = h.api.abort();
+    assert.equal(result.restoreText, '');
+    assert.match(result.notice, /the prompt was kept/);
+    assert.equal(h.state.items, items, 'the submitted rows stay in the transcript');
+    assert.deepEqual(h.state.promptHistoryList, ['draft me']);
+    assert.notEqual(restoreState.reclaimed, true);
+    assert.deepEqual(
+      h.calls.find((call) => call[0] === 'requeueFront'),
+      ['requeueFront', [{ text: 'again' }]]
+    );
+  });
 });
 
 test('reserveSession publishes the reserved id and reports whether the route took it', () => {

@@ -1,7 +1,6 @@
 // Steering / pending-message queue with sync buffering and atomic persistence.
-import { mkdirSync, readFileSync } from 'node:fs';
+import { readJsonStateSync } from '../../../../shared/atomic-file.mjs';
 import { loadSession } from '../store.mjs';
-import { ForeignPendingMessageController } from './foreign-pending-messages.mjs';
 import {
   currentPendingLifecycleToken,
   lifecycleTokenStale,
@@ -29,7 +28,13 @@ import {
   pendingIdSet,
   pruneEmptyPendingIdSet,
 } from './pending-claim-ledger.mjs';
-import { legacyPendingMessagesPath, pendingShardDir } from './pending-spool-path.mjs';
+import { legacyPendingMessagesPath } from './pending-spool-path.mjs';
+import {
+  TASK_WAIT_WAKE_NOTIFICATION,
+  TASK_WAIT_WAKE_USER,
+  interruptTaskWaitForSession,
+  registerTaskWaitSteeringCheck,
+} from '../task-wait-control.mjs';
 import { pruneCleanupConfirmedLedger } from './pending-delivered-ledger.mjs';
 // The durable delivered-id ledger on the session record lives in
 // pending-delivered-ledger.mjs; re-exported so prior importers stay unchanged.
@@ -52,6 +57,8 @@ import {
   PENDING_MODE_TASK_NOTIFICATION,
   _groupPendingMessageEntries,
   _mergePendingMessageEntries,
+  completionExecutionId,
+  completionIsDelivered,
   completionWasDelivered,
   entryLifecycleToken,
   isCompletionNotificationEntry,
@@ -82,16 +89,6 @@ const _sessionPendingMessages = new Map();
 // never touch the global spool (or its cross-process lock).
 const _hydratedPendingMessages = new Map();
 const _pendingHydrations = new Map();
-
-// Exposed for live-share owners: they fs.watch this session's shard file for
-// instant pickup of cross-surface submits (the 3s drain tick remains the
-// safety net). Without a valid session id there is nothing to watch.
-export function pendingMessagesSpoolPath(sessionId) {
-  if (!isValidPendingSessionId(sessionId)) return '';
-  // fs.watch needs the directory to exist before the first shard is written.
-  mkdirSync(pendingShardDir(), { recursive: true });
-  return pendingMessagesPath(sessionId);
-}
 
 function pendingIdStillQueued(sessionId, id) {
   for (const map of [_sessionPendingMessages, _pendingPersistBuffers, _hydratedPendingMessages]) {
@@ -196,11 +193,10 @@ function acknowledgePendingMessages(sessionId, deliveredEntries, options = {}) {
         return false;
       }
       // Keep the acked ids when the spool cleanup FAILED: the durable entry
-      // still exists, and forgetting that it was already delivered let the
-      // foreign-injection drain re-take it as a "new" cross-surface submit
-      // (user saw the same message duplicated in the transcript). Retained
-      // ids also keep suppressing the hydrate path; they are dropped only
-      // once a later ack round actually lands.
+      // still exists, and forgetting that it was already delivered would let
+      // the hydrate path re-take it as a new message (the same message
+      // duplicated in the transcript). They are dropped only once a later ack
+      // round actually lands.
       if (!ok) return false;
       forgetAckedIds();
       return true;
@@ -459,100 +455,50 @@ export function enqueuePendingMessage(sessionId, message) {
   }
   q.push(entry);
   const bufferedDepth = schedulePendingMessagePersist(sessionId, entry);
+  const wake = pendingEntryWake(entry);
+  if (wake) {
+    interruptTaskWaitForSession(
+      sessionId,
+      wake,
+      wake === TASK_WAIT_WAKE_NOTIFICATION ? completionExecutionId(entry) : null
+    );
+  }
   return Math.max(q.length, bufferedDepth || 0);
 }
 
-/**
- * Remote-attach injection enqueue: persist a user message into the shared
- * cross-process spool WITHOUT touching this process's in-memory queues. Used
- * by a viewer surface attached to a session another live process owns — the
- * owner's injection poller (drainForeignUserInjections) picks it up there.
- * Skipping the local queues is deliberate: if this process later takes real
- * ownership of the session, a lingering local copy would double-inject.
- */
-export function enqueueRemotePendingMessage(sessionId, message) {
-  if (!isValidPendingSessionId(sessionId)) return 0;
-  // Same durable-lifecycle authority as the local enqueue: a cross-surface
-  // submit that lands after the session was closed is refused before any
-  // spool mutation.
-  const token = currentPendingLifecycleToken(sessionId);
-  if (pendingLifecycleInvalidated(sessionId)) return 0;
-  const normalized = pendingMessageQueueEntry(message);
-  if (!normalized) return 0;
-  // The token rides into the async spool commit, which revalidates under the
-  // spool lock (see persistPendingMessages).
-  if (pendingLifecycleInvalidated(sessionId, token)) return 0;
-  // Preserve the viewer's submission id end-to-end. Minting a fresh id here
-  // made pipe-delivered + spool-fallback twins look like two messages
-  // (owner accepted the pipe copy, then re-took the spool copy).
-  const preservedId = pendingMessageId(normalized) || pendingMessageId(message);
-  const remoteEntry = stampLifecycleToken(
-    {
-      ...normalized,
-      id: typeof preservedId === 'string' && preservedId.trim() ? preservedId.trim() : newPendingMessageId(),
-    },
-    token
-  );
-  return persistPendingMessages(sessionId, [remoteEntry]);
+// What one queued entry wakes a passive task wait or shell hold for, so it
+// reaches the loop now: steering (a Lead message to its agent) as user input,
+// and an undelivered task completion (agent/shell, any status). A plain
+// channel notice (scheduled or event-rule inject) waits for the turn, as it
+// does in the Lead's queue.
+function pendingEntryWake(entry) {
+  if (pendingEntryMode(entry) === PENDING_MODE_PROMPT) return TASK_WAIT_WAKE_USER;
+  if (isCompletionNotificationEntry(entry) && !completionIsDelivered(entry)) return TASK_WAIT_WAKE_NOTIFICATION;
+  return false;
 }
 
-function _foreignLocalIds(sessionId) {
-  const localIds = new Set();
-  for (const map of [_sessionPendingMessages, _pendingPersistBuffers, _hydratedPendingMessages]) {
-    for (const entry of map.get(sessionId) || []) {
-      const id = pendingMessageId(entry);
-      if (id) localIds.add(id);
-    }
+// Anything already queued when a wait or hold begins ends it at once, exactly
+// like what arrives during it. A completion the agent already received is no
+// longer deliverable and never wakes.
+registerTaskWaitSteeringCheck((sessionId) => {
+  let wake = false;
+  for (const entry of _sessionPendingMessages.get(sessionId) || []) {
+    const found = pendingEntryWake(entry);
+    if (found === TASK_WAIT_WAKE_USER) return found;
+    wake = wake || found;
   }
-  for (const set of [_inDeliveryPendingIds.get(sessionId), _ackedPendingIds.get(sessionId)]) {
-    for (const id of set || []) localIds.add(id);
-  }
-  // The durable delivered-ledger mirrors the hydrate path's suppression: an
-  // entry whose id was recorded as delivered (but whose spool cleanup has
-  // not landed yet — crash, lock contention, another process) is NOT a
-  // foreign submit and must never re-inject.
-  try {
-    for (const id of loadSession(sessionId)?.deliveredPendingMessageIds || []) {
-      if (typeof id === 'string' && id) localIds.add(id);
-    }
-  } catch {
-    /* ledger unavailable — in-memory sets still guard */
-  }
-  return localIds;
-}
-
-function addForeignInDeliveryIds(sessionId, ids) {
-  const inDelivery = pendingIdSet(_inDeliveryPendingIds, sessionId);
-  for (const id of ids) inDelivery.add(id);
-}
-
-function removeForeignInDeliveryIds(sessionId, ids) {
-  const inDelivery = _inDeliveryPendingIds.get(sessionId);
-  for (const id of ids) inDelivery?.delete(id);
-  pruneEmptyPendingIdSet(_inDeliveryPendingIds, sessionId);
-}
-
-const foreignPendingMessages = new ForeignPendingMessageController({
-  addInDeliveryIds: addForeignInDeliveryIds,
-  chainSpoolTail,
-  currentLifecycleToken: currentPendingLifecycleToken,
-  getSpoolTail: (sessionId) => _pendingPersistTails.get(sessionId),
-  isValidSessionId: isValidPendingSessionId,
-  lifecycleEpochMoved: pendingLifecycleEpochMoved,
-  lifecycleInvalidated: pendingLifecycleInvalidated,
-  localIds: _foreignLocalIds,
-  normalizeStore: normalizePendingStore,
-  removeInDeliveryIds: removeForeignInDeliveryIds,
-  setSpoolQueue,
-  spoolPath: pendingMessagesPath,
-  updateSpool,
-  warn: pendingWarn,
+  return wake;
 });
 
-// The controller parks rows before delivery so an owner crash can redeliver
-// accepted input instead of losing it.
-export async function drainForeignUserInjections(sessionId) {
-  return foreignPendingMessages.drainUserInjections(sessionId);
+// True when this session's queue holds task notifications and nothing else:
+// the mid-chain boundary may then take the whole queue without bypassing the
+// prompt filters that keep queued prompts for the terminal boundary.
+export function pendingQueueHoldsOnlyNotifications(sessionId) {
+  const queued = [
+    ...(_sessionPendingMessages.get(sessionId) || []),
+    ...(_hydratedPendingMessages.get(sessionId) || []),
+  ];
+  return queued.length > 0 && queued.every((entry) => pendingEntryMode(entry) === PENDING_MODE_TASK_NOTIFICATION);
 }
 
 // Drain order: enqueue time, then source (hydrated < buffered < memory), then
@@ -573,19 +519,13 @@ export function drainPendingMessages(sessionId) {
   // This path is deliberately memory-only: no file lock, stat, parse, or
   // atomic rename can run in the agent-completion tick.
   const buffered = takeBufferedPendingMessages(sessionId);
-  // Deferred completion/task notifications are dropped ONLY from the persisted
-  // (disk/buffer) path. Those are the entries a later session resume/restart
-  // would replay out-of-order into a future turn, once the in-memory queue is
-  // gone — discarding them there is the deliberate owner decision.
-  // Live in-memory completions (fallback/headless enqueues delivered within
-  // THIS process, e.g. the idle-resume kick that surfaces the model-visible
-  // body) are the intended payload and MUST survive the drain — filtering
-  // them here dropped the notification entirely. On a genuine resume the
-  // in-memory queue is empty, so keeping it only ever delivers live entries.
-  // Genuine user/steering messages carry no marker and are kept in order in
-  // both paths.
-  // Drain-time belt: drop MARKED in-memory completion entries whose text hash
-  // was already delivered+ACKed (TUI execution-ui) this process — those would
+  // A completion that reached the spool and was never acknowledged was never
+  // delivered to the model (delivery acknowledges and removes it), so it
+  // survives a restart: the hydrated disk entries drain like live in-memory
+  // ones. Dropping them on resume lost a finished (or failed) task's only
+  // notification.
+  // Drain-time belt: drop MARKED completion entries whose text hash was
+  // already delivered+ACKed (TUI execution-ui) this process — those would
   // double-inject next turn. Only marked completion entries are eligible;
   // genuine user/steering entries carry no marker and are always kept.
   const deliveredIds = new Set();
@@ -599,10 +539,11 @@ export function drainPendingMessages(sessionId) {
     deliveredEntries.push(entry);
     return false;
   };
+  const hydratedKept = hydrated.filter(keepUndelivered);
   const memoryKept = memory.filter(keepUndelivered);
   const bufferedKept = buffered.filter(keepUndelivered);
   const tagged = [
-    ...hydrated.map((entry, index) => ({ entry, source: 0, index })),
+    ...hydratedKept.map((entry, index) => ({ entry, source: 0, index })),
     ...bufferedKept.map((entry, index) => ({ entry, source: 1, index })),
     ...memoryKept.map((entry, index) => ({ entry, source: 2, index })),
   ];
@@ -617,14 +558,8 @@ export function drainPendingMessages(sessionId) {
     if (!prior || item.source > prior.source) byId.set(normalized.id, { ...item, entry: normalized });
   }
   const ordered = [...byId.values()].sort(byEnqueueOrder);
-  const dropped = ordered
-    .filter(({ entry, source }) => source === 0 && isCompletionNotificationEntry(entry))
-    .map(({ entry }) => entry);
-  const acknowledged = [...deliveredEntries, ...dropped];
-  if (acknowledged.length > 0) acknowledgePendingMessages(sessionId, acknowledged);
-  const visible = modelVisiblePendingMessages(
-    ordered.filter(({ entry }) => !dropped.includes(entry)).map(({ entry }) => entry)
-  );
+  if (deliveredEntries.length > 0) acknowledgePendingMessages(sessionId, deliveredEntries);
+  const visible = modelVisiblePendingMessages(ordered.map(({ entry }) => entry));
   // Epoch gate. Normalization above rebuilds every entry, but each copy
   // inherits the IMMUTABLE token the entry was accepted under. An entry from
   // an older epoch (a cross-process close/detach moved the generation while
@@ -667,14 +602,8 @@ export function _getPendingMessagesForSession(sessionId) {
   const queued = [...(_sessionPendingMessages.get(sessionId) || []), ...(_pendingPersistBuffers.get(sessionId) || [])];
   // The not-yet-migrated global spool can still hold this session's rows.
   for (const path of [pendingMessagesPath(sessionId), legacyPendingMessagesPath()]) {
-    let raw;
-    try {
-      raw = readFileSync(path, 'utf8');
-    } catch (err) {
-      if (err?.code === 'ENOENT') continue;
-      throw err;
-    }
-    const persisted = normalizePendingStore(JSON.parse(raw)).sessions[sessionId];
+    // A damaged spool file is kept aside and reads as empty; it never throws.
+    const persisted = normalizePendingStore(readJsonStateSync(path, { fallback: null })).sessions[sessionId];
     if (Array.isArray(persisted)) queued.push(...persisted);
   }
   return queued;
@@ -709,15 +638,6 @@ export function _dropPendingMessageState(id, { clearPersisted = true } = {}) {
     cancelPendingPersistRetry(id, { resetBackoff: true });
   } catch {
     /* ignore */
-  }
-  // A tombstoned close removes the whole durable queue anyway; a DETACH keeps
-  // its scheduled release so this process still cleans up rows it parked.
-  if (clearPersisted) {
-    try {
-      foreignPendingMessages.cancelHandoffRelease(id);
-    } catch {
-      /* ignore */
-    }
   }
   _inDeliveryPendingIds.delete(id);
   _ackedPendingIds.delete(id);

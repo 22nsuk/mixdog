@@ -45,8 +45,15 @@ export function hydrateProviderModelRow(cfg, row) {
   const modelParameterOptions = addedOptions.length
     ? [...existingOptions.filter((option) => !addedOptions.some((added) => added.id === option?.id)), ...addedOptions]
     : row.modelParameterOptions;
+  const isCustom = row.provider?.startsWith?.('custom-');
+  const customName = isCustom ? String(cfg?.providers?.[row.provider]?.name || '').trim() : '';
+  // A custom provider's name always comes from the current configuration; a
+  // row's own (possibly renamed or removed) name is dropped.
+  const base = { ...row };
+  if (isCustom) delete base.providerName;
   return {
-    ...row,
+    ...base,
+    ...(customName ? { providerName: customName } : {}),
     ...(alias ? { display: alias, displayAlias: alias } : {}),
     ...(modelParameterOptions ? { modelParameterOptions } : {}),
     effortOptions: effortItemsFor(row.provider, row, null),
@@ -69,6 +76,10 @@ export function hydrateProviderModelRow(cfg, row) {
     savedModelParameters: saved.modelParameters || {},
     savedContextPercent: Number(saved.contextPercent) || undefined,
     savedContextTokens: Number(saved.contextTokens) || undefined,
+    // Model management: an explicit /model visibility choice and the favorite
+    // mark (absent = the picker's default listing, not a favorite).
+    ...(typeof saved.hidden === 'boolean' ? { savedHidden: saved.hidden } : {}),
+    ...(saved.favorite === true ? { favorite: true } : {}),
   };
 }
 

@@ -201,11 +201,13 @@ test('cold session creation waits asynchronously for shared credentials and resp
 
 test('inline host keeps session actors in the daemon process and releases them', async () => {
   const events = [];
+  const executeSessionControl = async (args, context) => ({ args, context });
   const host = createInlineSessionRuntimeHost({
     cwd: 'C:\\project',
     loadLocalModule: async () => createFakeLocalModule(events),
     warmKeychain: async () => {},
     executeAgentControl: async (args) => JSON.stringify(args),
+    executeSessionControl,
   });
 
   const first = await host.create({ sessionId: 'session-a' });
@@ -216,6 +218,8 @@ test('inline host keeps session actors in the daemon process and releases them',
   assert.equal(host.status.worker.runtimes, 2);
   assert.equal(events[0][1].cwd, 'C:\\project');
   assert.equal(events[1][1].cwd, 'D:\\other');
+  assert.equal(events[0][1].executeSessionControl, executeSessionControl);
+  assert.equal(events[1][1].executeSessionControl, executeSessionControl);
   assert.equal(await host.agentControl({ type: 'list' }, { callerSessionId: 'session-a' }), '{"type":"list"}');
   const completionMeta = { type: 'agent_task_result', execution_id: 'task-agent-1' };
   assert.equal(host.notifySessionCompletion('session-a', 'Agent handoff', completionMeta), true);
@@ -262,5 +266,43 @@ test('inline host prewarms only keychain without loading session or agent graphs
 
   assert.deepEqual(events, [['prewarm', 'keychain']]);
   assert.deepEqual(phases, ['keychain-prewarm']);
+  await host.close('done');
+});
+
+test('warmLocalRuntime loads the local module in the background and create reuses it', async () => {
+  const events = [];
+  let loads = 0;
+  const host = createInlineSessionRuntimeHost({
+    warmKeychain: async () => {},
+    loadLocalModule: async () => {
+      loads += 1;
+      return { ...createFakeLocalModule(events), warmLocalSessionRuntime: async () => events.push(['warm']) && true };
+    },
+  });
+
+  assert.equal(await host.warmLocalRuntime(), true);
+  assert.equal(loads, 1);
+  assert.deepEqual(events, [['warm']]);
+  await host.create({ sessionId: 's1' });
+  assert.equal(loads, 2, 'create resolves through the (ESM-cached) loader without re-running the warm-up');
+  assert.equal(events.filter((e) => e[0] === 'warm').length, 1);
+  await host.close('done');
+});
+
+test('warmLocalRuntime tolerates a failed import and leaves create on the lazy path', async () => {
+  const events = [];
+  let attempt = 0;
+  const host = createInlineSessionRuntimeHost({
+    warmKeychain: async () => {},
+    loadLocalModule: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('boom');
+      return createFakeLocalModule(events);
+    },
+  });
+
+  assert.equal(await host.warmLocalRuntime(), false);
+  await host.create({ sessionId: 's2' });
+  assert.equal(events.filter((e) => e[0] === 'create').length, 1);
   await host.close('done');
 });

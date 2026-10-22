@@ -3,10 +3,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 
 import { exportTabBytes } from './host-export-path.ts';
 import { capturedPng, captureWindowRect, htmlFrames, paneFrames, windowAccess } from './host-frames.ts';
 import { watchFile } from './host-file-watch.ts';
+import { pagePoint, visualizeZoomKey, watchVisualizeZoomInput } from './host-zoom-input.ts';
+import { PANE_SCROLLBAR_SCRIPT, preparePaneFrame } from './host-pane-frame.ts';
 import { watchPageProblems } from './host-page-observer.ts';
 import { requireShownWindow } from './host-page-ops.ts';
 
@@ -113,7 +116,7 @@ test('watchPageProblems judges only requests made by its own webContents and ign
   const calls = [];
   const service = {
     reportConsole: (report) => calls.push(['console', report.frameUrl]),
-    guardNavigation: (chain, url, appInitiated) => {
+    guardNavigation: (_chain, url, appInitiated) => {
       calls.push(['nav', url, appInitiated]);
       return true;
     },
@@ -170,4 +173,136 @@ test('exportTabBytes refuses a PDF of a non-HTML pane and captures the panel for
   const tab = { panes: [{ kind: 'image', url: '' }] };
   await assert.rejects(exportTabBytes(capture, tab, 'pdf', 0), /Save as PDF is for HTML pages/);
   assert.equal((await exportTabBytes(capture, tab, 'png', 0)).toString(), 'shot');
+});
+
+test('zoom gestures inside a pane frame are forwarded to the renderer, once per window', () => {
+  const key = (key, extra = {}) => ({ type: 'keyDown', key, control: true, meta: false, alt: false, ...extra });
+  assert.equal(visualizeZoomKey(key('=')), 'in');
+  assert.equal(visualizeZoomKey(key('+')), 'in');
+  assert.equal(visualizeZoomKey(key('-')), 'out');
+  assert.equal(visualizeZoomKey(key('0', { control: false, meta: true })), 'reset');
+  assert.equal(visualizeZoomKey(key('=', { control: false })), null);
+  assert.equal(visualizeZoomKey(key('=', { alt: true })), null);
+  assert.equal(visualizeZoomKey(key('=', { type: 'keyUp' })), null);
+  assert.equal(visualizeZoomKey(key('a')), null);
+
+  // Every registration is recorded: a Map keyed by event name would hide a
+  // second listener for the same event.
+  const registrations = [];
+  const handlers = { get: (name) => registrations.find(([event]) => event === name)?.[1] };
+  const sent = [];
+  const mainFrame = {};
+  const contents = {
+    mainFrame,
+    focusedFrame: mainFrame,
+    isDestroyed: () => false,
+    on: (name, handler) => registrations.push([name, handler]),
+    send: (channel, event) => sent.push([channel, event]),
+  };
+  const cursor = { x: 40, y: 50 };
+  watchVisualizeZoomInput(contents, () => cursor);
+  const wired = registrations.length;
+  assert.deepEqual(registrations.map(([name]) => name).sort(), ['before-input-event', 'blur', 'zoom-changed'].sort());
+  watchVisualizeZoomInput(contents, () => cursor);
+  assert.equal(registrations.length, wired, 'a second watch must not register again');
+
+  // Ctrl+wheel the frame's page left alone: the pointer's place goes with it.
+  // A wheel input-event carries no position (only type and modifiers), so the
+  // place cannot come from it.
+  handlers.get('input-event')?.({}, { type: 'mouseWheel', modifiers: ['control'] });
+  handlers.get('zoom-changed')({}, 'in');
+  assert.deepEqual(sent.pop()[1], { sessionId: '', zoom: 'in', point: { x: 40, y: 50 } });
+
+  // A zoom key counts only while a subframe holds focus; the panel's own
+  // document handles the main frame's keys itself.
+  const press = (input) => {
+    let prevented = false;
+    handlers.get('before-input-event')({ preventDefault: () => (prevented = true) }, input);
+    return prevented;
+  };
+  assert.equal(press(key('=')), false);
+  assert.equal(sent.length, 0);
+  contents.focusedFrame = {};
+  // The key is swallowed (the PDF viewer must not zoom too) and forwarded;
+  // Ctrl already went down under the main frame (the panel's document saw it),
+  // so only the zoom is reported.
+  assert.equal(press(key('-')), true);
+  assert.deepEqual(
+    sent.map(([, event]) => event),
+    [{ sessionId: '', zoom: 'out' }]
+  );
+  sent.length = 0;
+  assert.equal(press(key('x')), false);
+  assert.equal(sent.length, 0);
+  // Windows reports the release of Ctrl with Ctrl's own flag still set.
+  press({ type: 'keyUp', key: 'Control', control: true, meta: false, alt: false });
+  assert.deepEqual(sent.pop()[1], { sessionId: '', zoomModifier: false });
+
+  // Focus transitions: Ctrl pressed in the frame, window blurs, Ctrl released
+  // elsewhere, and a new press in the frame must be reported again.
+  press({ type: 'keyDown', key: 'Control', control: true, meta: false, alt: false });
+  assert.deepEqual(sent.pop()[1], { sessionId: '', zoomModifier: true });
+  handlers.get('blur')();
+  contents.focusedFrame = mainFrame;
+  press({ type: 'keyUp', key: 'Control', control: true, meta: false, alt: false });
+  contents.focusedFrame = {};
+  press({ type: 'keyDown', key: 'Control', control: true, meta: false, alt: false });
+  assert.deepEqual(sent.pop()[1], { sessionId: '', zoomModifier: true });
+  // Release in the main frame without a blur is tracked too.
+  contents.focusedFrame = mainFrame;
+  press({ type: 'keyUp', key: 'Control', control: true, meta: false, alt: false });
+  contents.focusedFrame = {};
+  press({ type: 'keyDown', key: 'Control', control: true, meta: false, alt: false });
+  assert.deepEqual(sent.pop()[1], { sessionId: '', zoomModifier: true });
+});
+
+test('a loaded pane page gets the app scrollbar as a layered constructed sheet; other frames get nothing', async () => {
+  const ran = [];
+  const paneFrame = (url) => ({
+    url,
+    isDestroyed: () => false,
+    executeJavaScript: async (script) => {
+      ran.push(script);
+    },
+  });
+  const source = {
+    isPaneFrame: (url) => url.startsWith('http://127.0.0.1:1/tok/'),
+    marksForFrame: () => [{ selector: 'h1', label: 'a' }],
+  };
+
+  await preparePaneFrame(paneFrame('app://panel/other'), source);
+  assert.deepEqual(ran, []);
+
+  await preparePaneFrame(paneFrame('http://127.0.0.1:1/tok/index.html'), source);
+  assert.equal(ran.length, 2);
+  const scrollbar = ran.find((script) => script === PANE_SCROLLBAR_SCRIPT);
+  assert.ok(scrollbar);
+  assert.ok(
+    ran.some((script) => /attachShadow/.test(script)),
+    'the marks are redrawn too'
+  );
+
+  // Run the injected script against a minimal document.
+  const document = { adoptedStyleSheets: ['page-sheet'] };
+  class CSSStyleSheet {
+    replaceSync(css) {
+      this.css = css;
+    }
+  }
+  vm.runInNewContext(scrollbar, { document, CSSStyleSheet });
+  assert.equal(document.adoptedStyleSheets.length, 2);
+  const { css } = document.adoptedStyleSheets[1];
+  // The thin pill look of 02-base.css, inside a cascade layer so the page's own
+  // unlayered ::-webkit-scrollbar / scrollbar-width / scrollbar-color rules win.
+  assert.match(css, /^@layer [\w-]+ \{/);
+  assert.match(css, /::-webkit-scrollbar \{ width: 8px; height: 8px; \}/);
+  assert.match(css, /::-webkit-scrollbar-thumb \{[^}]*border-radius: 999px/);
+  assert.doesNotMatch(css, /!important|scrollbar-width|scrollbar-color/);
+});
+
+test('the cursor maps to page CSS px through the window origin and a non-1 zoom factor', () => {
+  assert.deepEqual(pagePoint({ x: 300, y: 200 }, { x: 100, y: 50 }, 1), { x: 200, y: 150 });
+  // At 150% a page px is 1.5 device px: 300 device px right of the origin is 200 CSS px.
+  assert.deepEqual(pagePoint({ x: 400, y: 350 }, { x: 100, y: 50 }, 1.5), { x: 200, y: 200 });
+  assert.deepEqual(pagePoint({ x: 400, y: 350 }, { x: 100, y: 50 }, 0), { x: 300, y: 300 });
 });

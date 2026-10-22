@@ -38,8 +38,8 @@ export function createSendDispatch({ registry, defaultCwd, sendFlow, spawnFlow, 
     if (inherited.tombstone) registry.consumeTagTombstone(inherited.tombstone);
   }
 
-  // Reaped/dead-tag fallback: with the 5m terminal-reap window a same-scope
-  // follow-up often lands after the session is gone. Instead of bouncing an
+  // Dead-tag fallback: a same-scope follow-up can land after its session was
+  // closed or deleted. Instead of bouncing an
   // error back to Lead (who would just re-issue the same content as a spawn),
   // respawn a FRESH session under the same tag with the message as its brief.
   // `respawned: true` in the result tells Lead the worker has no prior session
@@ -70,6 +70,7 @@ export function createSendDispatch({ registry, defaultCwd, sendFlow, spawnFlow, 
   async function send(args, { scopedContext, callerCwd, context, notifyContext }) {
     try {
       const prepared = await sendFlow.prepareSend(args, scopedContext);
+      await sendFlow.adoptCaller(prepared, notifyContext);
       return sendFlow.dispatchToExistingSession(prepared, notifyContext);
     } catch (err) {
       return await respawnDeadTagSend(err, args, { callerCwd, context, notifyContext });

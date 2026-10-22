@@ -6,6 +6,7 @@
 // No external dependencies.
 import { readFile, stat } from 'node:fs/promises';
 import { inflateRawSync } from 'node:zlib';
+import { stripTrailingReplacementChars } from '../shared/utf8-cut.mjs';
 
 // Longest run of attributes inside one tag that a pattern will cross. Bounded
 // so a tag with no closing bracket cannot make a pattern rescan the part.
@@ -13,7 +14,10 @@ const ATTR_BOUND = 4096;
 const ATTRS = `[^<>]{0,${ATTR_BOUND}}`;
 const A = ATTRS;
 // A regex built from a raw template; the interpolations are pattern text.
-const re = (flags = '') => (strings, ...values) => new RegExp(String.raw(strings, ...values), flags);
+const re =
+  (flags = '') =>
+  (strings, ...values) =>
+    new RegExp(String.raw(strings, ...values), flags);
 // The patterns the per-cell / per-run loops use are built once.
 const V_RE = re()`<v(?:\s${A})?>([^<]*)</v>`;
 const T_RUN_RE = re('g')`<t(?:\s${A})?>([^<]*)</t>`;
@@ -384,16 +388,12 @@ function relationshipList(xml) {
 
 function sharedStringTable(xml) {
   if (!xml) return [];
-  return [...scanElements(xml, 'si')]
-    .filter((item) => item.inner !== null)
-    .map((item) => textRuns(item.inner));
+  return [...scanElements(xml, 'si')].filter((item) => item.inner !== null).map((item) => textRuns(item.inner));
 }
 
 // Concatenated <t> character data of one fragment.
 function textRuns(fragment) {
-  return [...fragment.matchAll(T_RUN_RE)]
-    .map(([, text]) => decodeXmlEntities(text))
-    .join('');
+  return [...fragment.matchAll(T_RUN_RE)].map(([, text]) => decodeXmlEntities(text)).join('');
 }
 
 // Excel stores a date as a day count and a percentage as a fraction, so a
@@ -421,7 +421,10 @@ function cellNumberFormats(xml) {
   if (!xml) return [];
   const custom = new Map(
     [...xml.matchAll(re('g')`<numFmt\b(${A}?)/?>`)]
-      .map(([, attributes]) => [/\bnumFmtId="(\d+)"/.exec(attributes)?.[1], /\bformatCode="([^"<>]*)"/.exec(attributes)?.[1]])
+      .map(([, attributes]) => [
+        /\bnumFmtId="(\d+)"/.exec(attributes)?.[1],
+        /\bformatCode="([^"<>]*)"/.exec(attributes)?.[1],
+      ])
       .filter(([id, code]) => id !== undefined && code !== undefined)
       .map(([id, code]) => [Number(id), decodeXmlEntities(code)])
   );
@@ -629,7 +632,7 @@ function relatedPart(target, ownerPart) {
   const base = String(ownerPart).replace(/\/[^/]+$/, '');
   const value = String(target).replace(/^\//, '');
   if (!value.startsWith('..')) return value.startsWith('xl/') ? value : `${base}/${value}`;
-  return value.replace(/^\.\.\//, `${base.replace(/\/[^/]+$/, '')}/`);
+  return value.replace(/^\.\.\//, () => `${base.replace(/\/[^/]+$/, '')}/`);
 }
 
 // A sheet's chart is its message, and it lives outside the cell grid: read as
@@ -673,12 +676,8 @@ function sheetFigures(buf, entries, sheetPart) {
 function capOutput(text, maxOutputBytes) {
   const buf = Buffer.from(text, 'utf8');
   if (buf.length <= maxOutputBytes) return text;
-  let cut = buf.subarray(0, maxOutputBytes).toString('utf8');
-  // Drop the replacement characters a split multi-byte sequence leaves (a loop:
-  // `/\uFFFD+$/` is quadratic on a long run of them).
-  let end = cut.length;
-  while (end > 0 && cut[end - 1] === '\uFFFD') end -= 1;
-  cut = cut.slice(0, end);
+  // Drop the replacement characters a split multi-byte sequence leaves.
+  const cut = stripTrailingReplacementChars(buf.subarray(0, maxOutputBytes).toString('utf8'));
   return `${cut}\n... [office text truncated at ${maxOutputBytes} bytes]`;
 }
 

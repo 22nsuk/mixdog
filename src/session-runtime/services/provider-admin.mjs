@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { renameSync } from 'node:fs';
+import { modelProxyClientMode, serverModelCredentialsDisabledError } from '../../runtime/shared/model-proxy-mode.mjs';
 import { sameAccountIdentity } from '../../runtime/agent/orchestrator/providers/lib/oauth-token-utils.mjs';
 import {
   AGENT_PROVIDER_ENV,
@@ -64,6 +65,15 @@ import {
   loginOAuth as loginCommandCodeOAuth,
 } from '../../runtime/agent/orchestrator/providers/command-code-oauth-login.mjs';
 import {
+  describeOpenCodeGoOAuthCredentials,
+  forgetOpenCodeGoOAuthCredentials,
+  hasOpenCodeGoOAuthCredentials,
+} from '../../runtime/agent/orchestrator/providers/opencode-go-oauth-tokens.mjs';
+import {
+  beginOAuthLogin as beginOpenCodeGoOAuthLogin,
+  loginOAuth as loginOpenCodeGoOAuth,
+} from '../../runtime/agent/orchestrator/providers/opencode-go-oauth-login.mjs';
+import {
   beginCursorOAuthLogin,
   describeCursorOAuthCredentials,
   forgetCursorOAuthCredentials,
@@ -100,7 +110,6 @@ import {
 } from '../../runtime/agent/orchestrator/providers/custom-provider-config.mjs';
 
 const API_PROVIDERS = Object.freeze([
-  Object.freeze({ id: 'opencode-go', name: 'OpenCode Go API', env: 'OPENCODE_API_KEY', url: 'https://opencode.ai' }),
   Object.freeze({ id: 'openrouter', name: 'OpenRouter', env: 'OPENROUTER_API_KEY', url: 'https://openrouter.ai/keys' }),
   Object.freeze({
     id: 'openai',
@@ -174,6 +183,16 @@ const OAUTH_PROVIDERS = Object.freeze([
     forget: forgetCommandCodeOAuthCredentials,
     begin: beginCommandCodeOAuthLogin,
     login: loginCommandCodeOAuth,
+  }),
+  Object.freeze({
+    id: 'opencode-go-oauth',
+    name: 'OpenCode Go OAuth',
+    desc: 'Sign in with your OpenCode account (OpenCode Go subscription)',
+    has: hasOpenCodeGoOAuthCredentials,
+    describe: describeOpenCodeGoOAuthCredentials,
+    forget: forgetOpenCodeGoOAuthCredentials,
+    begin: beginOpenCodeGoOAuthLogin,
+    login: loginOpenCodeGoOAuth,
   }),
   Object.freeze({
     id: 'mimo-oauth',
@@ -348,6 +367,7 @@ function oauthAuthFields(p, auth) {
     status: auth.status || (authenticated ? 'Set' : 'Not Set'),
     detail: auth.detail || p.desc,
     expiresAt: auth.expiresAt || null,
+    plan: auth.plan || null,
     usable: auth.usable === true || (auth.usable == null && authenticated),
     refreshable: auth.refreshable === true,
     reauthRequired: auth.reauthRequired === true,
@@ -374,13 +394,16 @@ function oauthProviderSetup(p, providers, checkSecrets) {
 
 const CUSTOM_ID_RE = /^custom-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CUSTOM_TEST_TIMEOUT_MS = 20_000;
-const CUSTOM_DISCOVERY_TIMEOUT_MS = 15_000;
+// A catalog host can sit behind a slow gateway: api.nano-gpt.com's /models
+// answered 503 only after ~44 s, so the wait must outlast that to surface the
+// service's own answer instead of a local timeout.
+const CUSTOM_DISCOVERY_TIMEOUT_MS = 60_000;
 
 export function isCustomProviderConfig(entry) {
   return Boolean(entry) && typeof entry === 'object' && entry.type === 'custom';
 }
 
-export function isCustomProviderId(id) {
+function isCustomProviderId(id) {
   return CUSTOM_ID_RE.test(String(id || ''));
 }
 
@@ -419,6 +442,7 @@ function publicCustomModelRows(rows) {
     model.hidden = item.hidden === true;
     model.manual = item.manual === true;
     for (const key of [
+      'supportsVision',
       'supportsReasoning',
       'reasoningOptions',
       'reasoningLevels',
@@ -478,6 +502,8 @@ function customProviderRow(id, entry, checkSecrets = true) {
   row.auth = keyless ? 'none' : 'key';
   row.discovery = structuredClone(config?.discovery ?? entry.discovery ?? { newModelsHidden: false });
   row.modelOverrides = structuredClone(config?.modelOverrides ?? entry.modelOverrides ?? {});
+  if (config?.wires) row.wires = [...config.wires];
+  if (config?.modelWires) row.modelWires = { ...config.modelWires };
   // A stored config that does not normalize cannot run (the registry skips
   // it): say so explicitly instead of listing it as connected.
   // Every readiness flag consumers read says "not ready" (`stored` stays the
@@ -500,6 +526,7 @@ function customProviderRows(providers, checkSecrets) {
 }
 
 export async function providerSetup(config = {}, options = {}) {
+  if (modelProxyClientMode()) return modelProxyProviderSetup(options);
   const providers = config.providers || {};
   const checkSecrets = options?.checkSecrets !== false;
   const keychain = checkSecrets ? keychainIssueFor(true) : null;
@@ -511,6 +538,64 @@ export async function providerSetup(config = {}, options = {}) {
     ],
     oauth: availableOAuthProviders().map((p) => oauthProviderSetup(p, providers, checkSecrets)),
     local: [builtInLocalProviderSetup(config, options)],
+  };
+}
+
+// The desktop's hidden custom models, in the override shape pickers already read.
+function hiddenModelOverrides(entry) {
+  const ids = Array.isArray(entry?.hiddenModels) ? entry.hiddenModels : [];
+  return Object.fromEntries(ids.filter((id) => typeof id === 'string').map((id) => [id, { hidden: true }]));
+}
+
+// SSH servers have no model credentials. Project only the PC's advertised
+// availability; account identities and credential management stay on the PC.
+async function modelProxyProviderSetup(options) {
+  const { loadModelProxyProviderConfig } = await import(
+    '../../runtime/agent/orchestrator/providers/model-proxy-provider.mjs'
+  );
+  let providers;
+  try {
+    providers = await loadModelProxyProviderConfig({ force: options.force === true, waitMs: 1_000 });
+  } catch (error) {
+    if (error?.code !== 'MODEL_PROXY_UNAVAILABLE') throw error;
+    return { managedByClient: true, unavailable: true, api: [], oauth: [], local: [] };
+  }
+  const project = (definitions, group, type) =>
+    definitions
+      .filter(({ id }) => Object.hasOwn(providers, id))
+      .map(({ id, name }) => {
+        const enabled = providers[id]?.enabled === true;
+        const authState = providers[id]?.authState;
+        // Older desktops advertise only enabled; new desktops distinguish a
+        // missing credential from a transiently unreadable, preserved adapter.
+        const authenticated = authState == null ? enabled : authState === 'present';
+        const usable = enabled && authState !== 'absent';
+        let status = usable ? 'Connected' : 'Not connected';
+        if (enabled && authState === 'unreadable') status = 'Checking…';
+        // Signed in but switched off on the desktop.
+        else if (!enabled && authState === 'present') status = 'Off';
+        return {
+          id,
+          name,
+          group,
+          type,
+          enabled,
+          authenticated,
+          usable,
+          ...(group === 'local' ? { detected: enabled } : {}),
+          ...(type === 'custom' ? { custom: true, modelOverrides: hiddenModelOverrides(providers[id]) } : {}),
+          status,
+        };
+      });
+  const custom = Object.entries(providers)
+    .filter(([id, entry]) => isCustomProviderId(id) && entry?.type === 'custom')
+    // Older desktops advertise no name: the id is the fallback.
+    .map(([id, entry]) => ({ id, name: (typeof entry.name === 'string' && entry.name.trim()) || id }));
+  return {
+    managedByClient: true,
+    api: [...project(API_PROVIDERS, 'api', 'api-key'), ...project(custom, 'api', 'custom')],
+    oauth: project(OAUTH_PROVIDERS, 'oauth', 'oauth'),
+    local: project([{ id: 'mixdog-local', name: 'Local Provider' }], 'local', 'local'),
   };
 }
 
@@ -582,7 +667,12 @@ export function renderProviderStatus(config = {}) {
     .join('\n');
 }
 
+function requireLocalProviderManagement() {
+  if (modelProxyClientMode()) throw serverModelCredentialsDisabledError('Provider account management');
+}
+
 export async function authenticateProvider(provider, secret) {
+  requireLocalProviderManagement();
   const id = String(provider || '').trim();
   if (!id) throw new Error('provider id is required');
 
@@ -603,6 +693,7 @@ export async function authenticateProvider(provider, secret) {
 }
 
 export async function loginOAuthProvider(cfgMod, provider) {
+  requireLocalProviderManagement();
   const id = String(provider || '').trim();
   const oauth = availableOAuthProvider(id);
   if (!oauth) throw new Error(`unknown OAuth provider "${id}"`);
@@ -689,6 +780,7 @@ async function settleOAuthLogin(
 }
 
 export async function beginOAuthProviderLogin(cfgMod, provider, options = {}) {
+  requireLocalProviderManagement();
   const id = String(provider || '').trim();
   const oauth = availableOAuthProvider(id);
   if (!oauth) throw new Error(`unknown OAuth provider "${id}"`);
@@ -761,6 +853,10 @@ export async function beginOAuthProviderLogin(cfgMod, provider, options = {}) {
 }
 
 export function listProviderAccounts(provider) {
+  if (!OAUTH_BY_ID.has(provider)) throw new TypeError('Unknown OAuth provider.');
+  // Client mode: accounts live on the desktop, so this server's roster is
+  // empty whatever this server's own provider availability says.
+  if (modelProxyClientMode()) return { provider, auto: true, useCredits: false, selectedId: null, accounts: [] };
   const oauth = availableOAuthProvider(provider);
   if (!oauth) throw new TypeError('Unknown OAuth provider.');
   const pool = readProviderAccountPool(provider);
@@ -779,6 +875,10 @@ export function listProviderAccounts(provider) {
       let identity = null;
       if (typeof auth.email === 'string' && auth.email.trim()) identity = auth.email.trim();
       else if (typeof auth.accountId === 'string' && auth.accountId.trim()) identity = auth.accountId.trim();
+      // An organization-scoped login names the organization it acts for.
+      if (typeof auth.orgName === 'string' && auth.orgName.trim()) {
+        identity = identity ? `${identity} · ${auth.orgName.trim()}` : auth.orgName.trim();
+      }
       return {
         id: row.id,
         label: row.label,
@@ -805,6 +905,7 @@ function defaultAccountRows(provider, oauth) {
 // Store the implicit signed-in `default` account in the roster, so a change or
 // a usage measurement has a row to land on. Returns the current roster view.
 export async function materializeProviderAccounts(provider) {
+  requireLocalProviderManagement();
   const current = listProviderAccounts(provider);
   if (readProviderAccountPool(provider).accounts.length || !current.accounts.length) return current;
   await registerProviderAccount(provider, 'default', { label: 'Account 1' });
@@ -812,6 +913,7 @@ export async function materializeProviderAccounts(provider) {
 }
 
 export async function updateProviderAccounts(provider, change) {
+  requireLocalProviderManagement();
   await materializeProviderAccounts(provider);
   await changeProviderAccounts(provider, change);
   // Picking an account by hand is a decision to use it NOW, so the refusal
@@ -823,6 +925,7 @@ export async function updateProviderAccounts(provider, change) {
 }
 
 export async function saveProviderApiKey(cfgMod, provider, secret) {
+  requireLocalProviderManagement();
   const id = String(provider || '').trim();
   if (!API_PROVIDER_IDS.has(id)) throw new Error(`unknown API-key provider "${id}"`);
   const value = String(secret || '').trim();
@@ -851,7 +954,9 @@ async function withTimeout(run, ms, label) {
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
       controller.abort();
-      reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`));
+      reject(
+        Object.assign(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`), { code: 'EPROVIDERTIMEOUT' })
+      );
     }, ms);
   });
   try {
@@ -861,8 +966,8 @@ async function withTimeout(run, ms, label) {
   }
 }
 
-function existingCustomEntry(cfgMod, id) {
-  const entry = cfgMod.loadConfig().providers?.[id];
+function existingCustomEntry(config, id) {
+  const entry = config.providers?.[id];
   if (!isCustomProviderId(id) || !isCustomProviderConfig(entry)) throw new Error(`unknown custom provider "${id}"`);
   return entry;
 }
@@ -914,20 +1019,25 @@ function withStoredSettings(input, entry) {
   if (out.schemaVersion === stored.schemaVersion) {
     if (out.discovery === undefined) out.discovery = stored.discovery;
     if (out.modelOverrides === undefined) out.modelOverrides = stored.modelOverrides;
+    // Served wires and per-model wires have no setup field yet: an edit on
+    // the same protocol keeps them (another protocol serves other wires).
+    if ((out.protocol ?? stored.protocol) === stored.protocol) {
+      if (out.wires === undefined && stored.wires) out.wires = stored.wires;
+      if (out.modelWires === undefined && stored.modelWires) out.modelWires = stored.modelWires;
+    }
   }
   return out;
 }
 
-// Validated, secret-free config for `input`; the key (typed, else stored for an
-// existing provider) is resolved separately and never enters the config.
-async function resolveCustomInput(cfgMod, rawInput, options) {
-  let input = inputObject(rawInput);
-  validateCustomTransportFields(input);
+// Validated, secret-free config for `input` over one config snapshot (the
+// stored entry supplies an edit's omitted settings); the key (typed, else
+// stored for an existing provider) is resolved separately and never enters
+// the config. Synchronous, so a caller can merge and commit one snapshot.
+function customInputAt(snapshot, input, normalizeCustomProviderConfig, options) {
   const id = input.id === undefined ? null : input.id;
-  if (id) input = withStoredSettings(input, existingCustomEntry(cfgMod, id));
-  const { normalizeCustomProviderConfig } = await loadCustomProviderModule();
-  const config = normalizeCustomProviderConfig(input, options);
-  const typed = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+  const merged = id ? withStoredSettings(input, existingCustomEntry(snapshot, id)) : input;
+  const config = normalizeCustomProviderConfig(merged, options);
+  const typed = typeof merged.apiKey === 'string' ? merged.apiKey.trim() : '';
   const keyless = config.auth === 'none';
   const envName = keyless ? '' : config.apiKeyEnv || '';
   let apiKey = '';
@@ -936,38 +1046,82 @@ async function resolveCustomInput(cfgMod, rawInput, options) {
   return { id, config, typed: keyless || envName ? '' : typed, apiKey, keyless, envName };
 }
 
-export async function saveCustomProvider(cfgMod, rawInput) {
-  const {
-    id: existingId,
-    config,
-    typed,
-    apiKey,
-    keyless,
-    envName,
-  } = await resolveCustomInput(cfgMod, rawInput, { requireModels: false });
-  if (!keyless && !envName && !apiKey) throw new Error('API key is required');
-  const id = existingId || `custom-${randomUUID()}`;
-  const entry = { ...config, type: 'custom', enabled: config.enabled !== false };
-  const account = SECRET_ACCOUNTS.agentApiKey(id);
-  const previousKey = typed && existingId ? getAgentApiKey(id) : null;
-  if (typed) await saveSecretAsync(account, typed);
-  try {
-    const current = cfgMod.loadConfig();
-    cfgMod.saveConfig(
-      { ...current, providers: { ...(current.providers || {}), [id]: entry } },
-      { baseConfig: current }
-    );
-  } catch (error) {
-    if (typed) {
-      if (previousKey) await saveSecretAsync(account, previousKey);
-      else await deleteSecretAsync(account);
-    }
-    throw error;
-  }
-  return customProviderRow(id, entry);
+async function resolveCustomInput(cfgMod, rawInput, options) {
+  const input = inputObject(rawInput);
+  validateCustomTransportFields(input);
+  const { normalizeCustomProviderConfig } = await loadCustomProviderModule();
+  return customInputAt(cfgMod.loadConfig(), input, normalizeCustomProviderConfig, options);
 }
 
-const MODEL_PATCH_KEYS = new Set(['manual', 'hidden', 'name', 'contextWindow', 'maxOutputTokens', 'reasoning']);
+function requireCustomKey({ apiKey, keyless, envName }) {
+  if (!keyless && !envName && !apiKey) throw new Error('API key is required');
+}
+
+// One key transaction per provider, from reading the rollback key to the
+// config commit or rollback: a failed save restores the key the preceding
+// save committed and never one a newer save wrote. Settings-only saves and
+// other providers never wait.
+const customKeySaves = new Map();
+
+function serializeCustomKeySave(id, run) {
+  const result = (customKeySaves.get(id) || Promise.resolve()).then(run);
+  const settled = result.then(
+    () => {},
+    () => {}
+  );
+  customKeySaves.set(id, settled);
+  settled.then(() => {
+    if (customKeySaves.get(id) === settled) customKeySaves.delete(id);
+  });
+  return result;
+}
+
+export async function saveCustomProvider(cfgMod, rawInput) {
+  requireLocalProviderManagement();
+  // Early verdict: an invalid save never touches the keychain.
+  const resolved = await resolveCustomInput(cfgMod, rawInput, { requireModels: false });
+  requireCustomKey(resolved);
+  const { id: existingId, typed } = resolved;
+  const id = existingId || `custom-${randomUUID()}`;
+  const { normalizeCustomProviderConfig } = await loadCustomProviderModule();
+  const commit = async () => {
+    const account = SECRET_ACCOUNTS.agentApiKey(id);
+    const previousKey = typed && existingId ? getAgentApiKey(id) : null;
+    if (typed) await saveSecretAsync(account, typed);
+    let entry;
+    try {
+      // Synchronous from here: omitted settings come from the config this
+      // save commits over, so an edit that landed during the awaits above (a
+      // model's visibility, a peer save, a removal) is never reverted.
+      const current = cfgMod.loadConfig();
+      const latest = customInputAt(current, rawInput, normalizeCustomProviderConfig, { requireModels: false });
+      requireCustomKey(latest);
+      entry = { ...latest.config, type: 'custom', enabled: latest.config.enabled !== false };
+      cfgMod.saveConfig(
+        { ...current, providers: { ...(current.providers || {}), [id]: entry } },
+        { baseConfig: current }
+      );
+    } catch (error) {
+      if (typed) {
+        if (previousKey) await saveSecretAsync(account, previousKey);
+        else await deleteSecretAsync(account);
+      }
+      throw error;
+    }
+    return customProviderRow(id, entry);
+  };
+  return typed ? serializeCustomKeySave(id, commit) : commit();
+}
+
+const MODEL_PATCH_KEYS = new Set([
+  'manual',
+  'hidden',
+  'name',
+  'contextWindow',
+  'maxOutputTokens',
+  'supportsVision',
+  'reasoning',
+]);
 const REASONING_PATCH_KEYS = new Set(['levels', 'wireFormat', 'wireValues', 'replay']);
 
 // Tri-state merge: undefined preserves, null deletes the property, a value replaces it.
@@ -991,6 +1145,7 @@ function plainPatch(value, allowed, label) {
 // removes the whole override; reasoning is merged key by key with the same
 // tri-state rules. Semantic validation is the runtime normalizer's.
 export async function updateCustomProviderModel(cfgMod, rawId, rawModelId, patch) {
+  requireLocalProviderManagement();
   const id = String(rawId || '').trim();
   const modelId = typeof rawModelId === 'string' ? rawModelId.trim() : '';
   if (!modelId) throw new TypeError('model id is required');
@@ -999,7 +1154,7 @@ export async function updateCustomProviderModel(cfgMod, rawId, rawModelId, patch
   // Everything below is synchronous: the provider is read, patched and saved
   // without yielding, so a concurrent update can never be overwritten by a
   // provider object read before the await above.
-  const entry = existingCustomEntry(cfgMod, id);
+  const entry = existingCustomEntry(cfgMod.loadConfig(), id);
   const current = normalizeCustomProviderConfig(entry, { requireModels: false });
   const overrides = new Map(Object.entries(current.modelOverrides || {}));
   if (patch === null) {
@@ -1049,17 +1204,106 @@ export async function updateCustomProviderModel(cfgMod, rawId, rawModelId, patch
   return customProviderRow(id, saved);
 }
 
+const MODEL_PREFERENCE_KEYS = new Set(['model', 'hidden', 'favorite']);
+export const MODEL_PREFERENCE_CHANGES_MAX = 5_000;
+
+function modelPreferenceChanges(raw) {
+  if (!Array.isArray(raw) || raw.length > MODEL_PREFERENCE_CHANGES_MAX) {
+    throw new TypeError('model preference changes are invalid');
+  }
+  return raw.map((change) => {
+    plainPatch(change, MODEL_PREFERENCE_KEYS, 'model preference change');
+    const model = typeof change.model === 'string' ? change.model.trim() : '';
+    if (!model) throw new TypeError('model id is required');
+    for (const key of ['hidden', 'favorite']) {
+      if (change[key] !== undefined && typeof change[key] !== 'boolean') {
+        throw new TypeError(`model preference ${key} is invalid`);
+      }
+    }
+    return { model, hidden: change.hidden, favorite: change.favorite };
+  });
+}
+
+/**
+ * The model management card's save for one provider: whether each model is
+ * listed in /model (`hidden`) and whether it is a favorite. Both live in the
+ * shared per-model store `modelSettings["provider/model"]` — except a custom
+ * provider's visibility, which stays its own `modelOverrides[id].hidden`, the
+ * store its edit dialog, the runtime catalog and SSH servers already honor.
+ * `hidden: false` is an explicit choice (it also lists a model the family
+ * limit would leave out); an absent field keeps the stored value.
+ */
+export function saveModelPreferences(cfgMod, rawProvider, rawChanges) {
+  const provider = String(rawProvider || '').trim();
+  const changes = modelPreferenceChanges(rawChanges);
+  const full = cfgMod.loadConfig();
+  if (!isKnownProvider(provider, full)) throw new TypeError(`unknown provider "${provider}"`);
+  const custom = isCustomProviderId(provider);
+  const modelSettings = { ...(full.modelSettings || {}) };
+  for (const { model, hidden, favorite } of changes) {
+    const key = `${provider}/${model}`;
+    const setting = { ...(modelSettings[key] || {}) };
+    if (hidden !== undefined && !custom) setting.hidden = hidden;
+    if (favorite === true) setting.favorite = true;
+    else if (favorite === false) delete setting.favorite;
+    if (Object.keys(setting).length) modelSettings[key] = setting;
+    else delete modelSettings[key];
+  }
+  const next = { ...full, modelSettings };
+  const customHidden = custom ? changes.filter((change) => change.hidden !== undefined) : [];
+  if (customHidden.length) {
+    requireLocalProviderManagement();
+    const entry = full.providers[provider];
+    const current = normalizeStoredCustomConfig(entry);
+    const overrides = new Map(Object.entries(current.modelOverrides || {}));
+    for (const { model, hidden } of customHidden) overrides.set(model, { ...overrides.get(model), hidden });
+    const config = normalizeStoredCustomConfig({ ...current, modelOverrides: Object.fromEntries(overrides) });
+    next.providers = {
+      ...full.providers,
+      [provider]: { ...config, type: 'custom', enabled: entry.enabled !== false },
+    };
+  }
+  cfgMod.saveConfig(next, { baseConfig: full });
+  return { provider, changed: changes.length, customCatalogChanged: customHidden.length > 0 };
+}
+
+// Drops every stored model setting and route that names the provider.
+function withoutProviderReferences(config, id) {
+  const next = { ...config };
+  const names = (route) => route?.provider === id;
+  if (next.modelSettings) {
+    next.modelSettings = Object.fromEntries(
+      Object.entries(next.modelSettings).filter(([key]) => !key.startsWith(`${id}/`))
+    );
+  }
+  if (next.agents) {
+    next.agents = Object.fromEntries(Object.entries(next.agents).filter(([, route]) => !names(route)));
+  }
+  if (names(next.webSearchRoute)) delete next.webSearchRoute;
+  if (Array.isArray(next.presets)) {
+    const dropped = new Set(next.presets.filter(names).map((preset) => preset.id));
+    next.presets = next.presets.filter((preset) => !names(preset));
+    if (dropped.has(next.default)) delete next.default;
+  }
+  return next;
+}
+
 export async function removeCustomProvider(cfgMod, rawId) {
+  requireLocalProviderManagement();
   const id = String(rawId || '').trim();
-  existingCustomEntry(cfgMod, id);
+  existingCustomEntry(cfgMod.loadConfig(), id);
+  // Secret first: a real keychain failure (locked, permission) leaves the
+  // provider registered so the removal can be retried. A missing secret
+  // (keyless provider) is not an error.
+  await deleteSecretAsync(SECRET_ACCOUNTS.agentApiKey(id));
   const current = cfgMod.loadConfig();
   const { [id]: _removed, ...providers } = current.providers || {};
-  cfgMod.saveConfig({ ...current, providers }, { baseConfig: current });
-  await deleteSecretAsync(SECRET_ACCOUNTS.agentApiKey(id));
+  cfgMod.saveConfig(withoutProviderReferences({ ...current, providers }, id), { baseConfig: current });
   return { provider: id, type: 'custom', removed: true };
 }
 
 export async function testCustomProvider(cfgMod, rawInput) {
+  requireLocalProviderManagement();
   const { id, config, apiKey } = await resolveCustomInput(cfgMod, rawInput, { requireModels: false });
   try {
     // The first visible manual model needs no discovery; otherwise the first
@@ -1096,11 +1340,16 @@ function customSecrets(apiKey, config) {
 }
 
 export async function discoverCustomProviderModels(cfgMod, rawInput) {
+  requireLocalProviderManagement();
   const { id, config, apiKey } = await resolveCustomInput(cfgMod, rawInput, { requireModels: false });
   try {
     const { createCustomProvider } = await loadCustomProviderModule();
     const provider = await createCustomProvider(id || 'custom-discovery', { ...config, apiKey });
-    const listed = await withTimeout(() => provider.listModels(), CUSTOM_DISCOVERY_TIMEOUT_MS, 'model discovery');
+    const listed = await withTimeout(
+      (signal) => provider.listModels({ signal, timeoutMs: CUSTOM_DISCOVERY_TIMEOUT_MS }),
+      CUSTOM_DISCOVERY_TIMEOUT_MS,
+      'model discovery'
+    );
     const models = publicCustomModelRows(listed);
     // A failed discovery that still left manual rows reports its error too.
     const failure = provider.customDiscoveryError;
@@ -1113,14 +1362,16 @@ export async function discoverCustomProviderModels(cfgMod, rawInput) {
 function discoveryErrorView(error, secrets) {
   const status = Number.isInteger(error?.status) ? error.status : undefined;
   const authKind = status === 401 || status === 403 ? 'authentication' : 'request';
+  const kind = status === 404 || status === 405 ? 'unavailable' : authKind;
   return {
-    kind: status === 404 || status === 405 ? 'unavailable' : authKind,
+    kind: error?.code === 'EPROVIDERTIMEOUT' ? 'timeout' : kind,
     ...(status === undefined ? {} : { status }),
     message: sanitizeCustomError(error, secrets).message,
   };
 }
 
 export async function saveOpenAIUsageSessionKey(cfgMod, secret) {
+  requireLocalProviderManagement();
   const value = String(secret || '').trim();
   if (!value) throw new Error('OpenAI usage session key is required for credit lookup');
   await saveSecretAsync(SECRET_ACCOUNTS.openaiUsageSessionKey, value);
@@ -1128,23 +1379,8 @@ export async function saveOpenAIUsageSessionKey(cfgMod, secret) {
   return { provider: 'openai', type: 'usage-auth', authenticated: true };
 }
 
-export async function saveOpenCodeGoUsageAuth(cfgMod, { apiKey } = {}) {
-  const secret = String(apiKey || '').trim();
-  if (!secret) throw new Error('OpenCode console API key is required for usage lookup');
-  // Subscription meters are read with a console service-account key holding the
-  // `all` permission. The console accepts no other credential for them, so
-  // rejecting anything else here keeps unusable auth out of the keychain.
-  if (!/^(?:oc_sk_|sk-)/.test(secret))
-    throw new Error('OpenCode usage auth must be a console API key (oc_sk_… or sk-…) with all permissions');
-  await saveSecretAsync(SECRET_ACCOUNTS.opencodeGoConsoleKey, secret);
-  // Usage auth may be a different key from the inference key. Only flip the
-  // model provider on when a model key actually exists; otherwise usage-only
-  // setups get routed to the provider with apiKey 'no-key' and fail with 401s.
-  if (getAgentApiKey('opencode-go')) updateConfigProvider(cfgMod, 'opencode-go', { enabled: true });
-  return { provider: 'opencode-go', type: 'usage-auth', authenticated: true };
-}
-
 export async function forgetProviderAuth(cfgModOrProvider, maybeProvider, requestedAccountId) {
+  requireLocalProviderManagement();
   const cfgMod = maybeProvider === undefined ? null : cfgModOrProvider;
   const id = String(maybeProvider === undefined ? cfgModOrProvider : maybeProvider || '').trim();
   const oauth = availableOAuthProvider(id);

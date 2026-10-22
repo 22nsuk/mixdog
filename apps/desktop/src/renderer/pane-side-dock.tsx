@@ -8,6 +8,7 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -18,18 +19,29 @@ import {
 import { FolderTree } from 'lucide-react';
 import type { SideFileChrome } from './side-surface-strip';
 import { DockHeaderRow, PaneDockExpandContext } from './pane-dock-chrome';
+import { useDockPanelActions } from './dock-panel-actions';
 import { PaneDockDiffColumn } from './pane-dock-diff-column';
 import { PaneDockFileSurface } from './PaneDockFileSurface';
 import { SESSION_BOUND_VIEWS } from './pane-dock-toggles';
+import { useVisualizeAvailable } from './visualize-store';
+import { usePhoneSheetBodyReady } from './phone-deferred-mount';
 import { publishPhoneDockSwitch, type PhoneDockSwitchItem } from './phone-dock-switch';
 import {
+  clampPaneDockHeight,
   commitWidthPref,
+  PANE_SIDE_DOCK_DEFAULT_HEIGHT,
+  PANE_SIDE_DOCK_HEIGHT_KEY,
+  PANE_SIDE_DOCK_MIN_HEIGHT,
+  paneDockResizeAxis,
   useDiffColumnResize,
   useDockCellWidth,
   useDockCloseRequest,
   useDockExpansion,
+  useDockHeightDrag,
   useDockMounting,
+  useDockRoomHeight,
   usePanelWidthDrag,
+  useSidePanelPlacement,
   useSideFileProblems,
 } from './pane-side-dock-hooks';
 import { PaneDockSurfaceSlot } from './pane-side-dock-surface-slot';
@@ -53,6 +65,7 @@ import {
 import { getSidePanelMode, sidePanelLayout, subscribeSidePanelMode } from './side-panel-preferences';
 import { t } from './i18n';
 import { getLinkPreview, subscribeLinkPreview } from './link-preview-preference';
+import { syncTranscriptWidths } from './transcript-list-resize-patch';
 import {
   closeSideFileTab,
   keepSideFileTabs,
@@ -613,30 +626,21 @@ function usePaneSideDockStorage(docks: Record<string, PaneSideDockEntry>): void 
   }, [docks]);
 }
 
-/** The single writer for a pane's dock entry: it drops the pane's automation
- *  overlay first, then applies the caller's update, and keeps the previous
- *  entry object when nothing actually changed. */
+/** The single writer for a pane's dock entry: it applies the caller's update
+ *  and keeps the previous entry object when nothing actually changed. */
 function usePaneSideDockPatch({
   groupsRef,
   setDocks,
-  setTemporary,
 }: {
   groupsRef: { current: readonly WorkbenchSideViewGroup[] };
   setDocks: Dispatch<SetStateAction<Record<string, PaneSideDockEntry>>>;
-  setTemporary: Dispatch<SetStateAction<ReadonlyMap<string, symbol>>>;
 }) {
-  // biome-ignore lint/correctness/useExhaustiveDependencies: groupsRef is a ref read at call time; setDocks/setTemporary are useState setters owned by usePaneSideDocks
+  // biome-ignore lint/correctness/useExhaustiveDependencies: groupsRef is a ref read at call time; setDocks is a useState setter owned by usePaneSideDocks
   return useCallback(
     (
       leafId: string,
       updater: (entry: PaneSideDockEntry, firstRoot: WorkbenchSideViewId | null) => PaneSideDockEntry
     ) => {
-      setTemporary((current) => {
-        if (!current.has(leafId)) return current;
-        const next = new Map(current);
-        next.delete(leafId);
-        return next;
-      });
       setDocks((current) => {
         const firstRoot = firstPanelRoot(groupsRef.current);
         const entry = current[leafId] ?? { ...CLOSED_ENTRY, view: firstRoot };
@@ -833,15 +837,13 @@ function usePaneSideDockCommands({
   groupsRef,
   dirtyKeysRef,
   setDocks,
-  setTemporary,
 }: {
   groupsRef: { current: readonly WorkbenchSideViewGroup[] };
   /** Dirty keys of the open file tabs; dirty tabs are never evicted. */
   dirtyKeysRef: { current: ReadonlySet<string> };
   setDocks: Dispatch<SetStateAction<Record<string, PaneSideDockEntry>>>;
-  setTemporary: Dispatch<SetStateAction<ReadonlyMap<string, symbol>>>;
 }) {
-  const patch = usePaneSideDockPatch({ groupsRef, setDocks, setTemporary });
+  const patch = usePaneSideDockPatch({ groupsRef, setDocks });
   return {
     ...usePaneDockViewCommands(patch),
     ...usePaneDockDiffCommands(patch),
@@ -883,19 +885,6 @@ export function usePaneSideDocks({
   const [docks, setDocks] = useState<Record<string, PaneSideDockEntry>>(() =>
     normalizePaneSideDocks(readStoredPaneSideDocks(), leafIds, groups, modeDefaultOpen())
   );
-  // Automation overlays never enter persisted user layout.
-  const [temporary, setTemporary] = useState<ReadonlyMap<string, symbol>>(() => new Map());
-  const temporarySelect = useCallback((leafId: string, _surface: 'browser') => {
-    const token = Symbol();
-    setTemporary((current) => new Map(current).set(leafId, token));
-    return () =>
-      setTemporary((current) => {
-        if (current.get(leafId) !== token) return current;
-        const next = new Map(current);
-        next.delete(leafId);
-        return next;
-      });
-  }, []);
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
   const leafIdsRef = useRef(leafIds);
@@ -904,13 +893,7 @@ export function usePaneSideDocks({
   usePaneSideDockStorage(docks);
   useLinkPreviewKeep(setDocks);
   const dirtyKeysRef = useRef<ReadonlySet<string>>(new Set());
-  const entryFor = useCallback(
-    (leafId: string): PaneSideDockEntry => {
-      const base = docks[leafId] ?? CLOSED_ENTRY;
-      return temporary.has(leafId) ? { ...base, open: true, surface: 'browser' } : base;
-    },
-    [docks, temporary]
-  );
+  const entryFor = useCallback((leafId: string): PaneSideDockEntry => docks[leafId] ?? CLOSED_ENTRY, [docks]);
   const {
     select,
     open,
@@ -928,13 +911,11 @@ export function usePaneSideDocks({
     groupsRef,
     dirtyKeysRef,
     setDocks,
-    setTemporary,
   });
   return {
     docks,
     dirtyKeysRef,
     entryFor,
-    temporarySelect,
     select,
     open,
     setOpen,
@@ -1059,6 +1040,7 @@ function PaneDockChromeRow({
   diff,
   diffView,
   panelTitle,
+  leafId,
   renderDiffHeaderControls,
   onClose,
 }: {
@@ -1066,12 +1048,15 @@ function PaneDockChromeRow({
   diff: PaneSideDockDiff | null;
   diffView: ReturnType<typeof useDiffViewState>;
   panelTitle: string;
+  leafId: string;
   renderDiffHeaderControls?: () => ReactNode;
   onClose(): void;
 }) {
+  const panelActions = useDockPanelActions(leafId);
   return (
     <DockHeaderRow
       className="pane-side-dock-chrome"
+      actions={diffShowing ? undefined : panelActions}
       ariaLabel={diffShowing ? t('Changes') : undefined}
       left={
         diffShowing && diff ? (
@@ -1102,21 +1087,27 @@ function PhoneDockSwitchPublisher({
   activeRoot,
   sessionBound,
   files,
+  keepVisualize,
   onSelect,
 }: {
   groups: readonly WorkbenchSideViewGroup[];
   descriptors: ReadonlyMap<WorkbenchSideViewId, WorkbenchSideViewDescriptor>;
   activeRoot: WorkbenchSideViewId | null;
   sessionBound: boolean;
+  keepVisualize: boolean;
   files?: { active: boolean; onOpen(): void };
   onSelect(id: WorkbenchSideViewId): void;
 }) {
+  // Coding panes list Visualize once the agent has shown something; an agent
+  // chat's own switch (`keepVisualize`) always does, as its header does.
+  const visualizeAvailable = useVisualizeAvailable();
   const items: PhoneDockSwitchItem[] = [];
   if (files) items.push({ id: 'files', label: t('Files'), icon: FolderTree, active: files.active, disabled: false });
   for (const group of groups) {
     const root = group[0];
     const descriptor = root === undefined ? undefined : descriptors.get(root);
     if (!root || !descriptor) continue;
+    if (root === 'visualize' && !keepVisualize && !visualizeAvailable) continue;
     items.push({
       id: root,
       label: descriptor.tooltip || descriptor.label,
@@ -1146,8 +1137,13 @@ type PaneSideDockProps = {
    *  file chip (the unified/split menu by default). */
   renderDiffHeaderControls?: () => ReactNode;
   groups: readonly WorkbenchSideViewGroup[];
+  /** The phone ⋯ pane switch's children when they differ from `groups` (an
+   *  agent-mode chat leaves Changes out; its changes card opens the diff). */
+  switchGroups?: readonly WorkbenchSideViewGroup[];
   descriptors: ReadonlyMap<WorkbenchSideViewId, WorkbenchSideViewDescriptor>;
   focused: boolean;
+  /** The session this pane shows; its browser/terminal X closes this dock. */
+  sessionId?: string;
   /** Hidden-mount only the focused pane's panel shell after boot. */
   prewarm?: boolean;
   onSelect(id: WorkbenchSideViewId): void;
@@ -1208,12 +1204,16 @@ function paneDockShowing(entry: PaneSideDockEntry, openNow: boolean) {
   // The Changes panel view draws its own DockHeaderRow (SessionDiffPane).
   const sessionDiffPanelShowing =
     openNow && entry.surface === '' && (entry.view === 'session-diff' || entry.view === 'visualize');
+  // Width only: the visualize view is a page viewer, so it takes the browser's
+  // wide range and shared width instead of the classic 560px panel column.
+  const widthSurfaceShowing = sessionSurfaceShowing || (openNow && entry.surface === '' && entry.view === 'visualize');
   return {
     browserShowing,
     terminalShowing,
     fileShowing,
     filesShowing,
     sessionSurfaceShowing,
+    widthSurfaceShowing,
     diffShowing,
     sessionDiffPanelShowing,
   };
@@ -1402,18 +1402,22 @@ function renderPaneDockMain(
     diffColumn,
     surfaces,
     surfacesActive,
+    bodyShown,
     asideWidth,
     panelWidthDrag,
     widthRange,
+    widthResizable,
   }: {
     openNow: boolean;
     dockBodyMounted: boolean;
     diffColumn: ReactNode;
     surfaces: ReactNode;
     surfacesActive: boolean;
+    bodyShown: boolean;
     asideWidth: number;
     panelWidthDrag: ReturnType<typeof usePanelWidthDrag>;
     widthRange: ReturnType<typeof dockWidthRange>;
+    widthResizable: boolean;
   }
 ) {
   const { entry, groups, descriptors, onSelect, onMoveGroup, onMoveView, renderView } = props;
@@ -1436,7 +1440,11 @@ function renderPaneDockMain(
         widthOverride={asideWidth}
         onWidthDrag={panelWidthDrag}
         widthRange={widthRange}
-        renderView={(id, active, titleDragProps) => (dockBodyMounted ? renderView(id, active, titleDragProps) : null)}
+        resizable={widthResizable}
+        renderView={(id, active, titleDragProps) =>
+          dockBodyMounted ? renderView(id, active && bodyShown, titleDragProps) : null
+        }
+        hiddenKey={dockBodyMounted ? 'body' : ''}
       />
     </div>
   );
@@ -1447,8 +1455,10 @@ function renderPaneDockMain(
 function renderPaneDockHeader(
   props: Pick<
     PaneSideDockProps,
+    | 'leafId'
     | 'entry'
     | 'groups'
+    | 'switchGroups'
     | 'descriptors'
     | 'focused'
     | 'sessionBound'
@@ -1470,8 +1480,10 @@ function renderPaneDockHeader(
   }
 ) {
   const {
+    leafId,
     entry,
     groups,
+    switchGroups,
     descriptors,
     focused,
     sessionBound = false,
@@ -1499,13 +1511,15 @@ function renderPaneDockHeader(
       diff={entry.diff}
       diffView={diffView}
       panelTitle={activeDescriptor?.title ?? activeDescriptor?.label ?? ''}
+      leafId={leafId}
       renderDiffHeaderControls={renderDiffHeaderControls}
       onClose={onClose}
     />
   );
   const phoneSwitch = mobileSheet && focused && (
     <PhoneDockSwitchPublisher
-      groups={groups}
+      groups={switchGroups ?? groups}
+      keepVisualize={Boolean(switchGroups)}
       descriptors={descriptors}
       activeRoot={activeRoot}
       sessionBound={sessionBound}
@@ -1531,13 +1545,61 @@ function expandedHostStyle(
   };
 }
 
+/** The dock body shows one frame after the dock opens. The opening commit
+ *  carries only the sheet at its final width — the pane's edge, the
+ *  transcript's rewrap and its anchor (syncTranscriptWidths) — so the click
+ *  paints at once; the body's own reveal (style and layout of a retained diff
+ *  tree, a terminal's focus and fit, a view's reopen reset) lands in the next
+ *  commit, inside a sheet whose size no longer changes. A close hides the body
+ *  in its own commit. The phone sheet overlays the conversation (no width
+ *  changes under it) and keeps showing its body with the sheet. */
+export function useDockBodyShown(openNow: boolean, deferred: boolean): boolean {
+  const [shownOpen, setShownOpen] = useState(openNow);
+  useEffect(() => {
+    if (!openNow) {
+      setShownOpen(false);
+      return undefined;
+    }
+    if (shownOpen) return undefined;
+    const frame = window.requestAnimationFrame(() => startTransition(() => setShownOpen(true)));
+    return () => window.cancelAnimationFrame(frame);
+  }, [openNow, shownOpen]);
+  return openNow && (shownOpen || !deferred);
+}
+
 export function PaneSideDock(props: PaneSideDockProps) {
-  const { leafId, entry, groups, focused, prewarm = false, onClose, onCloseDiff, onFocusPane, openFileTab } = props;
+  const {
+    leafId,
+    entry,
+    groups,
+    focused,
+    sessionId = '',
+    prewarm = false,
+    onClose,
+    onCloseDiff,
+    onFocusPane,
+    openFileTab,
+  } = props;
   const openNow = entry.open && (entry.view !== null || entry.surface !== '');
-  const { panelMounted, dockBodyMounted } = useDockMounting(openNow, prewarm);
+  const { panelMounted, dockBodyMounted: dockBodyMountedRaw } = useDockMounting(openNow, prewarm);
+  const mobileSheet = useMobileRemoteSurface();
+  // Phone: the sheet paints and starts sliding before its body mounts.
+  const phoneBodyReady = usePhoneSheetBodyReady(openNow, dockBodyMountedRaw);
+  const dockBodyMounted = dockBodyMountedRaw && phoneBodyReady;
+  const bodyShown = useDockBodyShown(openNow, !mobileSheet);
   const fileProblems = useSideFileProblems((entry.files?.length ?? 0) > 0);
+  // Geometry follows `openNow`; what the body's children treat as showing
+  // (their activity, focus, fit) follows `bodyShown`.
   const showing = paneDockShowing(entry, openNow);
-  const { browserShowing, terminalShowing, sessionSurfaceShowing, diffShowing, sessionDiffPanelShowing } = showing;
+  const bodyShowing = paneDockShowing(entry, bodyShown);
+  const {
+    browserShowing,
+    terminalShowing,
+    sessionSurfaceShowing,
+    widthSurfaceShowing,
+    diffShowing,
+    sessionDiffPanelShowing,
+  } = showing;
   // The dock measures its own pane cell (see resolveDockLayout).
   const { panelPref, setPanelPref, diffPref, setDiffPref, browserPref, setBrowserPref, terminalPref, setTerminalPref } =
     useDockWidthPrefs();
@@ -1545,7 +1607,37 @@ export function PaneSideDock(props: PaneSideDockProps) {
   const diffView = useDiffViewState('pane-side-dock');
   const hostRef = useRef<HTMLDivElement | null>(null);
   const cellWidth = useDockCellWidth(hostRef, openNow);
-  const { expanded, expandedRect, restWidth, toggleExpanded } = useDockExpansion(
+  // Desktop placement (Settings → Side panel position); the phone sheet keeps
+  // its overlay grammar, so it always resolves to the right-hand layout.
+  const desktopPlacement = useSidePanelPlacement();
+  const placement = mobileSheet ? 'right' : desktopPlacement;
+  const bottom = paneDockResizeAxis(placement) === 'height';
+  const [heightPref, setHeightPref] = useState(() =>
+    readStoredWidth(PANE_SIDE_DOCK_HEIGHT_KEY, PANE_SIDE_DOCK_MIN_HEIGHT, 4_000, PANE_SIDE_DOCK_DEFAULT_HEIGHT)
+  );
+  // The chat floor is held against the room the strip, Problems panel and
+  // footer leave, re-measured as they open, close or resize.
+  const dockRoom = useDockRoomHeight(hostRef, openNow && bottom);
+  const dockHeight = clampPaneDockHeight(heightPref, dockRoom);
+  const heightDrag = useDockHeightDrag({
+    heightPref,
+    setHeightPref,
+    renderedHeight: dockHeight,
+    room: dockRoom,
+    storageKey: PANE_SIDE_DOCK_HEIGHT_KEY,
+  });
+  // The pane cell switches to its one-column grid (dock row under the chat)
+  // through this flag rather than a :has() over the whole cell.
+  const hostMounted = groups.length > 0;
+  useLayoutEffect(() => {
+    const cell = hostRef.current?.parentElement;
+    if (!cell || !bottom || !hostMounted) return undefined;
+    cell.dataset.dockPlacement = 'bottom';
+    return () => {
+      delete cell.dataset.dockPlacement;
+    };
+  }, [bottom, hostMounted]);
+  const { expanded, expandedRect, restWidth, restHeight, toggleExpanded } = useDockExpansion(
     hostRef,
     entry.surface,
     entry.view,
@@ -1553,7 +1645,7 @@ export function PaneSideDock(props: PaneSideDockProps) {
   );
   const panelWidthDrag = usePanelWidthDrag({
     terminalShowing,
-    sessionSurfaceShowing,
+    sessionSurfaceShowing: widthSurfaceShowing,
     terminalPref,
     setTerminalPref,
     browserPref,
@@ -1589,30 +1681,62 @@ export function PaneSideDock(props: PaneSideDockProps) {
     browserShowing || terminalShowing || sessionDiffPanelShowing,
     sessionDiffPanelShowing ? (entry.view ?? '') : entry.surface,
     focused,
-    onClose
+    onClose,
+    sessionId
   );
-  const mobileSheet = useMobileRemoteSurface();
+  // The pane edge this render commits (recorded below); its layout effect
+  // re-measures the transcripts it narrowed or widened in the same frame.
+  const committedEdge = useRef('');
+  const syncedEdge = useRef('');
+  useLayoutEffect(() => {
+    if (committedEdge.current === syncedEdge.current) return;
+    syncedEdge.current = committedEdge.current;
+    syncTranscriptWidths();
+  });
   if (groups.length === 0) return null;
   const sheetFrame = mobileSheet ? 0 : PANE_SIDE_DOCK_SHEET_FRAME_WIDTH;
   const session = dockSessionWidths(terminalShowing, terminalPref, browserPref);
-  const room = cellWidth > 0 ? cellWidth - DESKTOP_WORKSPACE_MIN_WIDTH - sheetFrame : Number.POSITIVE_INFINITY;
-  const { diffDesired, twoDepth, pairShowing, overlay, baseAsideWidth, diffWidth } = resolveDockLayout({
+  // Below the chat the unit owns the cell's whole width (its two borders
+  // aside): no conversation floor to leave beside it, so it never overlays.
+  let room = Number.POSITIVE_INFINITY;
+  if (cellWidth > 0) room = bottom ? cellWidth - 2 : cellWidth - DESKTOP_WORKSPACE_MIN_WIDTH - sheetFrame;
+  const {
+    diffDesired,
+    twoDepth,
+    pairShowing,
+    overlay: sideOverlay,
+    baseAsideWidth,
+    diffWidth,
+  } = resolveDockLayout({
     cellWidth,
     room,
     openNow,
     mobileSheet,
     diffShowing,
-    sessionSurfaceShowing,
+    sessionSurfaceShowing: widthSurfaceShowing,
     sessionMin: session.min,
     sessionPref: session.pref,
     panelPref,
     diffPref,
   });
+  const overlay = sideOverlay && !bottom;
   const dockExpanded = expanded && openNow && !mobileSheet;
   const dockExpandValue = mobileSheet ? null : { expanded: dockExpanded, toggle: toggleExpanded };
   const asideWidth = expandedAsideWidth(baseAsideWidth, expandedRect, pairShowing ? diffWidth : 0);
-  const diffContext: DockDiffSurfaceContext = { diffShowing, diffView, openFileTab, onCloseDiff };
-  const surfaces = renderPaneDockSurfaces(props, { showing, dockBodyMounted, twoDepth, fileProblems, diffContext });
+  committedEdge.current = `${placement}|${openNow}|${overlay}|${dockExpanded}|${asideWidth}|${pairShowing ? diffWidth : 0}|${bottom ? dockHeight : 0}`;
+  const diffContext: DockDiffSurfaceContext = {
+    diffShowing: bodyShowing.diffShowing,
+    diffView,
+    openFileTab,
+    onCloseDiff,
+  };
+  const surfaces = renderPaneDockSurfaces(props, {
+    showing: bodyShowing,
+    dockBodyMounted,
+    twoDepth,
+    fileProblems,
+    diffContext,
+  });
   // File Diff: PAIRED to the LEFT of the panel view under the same header
   // selection; a project-tool click replaces the file in place. The narrow
   // 2뎁스 stage retires the pair column — the diff stacks over the panel.
@@ -1625,19 +1749,23 @@ export function PaneSideDock(props: PaneSideDockProps) {
     </PaneDockDiffColumn>
   );
   const { chromeRow, phoneSwitch } = renderPaneDockHeader(props, { openNow, mobileSheet, showing, diffView });
+  // The spacer holds the dock's row (below) or column (beside) while expanded.
+  const spacerStyle = bottom ? { height: restHeight.current } : { width: restWidth.current };
   return (
     <PaneDockExpandContext.Provider value={dockExpandValue}>
-      {dockExpanded && expandedRect && (
-        <div className="pane-side-dock-spacer" style={{ width: restWidth.current }} aria-hidden="true" />
-      )}
+      {dockExpanded && expandedRect && <div className="pane-side-dock-spacer" style={spacerStyle} aria-hidden="true" />}
       <div
         className="pane-side-dock"
         ref={hostRef}
         data-pane-id={leafId}
+        data-placement={placement}
         data-open={openNow ? 'true' : 'false'}
         data-overlay={overlay ? 'true' : 'false'}
         data-expanded={dockExpanded ? 'true' : 'false'}
-        style={expandedHostStyle(dockExpanded, expandedRect)}
+        data-body-pending={openNow && !bodyShown ? 'true' : undefined}
+        style={
+          expandedHostStyle(dockExpanded, expandedRect) ?? (bottom && openNow ? { height: dockHeight } : undefined)
+        }
         onPointerDownCapture={
           focused
             ? undefined
@@ -1646,6 +1774,15 @@ export function PaneSideDock(props: PaneSideDockProps) {
               }
         }
       >
+        {bottom && openNow && !dockExpanded && (
+          // biome-ignore lint/a11y/useSemanticElements: a draggable resize handle, not a thematic break; <hr> brings its own border and margins.
+          <div
+            className="pane-side-dock-height-resize"
+            role="separator"
+            aria-orientation="horizontal"
+            {...heightDrag}
+          />
+        )}
         {chromeRow}
         {phoneSwitch}
         {panelMounted &&
@@ -1655,9 +1792,13 @@ export function PaneSideDock(props: PaneSideDockProps) {
             diffColumn,
             surfaces,
             surfacesActive: sessionSurfaceShowing || twoDepth,
+            bodyShown,
             asideWidth,
             panelWidthDrag,
-            widthRange: dockWidthRange(sessionSurfaceShowing, session),
+            widthRange: dockWidthRange(widthSurfaceShowing, session),
+            // Below the chat the panel fills the width; only the diff pair
+            // keeps its width edge (between the diff and the panel).
+            widthResizable: !bottom || pairShowing,
           })}
       </div>
     </PaneDockExpandContext.Provider>

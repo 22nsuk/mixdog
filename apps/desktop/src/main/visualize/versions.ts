@@ -11,7 +11,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
-import type { VisualizeVersionView } from '../../shared/visualize';
+import { MAX_VERSION_TURNS, type VisualizeVersionTurn, type VisualizeVersionView } from '../../shared/visualize';
 import { insidePath } from './targets';
 import { evictVersions, floorBytes } from './version-eviction';
 import { collectSnapshot, relOf, type SnapshotSource, snapshotHash } from './version-snapshot';
@@ -32,7 +32,13 @@ export interface VisualizeVersion extends VisualizeVersionView {
   assets: string[];
   hash: string;
   bytes: number;
+  /** The chat card's picture of this version (a PNG data URL), taken when
+   *  the turn that made it ended; also kept as `<dir>.png`. */
+  thumbnail?: string;
 }
+
+/** Where a version's card picture is kept beside its folder. */
+const thumbnailFile = (version: Pick<VisualizeVersion, 'dir'>): string => `${version.dir}.png`;
 
 export interface VisualizeVersionLimits {
   maxVersionsPerTab?: number;
@@ -43,7 +49,9 @@ export interface VisualizeVersionLimits {
 interface TabHistory {
   versions: VisualizeVersion[];
   next: number;
-  /** Serializes snapshots of one tab, so equal content never lands twice. */
+  /** Serializes snapshots and card picture writes of one tab, so equal
+   *  content never lands twice and no file lands while the tab's folder is
+   *  removed. Never rejects. */
   chain: Promise<unknown>;
 }
 
@@ -103,10 +111,7 @@ const outsideError = (rel: string) => new Error(`${rel} is outside the working d
 /** Where a restore may write `path` right now: its folder re-resolved inside
  *  `root` (the resolved cwd), and the file in it, which must not be a link
  *  (never followed) or anything but a file. */
-export async function restoreDestination(
-  root: string,
-  path: string
-): Promise<{ parent: string; file: string }> {
+export async function restoreDestination(root: string, path: string): Promise<{ parent: string; file: string }> {
   const rel = relOf(root, path);
   if (!insidePath(root, path)) throw outsideError(rel);
   let parent: string;
@@ -141,7 +146,10 @@ export async function writeFileInside(
   root: string,
   path: string,
   data: Buffer,
-  hooks: { beforeOpen?(): unknown; /** Fail with EEXIST instead of writing over an existing file. */ exclusive?: boolean } = {}
+  hooks: {
+    beforeOpen?(): unknown /** Fail with EEXIST instead of writing over an existing file. */;
+    exclusive?: boolean;
+  } = {}
 ): Promise<void> {
   const rel = relOf(root, path);
   const { file } = await restoreDestination(root, path);
@@ -150,9 +158,7 @@ export async function writeFileInside(
   if (expected?.isSymbolicLink()) throw new Error(`${rel} is a link; restore does not follow it`);
   if (expected && !expected.isFile()) throw new Error(`${rel} is not a file`);
   await hooks.beforeOpen?.();
-  const handle = expected
-    ? await open(file, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0))
-    : await open(file, 'wx');
+  const handle = expected ? await open(file, constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0)) : await open(file, 'wx');
   try {
     const opened = await handle.stat({ bigint: true });
     const real = await realpath(file).catch(() => null);
@@ -184,6 +190,81 @@ export async function writeFileInside(
   }
 }
 
+/** The tab's history, created on first use. */
+function historyIn(sessions: Map<string, Map<string, TabHistory>>, sessionId: string, tabId: string): TabHistory {
+  let tabs = sessions.get(sessionId);
+  if (!tabs) {
+    tabs = new Map();
+    sessions.set(sessionId, tabs);
+  }
+  let history = tabs.get(tabId);
+  if (!history) {
+    history = { versions: [], next: 1, chain: Promise.resolve() };
+    tabs.set(tabId, history);
+  }
+  return history;
+}
+
+interface SnapshotEnv {
+  sessions: Map<string, Map<string, TabHistory>>;
+  root(): Promise<string>;
+  sessionFloor(sessionId: string, tabId: string): number;
+  evict(sessionId: string): Promise<void>;
+  maxSessionBytes: number;
+  maxSnapshotBytes: number;
+}
+
+/** One queued snapshot of a tab's files (see the store's `snapshot`). */
+async function takeSnapshot(
+  { sessions, root, sessionFloor, evict, maxSessionBytes, maxSnapshotBytes }: SnapshotEnv,
+  history: TabHistory,
+  sessionId: string,
+  tabId: string,
+  cwd: string,
+  sources: SnapshotSource[],
+  label: string | undefined
+): Promise<VisualizeVersion | null> {
+  const collected = await collectSnapshot(cwd, sources, maxSnapshotBytes);
+  if (!collected) return null;
+  const hash = snapshotHash(collected.files, collected.panes);
+  if (history.versions.at(-1)?.hash === hash) return null;
+  if (sessionFloor(sessionId, tabId) + collected.bytes > maxSessionBytes) {
+    throw new VersionHistoryFullError(maxSessionBytes);
+  }
+  const n = history.next;
+  history.next += 1;
+  const dir = join(await root(), sessionFolder(sessionId), folderName(tabId), String(n));
+  for (const [rel, data] of collected.files) {
+    const path = join(dir, ...rel.split('/'));
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, data);
+  }
+  if (sessions.get(sessionId)?.get(tabId) !== history) {
+    // The tab closed while its files were written.
+    await rm(dir, { recursive: true, force: true });
+    return null;
+  }
+  // Checked again together with the commit (no await in between): other
+  // tabs' snapshots or the shown version may have changed meanwhile.
+  if (sessionFloor(sessionId, tabId) + collected.bytes > maxSessionBytes) {
+    await rm(dir, { recursive: true, force: true });
+    throw new VersionHistoryFullError(maxSessionBytes);
+  }
+  const version: VisualizeVersion = {
+    n,
+    at: Date.now(),
+    ...(label ? { label } : {}),
+    dir,
+    panes: collected.panes,
+    assets: collected.assets,
+    hash,
+    bytes: collected.bytes,
+  };
+  history.versions.push(version);
+  await evict(sessionId);
+  return version;
+}
+
 export function createVisualizeVersionStore(
   options: {
     directory: string;
@@ -195,6 +276,9 @@ export function createVisualizeVersionStore(
   const maxSessionBytes = options.maxSessionBytes ?? MAX_SESSION_VERSION_BYTES;
   const maxSnapshotBytes = options.maxSnapshotBytes ?? MAX_SNAPSHOT_BYTES;
   const sessions = new Map<string, Map<string, TabHistory>>();
+  /** Closed tabs' drops still running: their history is already forgotten, so
+   *  `settled()` waits for them here. */
+  const drops = new Set<Promise<void>>();
 
   let ready: Promise<string> | null = null;
   const root = (): Promise<string> => {
@@ -209,20 +293,6 @@ export function createVisualizeVersionStore(
     return ready;
   };
 
-  const historyOf = (sessionId: string, tabId: string): TabHistory => {
-    let tabs = sessions.get(sessionId);
-    if (!tabs) {
-      tabs = new Map();
-      sessions.set(sessionId, tabs);
-    }
-    let history = tabs.get(tabId);
-    if (!history) {
-      history = { versions: [], next: 1, chain: Promise.resolve() };
-      tabs.set(tabId, history);
-    }
-    return history;
-  };
-
   /** The version `sessionId`'s tab `tabId` shows (never evicted), or null. */
   const pinnedIn = (sessionId: string) => (tabId: string) => options.pinned?.(sessionId, tabId) ?? null;
   const sessionFloor = (sessionId: string, tabId: string): number =>
@@ -233,8 +303,15 @@ export function createVisualizeVersionStore(
     const tabs = sessions.get(sessionId);
     if (!tabs) return;
     const removed = evictVersions(tabs, pinnedIn(sessionId), maxPerTab, maxSessionBytes);
-    await Promise.all(removed.map((version) => rm(version.dir, { recursive: true, force: true })));
+    await Promise.all(
+      removed.flatMap((version) => [
+        rm(version.dir, { recursive: true, force: true }),
+        rm(thumbnailFile(version), { force: true }),
+      ])
+    );
   };
+
+  const snapshotEnv: SnapshotEnv = { sessions, root, sessionFloor, evict, maxSessionBytes, maxSnapshotBytes };
 
   return {
     /** Keep the tab's current files as a new version unless they match the
@@ -248,48 +325,8 @@ export function createVisualizeVersionStore(
       sources: SnapshotSource[],
       label?: string
     ): Promise<VisualizeVersion | null> {
-      const history = historyOf(sessionId, tabId);
-      const run = async (): Promise<VisualizeVersion | null> => {
-        const collected = await collectSnapshot(cwd, sources, maxSnapshotBytes);
-        if (!collected) return null;
-        const hash = snapshotHash(collected.files, collected.panes);
-        if (history.versions.at(-1)?.hash === hash) return null;
-        if (sessionFloor(sessionId, tabId) + collected.bytes > maxSessionBytes) {
-          throw new VersionHistoryFullError(maxSessionBytes);
-        }
-        const n = history.next;
-        history.next += 1;
-        const dir = join(await root(), sessionFolder(sessionId), folderName(tabId), String(n));
-        for (const [rel, data] of collected.files) {
-          const path = join(dir, ...rel.split('/'));
-          await mkdir(dirname(path), { recursive: true });
-          await writeFile(path, data);
-        }
-        if (sessions.get(sessionId)?.get(tabId) !== history) {
-          // The tab closed while its files were written.
-          await rm(dir, { recursive: true, force: true });
-          return null;
-        }
-        // Checked again together with the commit (no await in between): other
-        // tabs' snapshots or the shown version may have changed meanwhile.
-        if (sessionFloor(sessionId, tabId) + collected.bytes > maxSessionBytes) {
-          await rm(dir, { recursive: true, force: true });
-          throw new VersionHistoryFullError(maxSessionBytes);
-        }
-        const version: VisualizeVersion = {
-          n,
-          at: Date.now(),
-          ...(label ? { label } : {}),
-          dir,
-          panes: collected.panes,
-          assets: collected.assets,
-          hash,
-          bytes: collected.bytes,
-        };
-        history.versions.push(version);
-        await evict(sessionId);
-        return version;
-      };
+      const history = historyIn(sessions, sessionId, tabId);
+      const run = () => takeSnapshot(snapshotEnv, history, sessionId, tabId, cwd, sources, label);
       const result = history.chain.then(run, run);
       history.chain = result.catch(() => {});
       return result;
@@ -298,18 +335,69 @@ export function createVisualizeVersionStore(
       return [...(sessions.get(sessionId)?.get(tabId)?.versions ?? [])];
     },
     get(sessionId: string, tabId: string, n: number): VisualizeVersion | undefined {
-      return sessions.get(sessionId)?.get(tabId)?.versions.find((version) => version.n === n);
+      return sessions
+        .get(sessionId)
+        ?.get(tabId)
+        ?.versions.find((version) => version.n === n);
+    },
+    /** Keep `thumbnail` (a PNG data URL) as kept version `n`'s card picture:
+     *  in memory at once, and best effort beside its folder as part of the
+     *  tab's serialized work (`settled()` and `drop()` wait for the file).
+     *  False without that version. */
+    keepThumbnail(sessionId: string, tabId: string, n: number, thumbnail: string): boolean {
+      const history = sessions.get(sessionId)?.get(tabId);
+      const version = history?.versions.find((candidate) => candidate.n === n);
+      if (!history || !version) return false;
+      version.thumbnail = thumbnail;
+      const png = Buffer.from(thumbnail.slice(thumbnail.indexOf(',') + 1), 'base64');
+      history.chain = history.chain.then(async () => {
+        // The tab closed or the version was evicted while this waited: no file.
+        if (sessions.get(sessionId)?.get(tabId) !== history || !history.versions.includes(version)) return;
+        try {
+          await writeFile(thumbnailFile(version), png);
+        } catch (error) {
+          console.warn('visualize card picture write failed:', (error as Error).message);
+        }
+      });
+      return true;
+    },
+    /** Remember that the turn `turn` ended on kept version `n` (it lives and
+     *  goes with the version). False without that version. */
+    keepTurn(sessionId: string, tabId: string, n: number, turn: VisualizeVersionTurn): boolean {
+      const version = sessions
+        .get(sessionId)
+        ?.get(tabId)
+        ?.versions.find((candidate) => candidate.n === n);
+      if (!version) return false;
+      version.turns = [...(version.turns ?? []).filter((one) => one.since !== turn.since), turn].slice(
+        -MAX_VERSION_TURNS
+      );
+      return true;
+    },
+    /** Resolves once every tab's queued snapshots and picture writes finished,
+     *  and every closed tab's drop (which waits for its own writes) is done. */
+    async settled(): Promise<void> {
+      await Promise.all([
+        ...[...sessions.values()].flatMap((tabs) => [...tabs.values()].map((history) => history.chain)),
+        ...[...drops].map((pending) => pending.catch(() => {})),
+      ]);
     },
     /** Forget a closed tab and delete its files. */
-    async drop(sessionId: string, tabId: string): Promise<void> {
-      const tabs = sessions.get(sessionId);
-      const history = tabs?.get(tabId);
-      if (!tabs || !history) return;
-      tabs.delete(tabId);
-      if (!tabs.size) sessions.delete(sessionId);
-      await history.chain;
-      if (!ready) return;
-      await rm(join(await root(), sessionFolder(sessionId), folderName(tabId)), { recursive: true, force: true });
+    drop(sessionId: string, tabId: string): Promise<void> {
+      const run = (async () => {
+        const tabs = sessions.get(sessionId);
+        const history = tabs?.get(tabId);
+        if (!tabs || !history) return;
+        tabs.delete(tabId);
+        if (!tabs.size) sessions.delete(sessionId);
+        await history.chain;
+        if (!ready) return;
+        await rm(join(await root(), sessionFolder(sessionId), folderName(tabId)), { recursive: true, force: true });
+      })();
+      drops.add(run);
+      const forget = () => drops.delete(run);
+      run.then(forget, forget);
+      return run;
     },
   };
 }

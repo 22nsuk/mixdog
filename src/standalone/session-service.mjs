@@ -23,6 +23,8 @@ import { createViewerRegistry } from './session-service/viewers.mjs';
 import { createSessionEntries } from './session-service/entries.mjs';
 import { createSessionCalls } from './session-service/session-calls.mjs';
 import { createQuotaResumeScheduler } from './session-service/quota-resume.mjs';
+import { createAgentRouteFollow } from './session-service/agent-route-follow.mjs';
+import { registerDelegatedApprovalOpener } from '../runtime/shared/delegated-approval-host.mjs';
 
 const EXTERNAL_SESSION_ACTIONS = new Set([
   ...SESSION_READ_ACTION_SET,
@@ -205,6 +207,17 @@ export function createSessionService({
     retainUnwatched: retention.retainUnwatched,
     createSession: calls.createSession,
   });
+  // A sub-agent's approval shows in its top-level chat; one not loaded is
+  // brought up so the copy (and its notifications) appear there.
+  const unregisterApprovalOpener = registerDelegatedApprovalOpener((sessionId) => calls.materializeSession(sessionId));
+  // A bot's saved route reaches its hosted home and room-member chats from their next turn.
+  const agentRouteFollow = createAgentRouteFollow({
+    sessionsById,
+    sessionOwner: projection.sessionOwner,
+    advance: projection.advance,
+    publishStep: projection.publishStep,
+    log,
+  });
   const quotaUsableReader = typeof readQuotaUsable === 'function' ? readQuotaUsable : async () => false;
   const quotaResume = quotaResumeStore
     ? createQuotaResumeScheduler({
@@ -219,6 +232,8 @@ export function createSessionService({
   function stop(reason = 'service stop') {
     if (stopPromise) return stopPromise;
     closed = true;
+    unregisterApprovalOpener();
+    agentRouteFollow.unsubscribe();
     quotaResume?.stop();
     stopPromise = Promise.resolve().then(async () => {
       try {
@@ -235,6 +250,28 @@ export function createSessionService({
       await Promise.allSettled([...pendingDisposals]);
     });
     return stopPromise;
+  }
+
+  /** Whether the runtime hosting `sessionId` is mid-turn or holds queued input. */
+  function liveSessionBusy(sessionId) {
+    const owner = projection.sessionOwner(sessionId);
+    return Boolean(owner) && retention.stateBusy(owner.runtime?.getState?.());
+  }
+
+  /** Whether the runtime hosting `sessionId` shows an approval card waiting on the user. */
+  function liveSessionAwaitingApproval(sessionId) {
+    return Boolean(projection.sessionOwner(sessionId)?.runtime?.getState?.()?.toolApproval);
+  }
+
+  /** Show a transcript notice in the hosted runtime of `sessionId` (no turn)
+   *  and publish it to its views; false when no runtime hosts it. */
+  function pushLiveSessionNotice(sessionId, { text, tone = 'info', ...options } = {}) {
+    const owner = projection.sessionOwner(sessionId);
+    if (typeof owner?.runtime?.pushNotice !== 'function') return false;
+    owner.runtime.pushNotice(text, tone, { ...options, transcript: true });
+    const step = projection.advance(owner);
+    if (step.changed) projection.publishStep(owner, step);
+    return true;
   }
 
   function getStatus() {
@@ -282,6 +319,9 @@ export function createSessionService({
     },
     methods: {
       ...calls,
+      liveSessionBusy,
+      liveSessionAwaitingApproval,
+      pushLiveSessionNotice,
       stop,
       startQuotaResume: () => quotaResume?.start(),
       runDueQuotaResumes: () => quotaResume?.tick() ?? Promise.resolve(),

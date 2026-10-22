@@ -6,7 +6,9 @@ import {
 } from './settings-contract.mjs';
 import { MEDIA_KINDS } from '../../runtime/media/tool-defs.mjs';
 import { INSTRUCTION_FILES_MODES } from '../../runtime/shared/instruction-files-mode.mjs';
+import { AUTO_EFFORT_BASES } from '../../runtime/agent/orchestrator/providers/auto-effort.mjs';
 import { WORKTREE_NEW_TASK_DEFAULTS } from '../../runtime/shared/worktrees/settings.mjs';
+import { CONNECTOR_IDS } from '../../runtime/shared/connector-catalog.mjs';
 
 /** Built-in `setup` tool: the model's handle on a Mixdog user's persisted
  *  configuration. The description is a contract only; how to use each action
@@ -68,7 +70,7 @@ export const SETUP_OPEN_TARGETS = Object.freeze([
 // Runtime dispatch contract. A trailing ? denotes an optional field. Keep
 // this out of the wire schema: field descriptions already name their actions.
 export const SETUP_ACTION_FIELDS = Object.freeze({
-  status: 'domain?',
+  status: 'domain? detail?',
   open: 'target',
   set_route: 'route',
   set_agent_route: 'agent route',
@@ -82,6 +84,7 @@ export const SETUP_ACTION_FIELDS = Object.freeze({
   set_recap_enabled: 'enabled',
   set_web_search_enabled: 'enabled',
   set_instruction_files: 'instructionFiles',
+  set_auto_effort_base: 'autoEffortBase',
   set_builtin_enabled: 'name enabled',
   install_builtin: 'name',
   install_local_model: 'modelId',
@@ -110,6 +113,7 @@ export const SETUP_ACTION_FIELDS = Object.freeze({
   set_plugin_enabled: 'name enabled',
   remove_plugin: 'name',
   enable_plugin_mcp: 'name',
+  connect_connector: 'connector',
   set_worktree_settings: 'worktree',
   ...SETUP_EXTENDED_ACTION_FIELDS,
 });
@@ -136,6 +140,10 @@ const ROUTE_SCHEMA = {
     model: { type: 'string' },
     effort: { type: 'string' },
     fast: { type: 'boolean' },
+    autoEffort: {
+      type: 'boolean',
+      description: 'Main and agent routes only: Auto reasoning for this route; omitted = preserved.',
+    },
     modelParameters: { type: 'object', additionalProperties: { type: 'string' } },
     // A typed enum is unrepresentable on Gemini; the bounds project everywhere
     // and the executor rejects values that are not a multiple of 10.
@@ -152,12 +160,24 @@ const ROUTE_SCHEMA = {
   },
 };
 
+ROUTE_SCHEMA.properties.fallbacks = {
+  type: 'array',
+  description:
+    'Lead (set_route), agent (bots included) and Web Search routes only: ordered fallback models tried when the model hits its usage limit or is unavailable; [] clears the list.',
+  items: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['provider', 'model'],
+    properties: Object.fromEntries(Object.entries(ROUTE_SCHEMA.properties).filter(([key]) => key !== 'disabled')),
+  },
+};
+
 export const SETUP_TOOL_DEFS = Object.freeze([
   {
     name: 'setup',
     title: 'Setup',
     description:
-      "Read or change this Mixdog installation's settings through the runtime. Load the setup skill first (local-provider for managed local-model installation). status reads one domain; open navigates the attached app to a settings surface. Secrets (API keys, OAuth) are never accepted. Changes apply to new sessions unless the result says otherwise.",
+      "Read or change this Mixdog installation's settings through the runtime. Load the setup skill first (local-provider for managed local-model installation). status reads one domain; open navigates the attached app to a settings surface; list_models returns a provider index, then one provider's paged compact rows, then one model's full options (catalog.model). Results are compact JSON. Secrets (API keys, OAuth) are never accepted. Changes apply to new sessions unless the result says otherwise.",
     annotations: {
       title: 'Setup',
       readOnlyHint: false,
@@ -176,6 +196,11 @@ export const SETUP_TOOL_DEFS = Object.freeze([
           type: 'string',
           enum: [...SETUP_STATUS_DOMAINS],
           description: 'status: which domain to read; default summary.',
+        },
+        detail: {
+          type: 'boolean',
+          description:
+            'status providers: full rows for every provider (key URLs, expiry, account ids) instead of configured providers only.',
         },
         target: {
           type: 'string',
@@ -202,8 +227,16 @@ export const SETUP_TOOL_DEFS = Object.freeze([
           additionalProperties: false,
           properties: {
             enabled: { type: 'boolean' },
-            duration: { type: 'string', description: 'Idle window such as "45m" or "2h"; minimum 1m.' },
-            provider: { type: 'string', description: 'Scope the duration to one provider.' },
+            duration: {
+              type: 'string',
+              description:
+                'Idle window such as "45m" or "2h" (minimum 1m), or "unlimited"/"never" to stop idle clearing. Without provider, "unlimited" applies to the current route provider.',
+            },
+            provider: {
+              type: 'string',
+              description:
+                'Scope the duration to one provider; "default" is the fallback for providers without a built-in window.',
+            },
             reset: { type: 'boolean', description: 'Restore the global idle duration default.' },
             resetProvider: { type: 'boolean', description: 'Restore the given provider idle duration default.' },
             minContextPercent: { type: 'number', minimum: 0, maximum: 100 },
@@ -229,6 +262,12 @@ export const SETUP_TOOL_DEFS = Object.freeze([
           description:
             "set_instruction_files: which user instruction files new sessions load (global ~/.codex/AGENTS.md, ~/.claude/CLAUDE.md, then the Project root's AGENTS.md/CLAUDE.md).",
         },
+        autoEffortBase: {
+          type: 'string',
+          enum: [...AUTO_EFFORT_BASES],
+          description:
+            "set_auto_effort_base: the reasoning effort Auto works around (global; default medium). Auto moves one step down to two steps up from it, within the model's supported efforts.",
+        },
         name: {
           type: 'string',
           description: `set_builtin_enabled: ${SETUP_BUILTIN_TOGGLE_FEATURES.join('|')}; install_builtin also accepts memory. Memory toggles use set_memory_enabled. revoke_linked_device: client id from status connection, not its display name; set_developer_option: option id from status developer; read_definition/delete_definition: the definition id; reconnect_mcp: optional MCP server name (omit for all); else MCP/plugin/provider id.`,
@@ -236,7 +275,7 @@ export const SETUP_TOOL_DEFS = Object.freeze([
         accountId: {
           type: 'string',
           description:
-            'forget_provider_auth: OAuth account id from status providers; required when the provider has several accounts.',
+            'forget_provider_auth: OAuth account id from status providers with detail:true; required when the provider has several accounts.',
         },
         providerAccount: {
           type: 'object',
@@ -263,7 +302,8 @@ export const SETUP_TOOL_DEFS = Object.freeze([
               properties: { id: { type: 'string' }, label: { type: 'string', maxLength: 80 } },
             },
           },
-          description: 'set_provider_account: OAuth account change; account ids from status providers.',
+          description:
+            'set_provider_account: OAuth account change; account ids from status providers with detail:true.',
         },
         modelId: {
           type: 'string',
@@ -324,6 +364,12 @@ export const SETUP_TOOL_DEFS = Object.freeze([
           description: 'set_disabled_skills: full list of disabled skill names.',
         },
         source: { type: 'string', description: 'add_plugin: Git URL, owner/repo, or local path.' },
+        connector: {
+          type: 'string',
+          enum: [...CONNECTOR_IDS],
+          description:
+            'connect_connector: catalog service to connect. Shows the user a connect card in this conversation (one-click sign-in or a key sheet in Desktop); it never connects by itself.',
+        },
         kind: {
           type: 'string',
           enum: ['skills', 'mcp', 'plugins', ...MEDIA_KINDS],

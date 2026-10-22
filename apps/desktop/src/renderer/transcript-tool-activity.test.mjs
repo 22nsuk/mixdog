@@ -170,7 +170,7 @@ test('desktop activity shows repeated tool counts in natural phrase summary', as
     });
 
     const title = document.querySelector('.tool-activity-title')?.textContent?.trim() || '';
-    assert.equal(title, 'Read file, Search 2 patterns');
+    assert.equal(title, 'Read file, Searched 2 patterns');
     assert.doesNotMatch(title, /×/);
   } finally {
     await act(async () => dom.root.unmount());
@@ -426,6 +426,100 @@ test('desktop activity uses concrete control, MCP server, and skill names', () =
   );
 });
 
+test('a bridged call presents as the tool it runs, with via call_tool', async () => {
+  const { desktopToolActivitySummary } = await import('./transcript-tool-core.ts');
+  const direct = {
+    kind: 'tool',
+    id: 'direct',
+    name: 'web_fetch',
+    args: { url: 'https://example.test/page' },
+    result: 'page body',
+  };
+  const bridged = {
+    ...direct,
+    id: 'bridged',
+    name: 'call_tool',
+    args: { name: 'web_fetch', arguments: { url: 'https://example.test/page' } },
+  };
+  const directView = desktopToolActivityItemPresentation(direct);
+  const bridgedView = desktopToolActivityItemPresentation(bridged);
+  assert.equal(directView.via, undefined);
+  assert.equal(bridgedView.via, 'call_tool');
+  for (const key of ['category', 'title', 'verb', 'subject', 'resultLabel', 'outputText']) {
+    assert.deepEqual(bridgedView[key], directView[key], key);
+  }
+  assert.equal(bridgedView.category, 'Web Research');
+  assert.equal(desktopToolActivityCategory('call_tool', bridged.args), 'Web Research');
+  assert.equal(desktopToolActivitySummary([bridged]), desktopToolActivitySummary([direct]));
+  // The transcript item itself keeps the wire call.
+  assert.equal(bridged.name, 'call_tool');
+});
+
+test('a bridge load_tool result reads as described / missing / blocked, never tool loading', async () => {
+  const { desktopToolActivitySummary } = await import('./transcript-tool-core.ts');
+  const describe = {
+    kind: 'tool',
+    id: 'describe',
+    name: 'load_tool',
+    args: { names: ['web_fetch', 'nope', 'shell'] },
+    result: JSON.stringify({
+      entries: [{ name: 'web_fetch', pointer: '', schemaRevision: 'r1', complete: true, document: {} }],
+      missing: ['nope'],
+      blocked: [{ name: 'shell', reason: 'readonly mode' }],
+      nextCursor: null,
+    }),
+  };
+  const view = desktopToolActivityItemPresentation(describe);
+  assert.equal(view.title, 'Tool description');
+  assert.equal(view.subject, 'web_fetch');
+  assert.equal(view.resultLabel, 'Missing: nope · Blocked: shell');
+  assert.equal(desktopToolActivitySummary([describe]), 'Tool description 3');
+  const loader = {
+    ...describe,
+    id: 'loader',
+    result: JSON.stringify({ selected: { tools: { added: ['web_fetch'] } }, loaded: ['web_fetch'] }),
+  };
+  assert.equal(desktopToolActivityItemPresentation(loader).title, 'Tool loading');
+  assert.equal(desktopToolActivitySummary([loader]), 'Tool loading 3');
+});
+
+test('a continued bridge describe and a retired search_tools call from an old transcript still present', async () => {
+  const { desktopToolActivitySummary } = await import('./transcript-tool-core.ts');
+  // The rest of a large definition: names holds the continuation token.
+  const continued = {
+    kind: 'tool',
+    id: 'continued',
+    name: 'load_tool',
+    args: { names: '@continue:eyJ2IjoxfQ' },
+    result: JSON.stringify({
+      entries: [{ name: 'mcp__big__configure', schemaRevision: 'r1', complete: true, offset: 100, jsonTextChunk: '}' }],
+      missing: [],
+      blocked: [],
+      note: 'Run a deferred tool with call_tool {name, arguments}.',
+      continueWith: null,
+    }),
+  };
+  const continuedView = desktopToolActivityItemPresentation(continued);
+  assert.equal(continuedView.title, 'Tool description');
+  assert.equal(continuedView.subject, 'mcp__big__configure');
+  const searchResult = JSON.stringify({
+    tools: [{ name: 'web_fetch', description: 'Fetch a page.' }],
+    nextCursor: null,
+  });
+  // Sessions written while search_tools existed keep their calls.
+  const retired = {
+    kind: 'tool',
+    id: 'retired',
+    name: 'search_tools',
+    args: { query: 'fetch page' },
+    result: searchResult,
+  };
+  const retiredView = desktopToolActivityItemPresentation(retired);
+  assert.ok(retiredView.title);
+  assert.ok(desktopToolActivitySummary([retired]));
+  assert.equal(retired.name, 'search_tools');
+});
+
 test('desktop activity lists every call as one row under the summary, without category folders', async () => {
   const dom = installToolActivityDom('Mozilla/5.0 Electron/41.0.0');
   try {
@@ -449,7 +543,10 @@ test('desktop activity lists every call as one row under the summary, without ca
       );
     });
     const group = document.querySelector('.tool-activity');
-    assert.equal(group?.querySelector('.tool-activity-title')?.textContent?.trim(), 'Search 2 patterns, Run 1 command');
+    assert.equal(
+      group?.querySelector('.tool-activity-title')?.textContent?.trim(),
+      'Searched 2 patterns, Ran 1 command'
+    );
     assert.equal(group?.querySelector('.tool-activity-failed'), null);
 
     await act(async () => {
@@ -1149,6 +1246,27 @@ test('desktop labels name the operation actually called and its real outcome', a
     'GitHub 4'
   );
 
+  // Visualize, Browser and Computer calls of any action count as one unit each.
+  assert.equal(
+    desktopToolActivitySummary([
+      item('visualize', { action: 'close' }),
+      item('visualize', { action: 'open', input: { targets: ['a.html'] } }),
+      item('visualize', { action: 'capture', input: { tab: 'v1' } }),
+    ]),
+    'Visualize 3'
+  );
+  assert.equal(
+    desktopToolActivitySummary([
+      item('browser', { action: 'navigate', url: 'https://example.com' }),
+      item('browser', { action: 'click', ref: 'e1' }),
+    ]),
+    'Browser 2 actions'
+  );
+  assert.equal(
+    desktopToolActivitySummary([item('browser', { action: 'navigate', url: 'https://a.b' })]),
+    'Browser action'
+  );
+
   // Terminal is its own category with action verbs, never "External tools".
   const list = item('terminal', { action: 'list' });
   assert.equal(desktopToolActivityItemPresentation(list).category, 'Terminal');
@@ -1318,6 +1436,39 @@ test('a finished background task with nothing to read cannot open and shows its 
   }
 });
 
+test('the live status token readout is its own span, hidden only while the pinned bot stands over the transcript', async () => {
+  const dom = installToolActivityDom('Mozilla/5.0 Electron/41.0.0');
+  try {
+    await act(async () => {
+      dom.root.render(
+        React.createElement(LiveActivity, {
+          snapshot: { spinner: { active: true, startedAt: Date.now() - 119_000, mode: 'working', outputTokens: 5900 } },
+        })
+      );
+    });
+    const meta = document.querySelector('.live-activity-meta');
+    const tokens = meta?.querySelector('.live-activity-tokens');
+    assert.ok(tokens, 'the readout has its own span');
+    assert.match(tokens.textContent, /^ · .*tokens$/);
+    assert.match(meta.textContent, /^1m 5\ds · .*tokens$/, 'the same text as before');
+    assert.equal(meta.textContent.replace(tokens.textContent, '').trim().length > 0, true, 'the clock stays');
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+  const { readFile } = await import('node:fs/promises');
+  const css = (await readFile(new URL('./desktop/14-live-activity.css', import.meta.url), 'utf8')).replace(
+    /\/\*[\s\S]*?\*\//g,
+    ''
+  );
+  const rules = [...css.matchAll(/([^{}]*\.live-activity-tokens[^{}]*)\{([^}]*)\}/g)];
+  assert.deepEqual(
+    rules.map(([, selector, body]) => [selector.trim(), body.trim()]),
+    [['html[data-pet-over-transcript] .live-activity-tokens', 'display: none;']],
+    'hidden only under the flag'
+  );
+});
+
 test('the thinking spinner shows the runtime-resolved turn effort, falling back to the saved level', async () => {
   const dom = installToolActivityDom('Mozilla/5.0 Electron/41.0.0');
   const thinkingText = async (snapshot) => {
@@ -1364,8 +1515,8 @@ test('the thinking spinner shows the runtime-resolved turn effort, falling back 
     assert.match(await thinkingText({ ...capable, effort: 'high', turnEffort: 'medium' }), /Thinking \(Medium\)/);
     assert.match(await thinkingText({ ...capable, effort: 'high', turnEffort: null }), /Thinking$/);
     assert.match(await thinkingText({ ...capable, effort: 'high' }), /Thinking$/);
-    // A saved max/ultra is respected by the runtime, so it stays shown.
-    assert.match(await thinkingText({ ...capable, effort: 'max' }), /Thinking \(Max\)/);
+    // A saved max/ultra no longer disables Auto: no stand-in either.
+    assert.match(await thinkingText({ ...capable, effort: 'max' }), /Thinking$/);
     // Auto on but the model is not capable: the saved level stands.
     assert.match(await thinkingText({ ...plain, effort: 'high' }), /Thinking \(High\)/);
     await setAuto(false);
@@ -1608,4 +1759,79 @@ test('an edit row opens in place under its path line; the path opens the side di
       dom.close();
     }
   }
+});
+
+test('toolRowRevision changes when output or diff text changes at the same length', async () => {
+  const { toolRowRevision } = await import('./transcript-tool-core.ts');
+  const row = (result, uiDiff) => ({ kind: 'tool', id: 'r', name: 'shell', result, uiDiff });
+  assert.notEqual(toolRowRevision(row('aaaa', 'x')), toolRowRevision(row('aaab', 'x')));
+  assert.notEqual(toolRowRevision(row('aaaa', 'x')), toolRowRevision(row('aaaa', 'y')));
+  assert.equal(toolRowRevision(row('aaaa', 'x')), toolRowRevision(row('aaaa', 'x')));
+});
+
+test('a tool body draws rendered at once once the renderer is warm, never raw text first', async () => {
+  const dom = installToolActivityDom('Mozilla/5.0 Electron/41.0.0');
+  const hadFrame = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+  globalThis.requestAnimationFrame = (callback) => setTimeout(() => callback(Date.now()), 0);
+  try {
+    const { ToolActivityRichBody, warmToolMarkdownBody } = await import('./transcript-tool-ui.tsx');
+    await warmToolMarkdownBody();
+    // One synchronous commit: a lazily loaded body would show its raw fallback here.
+    act(() => {
+      dom.root.render(
+        React.createElement(ToolActivityRichBody, { text: 'Plain answer.', fallbackClassName: 'raw-fallback' })
+      );
+    });
+    assert.equal(document.querySelector('.tool-activity-markdown')?.nodeName, 'DIV');
+    assert.equal(document.querySelector('.raw-fallback'), null);
+  } finally {
+    if (hadFrame) Object.defineProperty(globalThis, 'requestAnimationFrame', hadFrame);
+    else delete globalThis.requestAnimationFrame;
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('a group header keeps the present form while any call runs and reads past tense once settled', async () => {
+  const { desktopToolActivitySummary } = await import('./transcript-tool-core.ts');
+  const call = (id, name, args, extra = {}) => ({ kind: 'tool', id, name, args, ...extra });
+  const done = { result: 'ok', completedAt: 1 };
+  const calls = [
+    call('r', 'read', { file_path: 'a.ts' }, done),
+    call('g', 'grep', { pattern: 'x' }, done),
+    call('s1', 'shell', { command: 'a' }, done),
+    call('s2', 'shell', { command: 'b' }, done),
+    call('e', 'edit', { file_path: 'a.ts', old_string: 'a', new_string: 'b' }, done),
+  ];
+  assert.equal(desktopToolActivitySummary(calls), 'Edit 1 file, Read file, Search code, Run 2 commands');
+  assert.equal(desktopToolActivitySummary(calls, true), 'Edited 1 file, Read file, Searched code, Ran 2 commands');
+
+  const dom = installToolActivityDom('Mozilla/5.0 Electron/41.0.0');
+  try {
+    const title = async (items) => {
+      await act(async () => {
+        dom.root.render(React.createElement(ToolActivityGroup, { disclosureScope: 'tense', items }));
+      });
+      return document.querySelector('.tool-activity-title')?.textContent?.trim();
+    };
+    const running = call('s2', 'shell', { command: 'b' }, { startedAt: 1 });
+    assert.equal(await title([calls[2], running]), 'Run 2 commands');
+    assert.equal(await title([calls[2], calls[3]]), 'Ran 2 commands');
+    const background = call(
+      'bg',
+      'shell',
+      { command: 'serve' },
+      { result: 'background task\nstatus: running\ntask_id: job_1', completedAt: 1 }
+    );
+    assert.equal(await title([background]), 'Run 1 command');
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('a tool icon eases its colour over 150ms when its call settles', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('./desktop/22-markdown.css', import.meta.url), 'utf8');
+  assert.match(css, /\.tool-card \.tool-icon\s*\{[^}]*transition:\s*color 150ms/);
 });

@@ -7,16 +7,34 @@ export const BRIDGED_DIALOG_TYPES: ReadonlySet<string> = new Set(['alert', 'conf
  *  never reached the host, so the host can say it was dismissed. */
 const DIALOG_DISMISSED_NOTICE = '__mixdogDialogDismissed';
 
+/** Runs in the page's own world before its scripts, and leaves nothing a page
+ *  could tell apart from Chrome's own dialogs: no global of its own, and each
+ *  dialog function stays the browser's function behind a call trap, so its
+ *  name, arity and native source text are the ones Chrome reports. Everything
+ *  the bridge uses is captured before the page can replace it. */
 export const DIALOG_BRIDGE_SCRIPT = `(() => {
-  if (window.__mixdogDialogBridgeInstalled) return;
-  window.__mixdogDialogBridgeInstalled = true;
-  const endpoint = (() => {
+  const win = window;
+  const Address = URL;
+  const addressText = Object.getOwnPropertyDescriptor(Address.prototype, 'href')?.get;
+  // Resolved per dialog, not once: a window.open popup's first document
+  // reuses the window (and this script's closure) of its initial
+  // about:blank, so an address fixed then would never be the page's own.
+  const endpoint = () => {
     try {
-      return new URL(${JSON.stringify(DIALOG_BRIDGE_PATH)}, location.href).href;
+      // location is unforgeable: a page can neither replace nor shadow it.
+      const address = new Address(${JSON.stringify(DIALOG_BRIDGE_PATH)}, location.href);
+      return addressText ? apply(addressText, address, []) : address.href;
     } catch {
       return ${JSON.stringify(`http://${DIALOG_BRIDGE_HOST}${DIALOG_BRIDGE_PATH}`)};
     }
-  })();
+  };
+  const apply = Reflect.apply;
+  const Request = XMLHttpRequest;
+  const { open, send } = Request.prototype;
+  const responseText = Object.getOwnPropertyDescriptor(Request.prototype, 'responseText')?.get;
+  const Query = URLSearchParams;
+  const queryText = Query.prototype.toString;
+  const parse = JSON.parse;
   // Bound before any page script runs, so the page cannot intercept it.
   const reportDismissed = console.debug.bind(console, ${JSON.stringify(DIALOG_DISMISSED_NOTICE)});
   // A request that never reaches the host (a page CSP refusing connect-src,
@@ -26,15 +44,15 @@ export const DIALOG_BRIDGE_SCRIPT = `(() => {
   const ask = (type, message, defaultPrompt) => {
     let answer = null;
     try {
-      const query = new URLSearchParams({
+      const query = new Query({
         type: String(type || ''),
         message: String(message == null ? '' : message),
         defaultPrompt: String(defaultPrompt == null ? '' : defaultPrompt),
       });
-      const request = new XMLHttpRequest();
-      request.open('GET', endpoint + '?' + query.toString(), false);
-      request.send(null);
-      answer = JSON.parse(request.responseText || 'null');
+      const request = new Request();
+      apply(open, request, ['GET', endpoint() + '?' + apply(queryText, query, []), false]);
+      apply(send, request, [null]);
+      answer = parse((responseText ? apply(responseText, request, []) : request.responseText) || 'null');
     } catch {
       /* no host answer: treated as dismissed below */
     }
@@ -42,18 +60,38 @@ export const DIALOG_BRIDGE_SCRIPT = `(() => {
     reportDismissed(String(type || ''), String(message == null ? '' : message));
     return null;
   };
-  window.alert = (message) => { ask('alert', message, ''); };
-  window.confirm = (message) => Boolean(ask('confirm', message, '')?.accept);
-  window.prompt = (message, defaultPrompt) => {
-    const initial = defaultPrompt == null ? '' : String(defaultPrompt);
-    const result = ask('prompt', message, initial);
-    if (!result?.accept) return null;
-    // The host shows a bounded copy of the default; accepting it unchanged
-    // keeps the page's own value rather than that copy.
-    if (result.keepDefault) return initial;
-    return String(result.promptText == null ? '' : result.promptText);
+  const answers = {
+    alert: (message) => {
+      ask('alert', message, '');
+    },
+    confirm: (message) => Boolean(ask('confirm', message, '')?.accept),
+    prompt: (message, defaultPrompt) => {
+      const initial = defaultPrompt == null ? '' : String(defaultPrompt);
+      const result = ask('prompt', message, initial);
+      if (!result?.accept) return null;
+      // The host shows a bounded copy of the default; accepting it unchanged
+      // keeps the page's own value rather than that copy.
+      if (result.keepDefault) return initial;
+      return String(result.promptText == null ? '' : result.promptText);
+    },
   };
+  for (const name of ['alert', 'confirm', 'prompt']) {
+    const own = typeof win[name] === 'function' ? win[name] : function () {};
+    const answer = answers[name];
+    win[name] = new Proxy(own, { apply: (_target, _self, args) => answer(args[0], args[1]) });
+  }
 })()`;
+
+/** The address a page with no origin of its own (about:blank) asks. Its host
+ *  never resolves; only the debugger answers it. */
+export function isDialogBridgeFallback(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === 'http:' && url.host === DIALOG_BRIDGE_HOST && url.pathname === DIALOG_BRIDGE_PATH;
+  } catch {
+    return false;
+  }
+}
 
 const dialogType = (raw: string) => (BRIDGED_DIALOG_TYPES.has(raw) ? raw : 'dialog');
 const dialogMessage = (raw: string) => raw.slice(0, 4_000);

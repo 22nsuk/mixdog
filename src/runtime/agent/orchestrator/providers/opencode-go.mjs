@@ -1,30 +1,59 @@
 import { randomUUID } from 'node:crypto';
 import { AnthropicProvider } from './anthropic.mjs';
-import { OpenAICompatProvider, OPENAI_COMPAT_PRESETS } from './openai-compat.mjs';
-import { currentUsageContext } from '../../../shared/llm/usage-context.mjs';
+import { OpenAICompatProvider } from './openai-compat.mjs';
 import { getModelMetadataSync, getModelsDevRowSync } from './model-catalog.mjs';
+import { withInclusiveUsage } from './lib/inclusive-usage.mjs';
+import { providerOffersWire, resolveWireRoute, sendOnRoute } from './wire-route.mjs';
+import { gatewayMessagesOpts } from './wire-gateway.mjs';
+
+// The OpenCode Go gateway engines. Not a registered provider: the
+// `opencode-go-oauth` provider (opencode-go-oauth.mjs) runs its requests here
+// on the account's OAuth access token. `opencode-go` stays the engines' internal
+// wire/catalog id.
+const GO_GATEWAY_PRESET = Object.freeze({
+  baseURL: 'https://opencode.ai/inference/go/v1',
+  // The gateway expects an application User-Agent (not the SDK default).
+  extraHeaders: Object.freeze({ 'User-Agent': 'mixdog' }),
+});
+
+// The Go Anthropic route: the shared request builder gets the model's output
+// ceiling (models.dev limit) through the gateway options.
+class OpenCodeGoMessagesEngine extends AnthropicProvider {
+  _sendOnce(messages, model, tools, opts) {
+    return super._sendOnce(messages, model, tools, gatewayMessagesOpts(this.config, model, messages, opts));
+  }
+}
 
 // OpenCode Go publishes OpenAI chat/completions, OpenAI Responses, and
 // Anthropic Messages endpoints, and each upstream brand answers on only one
-// of them (muse-spark / gpt / grok 500 on chat/completions; minimax expects
-// Messages). models.dev names the SDK package per model, which is the
-// authoritative wire selector; the prefix tables are the cold-catalog fallback.
-const ANTHROPIC_MODEL_PREFIXES = ['minimax-', 'qwen'];
-const RESPONSES_MODEL_PREFIXES = ['muse-spark-', 'gpt-', 'grok-'];
-const WIRE_API_BY_NPM = Object.freeze({
+// of them (muse-spark / gpt / grok 500 on chat/completions; minimax and
+// Claude expect Messages). models.dev names the SDK package per model, which
+// is the authoritative wire selector; wire-route.mjs holds the cold-catalog
+// prefix fallback. `@ai-sdk/google` names the Gemini generateContent wire
+// (opencode-go-gemini.mjs).
+export const WIRE_API_BY_NPM = Object.freeze({
   '@ai-sdk/openai': 'responses',
   '@ai-sdk/anthropic': 'messages',
   '@ai-sdk/openai-compatible': 'chat',
+  '@ai-sdk/google': 'gemini',
 });
+
+function openCodeGoCatalogWire(model) {
+  const npm = getModelsDevRowSync(String(model || ''), 'opencode-go')?.npm;
+  return typeof npm === 'string' && Object.hasOwn(WIRE_API_BY_NPM, npm) ? WIRE_API_BY_NPM[npm] : null;
+}
+
+export function resolveOpenCodeGoWireRoute(model, ctx = {}) {
+  const catalogWire = openCodeGoCatalogWire(model);
+  // Each Go model answers on the one wire the catalog names: it narrows the
+  // offered endpoints, so an override cannot pick a wire the model lacks.
+  const endpoints = providerOffersWire('opencode-go', catalogWire) ? [catalogWire] : null;
+  return resolveWireRoute('opencode-go', model, { ...ctx, catalogWire, endpoints });
+}
 
 /** Wire API for a Go model: 'responses' | 'messages' | 'chat'. */
 function openCodeGoWireApi(model) {
-  const id = String(model || '').toLowerCase();
-  const npm = getModelsDevRowSync(String(model || ''), 'opencode-go')?.npm;
-  if (npm && WIRE_API_BY_NPM[npm]) return WIRE_API_BY_NPM[npm];
-  if (RESPONSES_MODEL_PREFIXES.some((prefix) => id.startsWith(prefix))) return 'responses';
-  if (ANTHROPIC_MODEL_PREFIXES.some((prefix) => id.startsWith(prefix))) return 'messages';
-  return 'chat';
+  return resolveOpenCodeGoWireRoute(model).wire;
 }
 
 export function isAnthropicGoModel(model) {
@@ -32,8 +61,7 @@ export function isAnthropicGoModel(model) {
 }
 
 export function resolveOpenCodeGoBaseURLs(configuredBaseURL) {
-  const presetBase = OPENAI_COMPAT_PRESETS['opencode-go'].baseURL;
-  const openai = String(configuredBaseURL || presetBase).replace(/\/+$/, '');
+  const openai = String(configuredBaseURL || GO_GATEWAY_PRESET.baseURL).replace(/\/+$/, '');
   // Anthropic's SDK appends `/v1/messages` itself. Supplying the OpenAI base
   // (`.../v1`) would therefore produce the invalid `.../v1/v1/messages`.
   const anthropic = openai.replace(/\/v1$/i, '');
@@ -46,43 +74,6 @@ export function openCodeGoEndpointForModel(model, configuredBaseURL) {
   if (wire === 'messages') return `${bases.anthropic}/v1/messages`;
   if (wire === 'responses') return `${bases.openai}/responses`;
   return `${bases.openai}/chat/completions`;
-}
-
-// Usage objects already converted to the inclusive convention; a converted
-// object passing through another normalization (nested send) stays as is,
-// and one source object always converts to the same object, so an abandoned
-// attempt and the error that later carries it stay one record.
-const inclusiveUsage = new WeakSet();
-const convertedUsage = new WeakMap();
-
-export function toInclusiveOpenCodeGoUsage(usage) {
-  if (!usage || inclusiveUsage.has(usage)) return usage;
-  if (convertedUsage.has(usage)) return convertedUsage.get(usage);
-  const input = Number(usage.inputTokens) || 0;
-  const cached = Number(usage.cachedTokens) || 0;
-  const cacheWrite = Number(usage.cacheWriteTokens) || 0;
-  const inclusiveInput = input + cached + cacheWrite;
-  const converted = {
-    ...usage,
-    inputTokens: inclusiveInput,
-    promptTokens: Math.max(Number(usage.promptTokens) || 0, inclusiveInput),
-  };
-  inclusiveUsage.add(converted);
-  convertedUsage.set(usage, converted);
-  return converted;
-}
-
-function normalizeOpenCodeGoResultUsage(result, anthropicRoute) {
-  if (!anthropicRoute || !result?.usage) return result;
-  return { ...result, usage: toInclusiveOpenCodeGoUsage(result.usage) };
-}
-
-function normalizeOpenCodeGoError(error) {
-  if (error && typeof error === 'object') {
-    if (error.usage) error.usage = toInclusiveOpenCodeGoUsage(error.usage);
-    if (error.partialUsage) error.partialUsage = toInclusiveOpenCodeGoUsage(error.partialUsage);
-  }
-  return error;
 }
 
 function opencodeGoContextWindow(modelId, current = 0) {
@@ -115,14 +106,21 @@ export class OpenCodeGoProvider {
     // lane. The delegated transports are intentionally not independently
     // wrapped, so all model-family routes share this one 64-wide account.
     this.config = config;
-    const preset = OPENAI_COMPAT_PRESETS['opencode-go'];
-    const bases = resolveOpenCodeGoBaseURLs(config.baseURL || preset.baseURL);
-    this.openai = new OpenAICompatProvider('opencode-go', { ...config, baseURL: bases.openai });
-    this.anthropic = new AnthropicProvider({
+    const bases = resolveOpenCodeGoBaseURLs(config.baseURL);
+    this.openai = new OpenAICompatProvider('opencode-go', {
+      ...config,
+      baseURL: bases.openai,
+      extraHeaders: { ...GO_GATEWAY_PRESET.extraHeaders, ...(config.extraHeaders || {}) },
+    });
+    this.anthropic = new OpenCodeGoMessagesEngine({
       ...config,
       name: 'opencode-go',
       baseURL: bases.anthropic,
       disableBetaHeaders: true,
+      // The preset's identifying headers (User-Agent) ride the Messages wire
+      // too; the user's own headers win.
+      extraHeaders: { ...GO_GATEWAY_PRESET.extraHeaders, ...(config.extraHeaders || {}) },
+      modelMaxOutputTokens: (model) => this.getCachedModelInfo(model)?.outputTokens,
     });
     // The Anthropic route answers for this provider: PDFs lower to text.
     this.anthropic.nativePdf = this.nativePdf;
@@ -142,29 +140,48 @@ export class OpenCodeGoProvider {
         'x-opencode-session': sessionId,
       },
     };
-    const wire = openCodeGoWireApi(model);
-    if (wire === 'responses') {
-      // OpenAI-family brands on the gateway (Muse Spark, GPT, Grok)
-      // only answer on /responses; the compat transport switches wire
-      // shape per request via this flag.
-      return this.openai.send(messages, model, tools, { ...(sendOpts || {}), compatWireApi: 'responses' });
-    }
-    if (wire === 'messages') {
-      // The Anthropic-style Go endpoint reports cached read/write usage
-      // and accepts the standard message shape. Preserve the caller's
-      // cache strategy so the shared Anthropic live-tail marker advances
-      // through tool loops instead of forcing every request fully cold.
-      // Abandoned attempts noted by the inner provider use the same conversion.
-      const identity = currentUsageContext();
-      if (identity) identity.normalizeAbandonedUsage = toInclusiveOpenCodeGoUsage;
-      try {
-        const result = await this.anthropic.send(messages, model, tools, sendOpts);
-        return normalizeOpenCodeGoResultUsage(result, true);
-      } catch (error) {
-        throw normalizeOpenCodeGoError(error);
+    // The session's pinned route, else this model's route (wire-route.mjs);
+    // the resolved route is the only wire authority (a caller's own wire
+    // switches never reach an engine), and one clear "unsupported" refusal
+    // moves the send to the next wire once.
+    return sendOnRoute(this, model, tools, sendOpts, messages, async (wire, history, opts) => {
+      if (wire === 'responses') {
+        // OpenAI-family brands on the gateway (Muse Spark, GPT, Grok)
+        // only answer on /responses; the compat transport switches wire
+        // shape per request via this flag.
+        return this.openai.send(history, model, tools, { ...opts, compatWireApi: 'responses' });
       }
+      if (wire === 'messages') {
+        // The Anthropic-style Go endpoint reports cached read/write usage
+        // and accepts the standard message shape. Preserve the caller's
+        // cache strategy so the shared Anthropic live-tail marker advances
+        // through tool loops instead of forcing every request fully cold.
+        // Abandoned attempts noted by the inner provider use the same conversion.
+        return withInclusiveUsage(() => this.anthropic.send(history, model, tools, opts));
+      }
+      if (wire === 'gemini') return (await this._geminiEngine()).send(history, model, tools, opts);
+      return this.openai.send(history, model, tools, opts);
+    });
+  }
+
+  // The Gemini generateContent route; the Google SDK loads only when a Gemini model is used.
+  async _geminiEngine() {
+    if (!this.gemini) {
+      const { OpenCodeGoGeminiEngine } = await import('./opencode-go-gemini.mjs');
+      this.gemini = new OpenCodeGoGeminiEngine({
+        ...this.config,
+        baseURL: this.openai.baseURL,
+        extraHeaders: {
+          ...GO_GATEWAY_PRESET.extraHeaders,
+          ...(this.config.extraHeaders || {}),
+        },
+      });
     }
-    return this.openai.send(messages, model, tools, sendOpts);
+    return this.gemini;
+  }
+
+  resolveWireRoute(model, ctx = {}) {
+    return resolveOpenCodeGoWireRoute(model, { ...ctx, override: this.config?.modelWires?.[model] ?? null });
   }
 
   async listModels() {

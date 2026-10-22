@@ -20,21 +20,24 @@ import {
   indexListing,
   observeStamp,
   scanSessionFiles,
+  scanSessionFilesAsync,
   stampedDerivation,
 } from './store-summary-catalog.mjs';
 import { createStoredTranscriptCache, nextProjectionStamp } from './store-transcript-cache.mjs';
 import {
+  forgetStoredTranscriptOffThread,
   OFFLOAD_MIN_CHARS,
   projectStoredTranscriptOffThread,
   storedTranscriptWorkerRunning,
 } from './store-transcript-worker.mjs';
 import { projectStoredTranscript } from './store-transcript-projection.mjs';
-import { dataDir, sessionHeartbeatMtimes } from './store-summary-locations.mjs';
+import { dataDir } from './store-summary-locations.mjs';
 import { isStoredSessionId, workspaceSummary } from './store-summary-fields.mjs';
 import { readArchivedAgentResult } from './store-summary-archived-agent.mjs';
 import { compactionArchivePath, readCompactionArchivePage } from './compaction-archive.mjs';
 import { currentSessionCatalogDb, onSessionCatalogDbChange, sessionCatalogDb } from './catalog-db/index.mjs';
 import { decodeCatalogCursor, encodeCatalogCursor, isAfterCursor } from './catalog-db/schema.mjs';
+import { onSessionActivityChange } from '../../../shared/session-activity-signal.mjs';
 import {
   readCanonicalSessionRecord as readCanonicalLifecycle,
   offerStrictSessionRecord,
@@ -42,10 +45,14 @@ import {
   sameSessionStamp,
   isSettledSessionStamp,
 } from './store/canonical-reader.mjs';
-// Worker-pool row projection (child + Lead indexes, heartbeat lease, cancel
-// ranking) lives in store-agent-worker-rows.mjs; re-exported so prior
-// importers of this module stay unchanged.
-export { listStoredAgentWorkerLinks, listStoredAgentWorkers } from './store-agent-worker-rows.mjs';
+// Worker-pool row projection (child + Lead indexes, live-work evidence) lives
+// in store-agent-worker-rows.mjs; re-exported so prior importers of this
+// module stay unchanged.
+export {
+  listStoredAgentWorkerLinks,
+  listStoredAgentWorkers,
+  listStoredAgentWorkersAsync,
+} from './store-agent-worker-rows.mjs';
 export { storedAgentWorkerIndexPath } from './store-summary-locations.mjs';
 
 // One cache per process: the daemon serves every cold pane read from it, and
@@ -59,7 +66,9 @@ export function clearStoredTranscriptCache() {
 
 /** Drop one session's cold projections: it went live, or its last view left. */
 export function forgetStoredSessionTranscript(sessionId) {
-  storedTranscriptCache.forget(`${String(sessionId || '').trim()}|`);
+  const id = String(sessionId || '').trim();
+  storedTranscriptCache.forget(`${id}|`);
+  if (id) forgetStoredTranscriptOffThread(id);
 }
 
 /** Its last view left: keep the cold projections for a revisit, within the
@@ -82,18 +91,22 @@ export function storedTranscriptCacheStats() {
 const ordinaryCatalog = createOrdinaryCatalog();
 const catalogListeners = new Set();
 
-function notifyCatalogListeners() {
+function notifyCatalogListeners(kind = 'catalog') {
   for (const listener of catalogListeners) {
     try {
-      listener();
+      listener(kind);
     } catch {
       /* a listener's failure is its own */
     }
   }
 }
 
-ordinaryCatalog.subscribe(notifyCatalogListeners);
-onSessionCatalogDbChange(notifyCatalogListeners);
+ordinaryCatalog.subscribe(() => notifyCatalogListeners());
+onSessionCatalogDbChange(() => notifyCatalogListeners());
+// Runtime activity transitions (turn start/settle, task wait, background
+// hand-off/finish) change only the Agents pool projection: `agent-activity`
+// lets the reader refresh just that, at once.
+onSessionActivityChange(() => notifyCatalogListeners('agent-activity'));
 
 /** `listener()` runs when a background pass finds a session file that changed
  *  without a directory or index change, i.e. when an ordinary listing would
@@ -123,13 +136,12 @@ export function listStoredSessionSummaries(options = {}) {
   // nor empty: the scan still runs, and when IT cannot enumerate either, the
   // catalog reports nothing rather than inventing an empty truth.
   if (options.refreshFromStorage === true) {
-    const heartbeatMtimes = sessionHeartbeatMtimes();
-    return scanSessionFiles(heartbeatMtimes, index.rowsById, true) ?? indexListing(index, heartbeatMtimes) ?? [];
+    return scanSessionFiles(index.rowsById, true) ?? indexListing(index) ?? [];
   }
-  if (options.rebuildIfMissing === false) return indexListing(index, sessionHeartbeatMtimes()) ?? [];
+  if (options.rebuildIfMissing === false) return indexListing(index) ?? [];
   // A missing/malformed index leaves every file to be parsed (once per
   // stamp); a present one lets unchanged files reuse their durable summary.
-  return ordinaryCatalog.refresh(index).rows ?? indexListing(index, sessionHeartbeatMtimes()) ?? [];
+  return ordinaryCatalog.refresh(index).rows ?? indexListing(index) ?? [];
 }
 
 /** The catalog DB's answer to an ordinary listing (`{ rows, more }`), or
@@ -144,6 +156,30 @@ async function catalogDbListing(page) {
   return answer;
 }
 
+// The running storage refresh a new caller may still join: only until its
+// final synchronous settle begins, since a caller arriving after that asked
+// after the answer was fixed (a scan that never yields settles before its own
+// caller awaits it).
+let storageRefreshFlight = null;
+
+async function refreshFromStorageOnce(onSettle) {
+  const index = ordinaryCatalog.loadIndex();
+  return (await scanSessionFilesAsync(index.rowsById, true, { onSettle })) ?? indexListing(index) ?? [];
+}
+
+function storageRefresh() {
+  if (storageRefreshFlight?.joinable) return storageRefreshFlight.rows;
+  const flight = { joinable: true, rows: null };
+  storageRefreshFlight = flight;
+  flight.rows = refreshFromStorageOnce(() => {
+    flight.joinable = false;
+  }).finally(() => {
+    // A newer flight is never cleared by an older one's end.
+    if (storageRefreshFlight === flight) storageRefreshFlight = null;
+  });
+  return flight.rows;
+}
+
 /**
  * listStoredSessionSummaries for async callers (the daemon's session views).
  * In the daemon the ordinary listing comes from the session catalog DB
@@ -152,7 +188,14 @@ async function catalogDbListing(page) {
  * JSON/file path.
  */
 export async function listStoredSessionSummariesAsync(options = {}) {
-  if (options.refreshFromStorage === true || options.rebuildIfMissing === false) {
+  if (options.refreshFromStorage === true) {
+    // The same authoritative rescan as the sync path, in slices that yield.
+    // Concurrent refreshes share one scan while it can still see their
+    // request (it settles against storage when it ends); each caller gets its
+    // own rows.
+    return (await storageRefresh()).map((row) => ({ ...row }));
+  }
+  if (options.rebuildIfMissing === false) {
     return listStoredSessionSummaries(options);
   }
   const answer = await catalogDbListing(null);
@@ -250,6 +293,14 @@ function storedSessionMetadata(sessionId, session) {
   };
 }
 
+/** A record that is gone may be a reaped agent child: its parent is resolved
+ *  from metadata only (worker link, summary-index row), never by a scan. */
+function readVanishedSessionTranscript(sessionId) {
+  return readArchivedAgentResult(sessionId, {
+    catalogRow: (id) => ordinaryCatalog.loadIndex().rowsById.get(id) || null,
+  });
+}
+
 /** The two files a stored transcript projection is built from. */
 function storedTranscriptInputPaths(sessionId) {
   return {
@@ -285,29 +336,32 @@ export function storedSessionTranscriptStamp(id) {
   return archive ? `${record}|${checkpoint}|${archive}` : null;
 }
 
+/** A large record with no checkpoint sidecar is read, digested, parsed and
+ *  projected on a worker thread: the same pipeline, off the daemon event
+ *  loop. It hands no parse to the load cache (a later resume reads the file
+ *  itself). The answer is the cache's `project` contract; a worker failure
+ *  rejects and the cache runs the in-process pipeline instead. */
+async function projectStoredTranscriptElsewhere(known, context) {
+  const { sessionId, recordPath, itemLimit, timing } = context;
+  timing.worker = storedTranscriptWorkerRunning(sessionId) ? 'warm' : 'cold';
+  const workerStartedAt = performance.now();
+  const answer = await projectStoredTranscriptOffThread({ sessionId, recordPath, itemLimit, known });
+  timing.workerMs = performance.now() - workerStartedAt;
+  Object.assign(timing, answer.timing);
+  context.readState = answer.state;
+  if (answer.state !== PROBE_PRESENT) return null;
+  if (answer.same) return answer;
+  if (answer.unreadable) return { ...answer, value: null };
+  if (answer.stamp) readCanonicalLifecycle.rememberStrictVerdict(recordPath, answer.stamp, answer.lifecycle);
+  // Stamps are process-unique per module realm; re-issue in this one.
+  answer.value.projectionStamp = nextProjectionStamp();
+  return answer;
+}
+
 /** Projects the strictly parsed record `text` (read at full stamp `stamp`, or
  *  null when not provably stable) into the cached transcript value. */
 async function produceStoredTranscript(text, stamp, context) {
-  const { sessionId, recordPath, itemLimit, includeMessages, mode, offloadable, checkpointAbsent, timing } = context;
-  // A large record with no checkpoint sidecar parses and projects on a
-  // worker thread: the same pipeline, off the daemon event loop. It hands
-  // no parse to the load cache (a later resume reads the file itself).
-  if (offloadable && text.length >= OFFLOAD_MIN_CHARS) {
-    try {
-      timing.worker = storedTranscriptWorkerRunning() ? 'warm' : 'cold';
-      const workerStartedAt = performance.now();
-      const answer = await projectStoredTranscriptOffThread({ sessionId, text, itemLimit });
-      timing.workerMs = performance.now() - workerStartedAt;
-      Object.assign(timing, answer.timing);
-      if (answer.unreadable) return null;
-      if (stamp) readCanonicalLifecycle.rememberStrictVerdict(recordPath, stamp, answer.lifecycle);
-      // Stamps are process-unique per module realm; re-issue in this one.
-      answer.value.projectionStamp = nextProjectionStamp();
-      return answer.value;
-    } catch {
-      // Worker unavailable: fall through to the in-process pipeline.
-    }
-  }
+  const { sessionId, recordPath, itemLimit, includeMessages, mode, checkpointAbsent, timing } = context;
   const parseStartedAt = performance.now();
   const record = readTopLevelLifecycleRecord(text);
   timing.parseMs = performance.now() - parseStartedAt;
@@ -375,13 +429,12 @@ export async function readStoredSessionTranscript(id, options = {}) {
   // Phase durations of the parse this call ran (absent on a cache hit).
   const timing = {};
   const recordStat = probePath(recordPath);
-  if (recordStat.state === PROBE_ABSENT) return readArchivedAgentResult(sessionId);
+  if (recordStat.state === PROBE_ABSENT) return readVanishedSessionTranscript(sessionId);
   if (recordStat.state !== PROBE_PRESENT) return null;
   const checkpoint = probePath(checkpointPath);
   const archive = probePath(archivePath);
   const requestedLimit = Number(options.transcriptItemLimit);
   const itemLimit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : Number.POSITIVE_INFINITY;
-  let readState = PROBE_PRESENT;
   // Full stamp the loaded text provably came from (unchanged around the
   // read), or null. Only such a parse may serve other readers.
   let readStamp = null;
@@ -398,9 +451,10 @@ export async function readStoredSessionTranscript(id, options = {}) {
     itemLimit,
     includeMessages,
     mode,
-    offloadable,
     checkpointAbsent,
     timing,
+    // How the record read went (the worker's read or loadText below).
+    readState: PROBE_PRESENT,
   };
   const { value, hit, read } = await storedTranscriptCache.read({
     key: `${sessionId}|${itemLimit}|${mode}`,
@@ -418,6 +472,7 @@ export async function readStoredSessionTranscript(id, options = {}) {
       archive.size,
     ].join(':'),
     fileStat: recordStat,
+    project: offloadable ? (known) => projectStoredTranscriptElsewhere(known, produceContext) : null,
     loadText: async () => {
       const readStartedAt = performance.now();
       const before = observeStamp(recordPath);
@@ -433,7 +488,7 @@ export async function readStoredSessionTranscript(id, options = {}) {
       }
       body ||= readTextFile(recordPath);
       timing.readMs = performance.now() - readStartedAt;
-      readState = body.state;
+      produceContext.readState = body.state;
       if (body.state !== PROBE_PRESENT) return null;
       readStamp = before && sameSessionStamp(before, observeStamp(recordPath)) ? before : null;
       return body.text;
@@ -441,7 +496,7 @@ export async function readStoredSessionTranscript(id, options = {}) {
     produce: (text) => produceStoredTranscript(text, readStamp, produceContext),
   });
   // The record vanished between stat and read: same answer as an absent probe.
-  if (readState === PROBE_ABSENT) return readArchivedAgentResult(sessionId);
+  if (produceContext.readState === PROBE_ABSENT) return readVanishedSessionTranscript(sessionId);
   if (typeof options.trace === 'function') {
     options.trace({
       sessionId,

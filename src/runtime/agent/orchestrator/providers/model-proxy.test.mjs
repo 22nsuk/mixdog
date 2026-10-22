@@ -24,7 +24,14 @@ import { replaceProviderAuthBindings } from '../../../shared/provider-auth-bindi
 import { oauthCredentialProbeState } from './oauth-credential-probes.mjs';
 import { loadCredentials, refreshOAuthCredentials } from './anthropic-oauth-credentials.mjs';
 import { loadTokens as loadOpenAIOAuthTokens } from './openai-oauth-tokens.mjs';
-import { getProvider, initProviders, providerInputExcludesCache, providerNativePdf } from './registry.mjs';
+import {
+  getProvider,
+  initProviders,
+  providerInputExcludesCache,
+  providerNativePdf,
+  providerReadsImages,
+} from './registry.mjs';
+import { pdfReadModes } from '../session/loop/tool-exec/dispatch.mjs';
 
 const dirs = [];
 after(() => {
@@ -228,7 +235,10 @@ test('a daemon-side abort rejects at once and cancels the PC-side call', async (
   assert.equal(late.cancelled, true);
   assert.deepEqual(deltas, [], 'no callback runs after the daemon gave up');
   assert.deepEqual(op(channel, 'heartbeat', [id]).cancelled, [id]);
-  assert.equal(op(channel, 'resolve', id, false, null, encodeModelProxyWire(modelProxyErrorToWire(new Error('x')))), true);
+  assert.equal(
+    op(channel, 'resolve', id, false, null, encodeModelProxyWire(modelProxyErrorToWire(new Error('x')))),
+    true
+  );
   assert.deepEqual(channel.snapshot(), { requests: [], cancelled: [] });
 
   // Aborted before any client claimed it: the call is simply withdrawn.
@@ -357,6 +367,7 @@ test('proxy mode never looks up a server-side model credential', async (t) => {
                   headers: { Authorization: 'Bearer x' },
                   modelProxy: { inputExcludesCache: true, nativePdf: false },
                 },
+                'mixdog-local': { enabled: true, modelProxy: { nativePdf: false, takesImages: false } },
                 gemini: { enabled: false },
               },
             }
@@ -372,6 +383,14 @@ test('proxy mode never looks up a server-side model credential', async (t) => {
   assert.equal(proxied.config.headers, undefined);
   assert.equal(providerInputExcludesCache('anthropic-oauth'), true);
   assert.equal(providerNativePdf('anthropic-oauth'), false);
+  // A text-only PC adapter stays text-only over the proxy: scanned PDF pages
+  // reach its model as OCR text, not page images it would never see.
+  assert.equal(providerReadsImages('anthropic-oauth'), true);
+  assert.equal(providerReadsImages('mixdog-local'), false);
+  assert.deepEqual(pdfReadModes({ provider: 'mixdog-local', model: 'local-model' }), {
+    pdfPageMode: 'ocr',
+    pdfNativeDocument: false,
+  });
   assert.equal(getProvider('openai'), undefined);
   assert.equal(getProvider('gemini'), undefined);
   assert.equal(getProvider('openai-oauth'), undefined);
@@ -384,4 +403,71 @@ test('proxy mode never looks up a server-side model credential', async (t) => {
       ['send', 'anthropic-oauth'],
     ]
   );
+});
+
+test('a PC-side wire reroute is adopted by the daemon session and not repeated', async () => {
+  const { ModelProxyProvider } = await import('./model-proxy-provider.mjs');
+  const pin = {
+    provider: 'command-code-oauth',
+    model: 'gpt-5.5',
+    wire: 'responses',
+    profileId: 'command-code-oauth:responses',
+  };
+  const rerouted = {
+    ...pin,
+    wire: 'chat',
+    profileId: 'command-code-oauth:chat',
+    source: 'reroute',
+    reroutedFrom: 'responses',
+  };
+  const calls = [];
+  const channel = {
+    request: async (call) => {
+      calls.push(call);
+      return { content: 'ok', wireReroute: calls.length === 1 ? rerouted : undefined };
+    },
+  };
+  const provider = new ModelProxyProvider('command-code-oauth', {}, channel);
+  const session = { provider: 'command-code-oauth', model: 'gpt-5.5', wireRoute: pin, messages: [] };
+  await provider.send([{ role: 'user', content: 'q' }], 'gpt-5.5', [], { session });
+  assert.equal(session.wireRoute, rerouted);
+  // The next proxied turn carries the new pin to the PC.
+  await provider.send([{ role: 'user', content: 'q' }], 'gpt-5.5', [], { session });
+  assert.equal(calls[1].options.session.wireRoute.wire, 'chat');
+  // A route for another model never replaces the pin.
+  const other = { provider: 'command-code-oauth', model: 'x', wire: 'chat', wireRoute: { ...pin, model: 'x' } };
+  const foreign = { ...rerouted, model: 'y' };
+  channel.request = async () => ({ content: 'ok', wireReroute: foreign });
+  await provider.send([], 'x', [], { session: other });
+  assert.equal(other.wireRoute.wire, 'responses');
+});
+
+test('the proxied provider forwards the PC’s first-response budget, model-specific first', async () => {
+  const { ModelProxyProvider } = await import('./model-proxy-provider.mjs');
+  const providerBudget = { transportMs: 130_000, semanticMs: 250_000 };
+  const argonBudget = { transportMs: 577_000, semanticMs: 1_147_000 };
+  const channel = {
+    request: async () => ({
+      models: ['gemini-4-argon', 'plain'],
+      modelInfo: {
+        'gemini-4-argon': { id: 'gemini-4-argon', firstResponseBudget: argonBudget },
+        plain: { id: 'plain' },
+        broken: { firstResponseBudget: { transportMs: 'soon', semanticMs: -1 } },
+      },
+    }),
+  };
+  const provider = new ModelProxyProvider(
+    'antigravity-oauth',
+    { modelProxy: { firstResponseBudget: providerBudget } },
+    channel
+  );
+  // Before any catalog: the adapter's own figure from the provider config.
+  assert.deepEqual(provider.firstResponseBudget('gemini-4-argon'), providerBudget);
+  await provider.listModels();
+  assert.deepEqual(provider.firstResponseBudget('gemini-4-argon'), argonBudget);
+  assert.deepEqual(provider.firstResponseBudget('plain'), providerBudget);
+  assert.deepEqual(provider.firstResponseBudget('unlisted'), providerBudget);
+  // A malformed figure is ignored; a PC that reports none leaves the watchdog default.
+  assert.deepEqual(provider.firstResponseBudget('broken'), providerBudget);
+  assert.equal(new ModelProxyProvider('openai', {}, channel).firstResponseBudget('plain'), null);
 });

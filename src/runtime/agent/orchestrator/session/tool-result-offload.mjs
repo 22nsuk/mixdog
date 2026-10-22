@@ -10,18 +10,21 @@ import {
   readdirSync,
   rmdirSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
-import { lstat, open, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { lstat, open, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { holdsNoData, writeFileAtomicAsync, writeFileAtomicSync } from '../../../shared/atomic-file.mjs';
 import { getPluginData } from '../config.mjs';
 import { countSplitLines, normalizeOutputPath } from '../tools/builtin/path-utils.mjs';
 import { classifyResultKind } from './result-classification.mjs';
 import { registerSessionPurgeHook } from './store.mjs';
+import { SETUP_OUTPUT_MAX_BYTES, capMarker } from '../../../shared/tool-output-limit.mjs';
 
 const TOOL_RESULT_OFFLOAD_THRESHOLD_CHARS = 50_000;
+const TOOL_RESULT_SETUP_THRESHOLD_CHARS = SETUP_OUTPUT_MAX_BYTES;
 const TOOL_RESULT_PREVIEW_CHARS = 512;
+const TOOL_RESULT_GIT_PREVIEW_CHARS = 8_000;
 const TOOL_RESULT_SHELL_THRESHOLD_CHARS = 30_000;
 const TOOL_RESULT_SEARCH_THRESHOLD_CHARS = 50_000;
 const TOOL_RESULT_GREP_THRESHOLD_CHARS = 20_000;
@@ -36,7 +39,8 @@ const ARTIFACT_READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (
 // Per-tool persistence limits are per-tool maxResultSizeChars values rather
 // than a single global value: grep persists at 20k, glob and list/find_* at
 // the 50k system default (deliberately tighter than the common 100k), and
-// shell/bash_session/task at 30k. Read/head/tail/diff stay inline
+// bash_session/terminal at 30k. shell/task stay inline: the shell delivery
+// helper already capped them, with the full log on disk. Read/head/tail/diff stay inline
 // (Infinity) — they are self-bound by FileRead semantics and the upstream
 // READ_MAX_SIZE_BYTES cap, so persisting to a sidecar to be re-read would be
 // circular. These values keep context-rich IO tools from turning into "read
@@ -57,10 +61,14 @@ const INLINE_THRESHOLD_BY_TOOL = new Map([
   ['tree', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
   ['find_files', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
   ['code_graph', TOOL_RESULT_SEARCH_THRESHOLD_CHARS],
-  ['shell', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
+  // shell and task results are already capped by the shared shell delivery
+  // (tools/builtin/lib/shell-delivery.mjs) and name their full log on disk;
+  // offloading them again would cut a capped result down to a preview.
+  ['shell', Infinity],
   ['bash_session', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
   ['terminal', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
-  ['task', TOOL_RESULT_SHELL_THRESHOLD_CHARS],
+  ['task', Infinity],
+  ['setup', TOOL_RESULT_SETUP_THRESHOLD_CHARS],
 ]);
 
 function getOffloadThreshold(toolName) {
@@ -107,6 +115,8 @@ function offloadableTextLength(result) {
 }
 
 const AGGREGATE_OFFLOAD_EXCLUDED_TOOLS = new Set([
+  'shell',
+  'task',
   'read',
   'head',
   'tail',
@@ -226,28 +236,76 @@ export function persistToolResultArtifactSync({ sessionId, toolCallId, channel =
   }
   if (!meta) return null;
   try {
-    writeFileSync(meta.path, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    const state = existingArtifactStateSync(meta);
+    if (state === ARTIFACT_INTACT) return meta;
+    if (state === ARTIFACT_FOREIGN) return null;
+    // Whole-file publication (fsynced temp, then link or rename): a crash never
+    // leaves a torn artifact. Data-free damage is replaced whole.
+    if (state === ARTIFACT_DAMAGED) {
+      writeFileAtomicSync(meta.path, content, { mode: 0o600 });
+      return meta;
+    }
+    if (writeFileAtomicSync(meta.path, content, { mode: 0o600, createOnly: true })) return meta;
+    // Lost the create race: the winner's file is whole; verify it like any other.
+    return existingArtifactStateSync(meta) === ARTIFACT_INTACT ? meta : null;
+  } catch {
+    return null;
+  }
+}
+
+// What sits at an artifact's content-addressed path: nothing, the verified
+// bytes, a file a crash left without data (empty or NUL — replaced whole), or
+// anything else (mismatched bytes, a link, a directory, an unreadable file),
+// which is evidence that is never touched or trusted.
+const ARTIFACT_ABSENT = 'absent';
+const ARTIFACT_INTACT = 'intact';
+const ARTIFACT_DAMAGED = 'damaged';
+const ARTIFACT_FOREIGN = 'foreign';
+
+function artifactVerdict(meta, info, readBytes) {
+  if (!info.isFile()) return ARTIFACT_FOREIGN;
+  if (!artifactShapeMatches(meta, info)) return info.size === 0 ? ARTIFACT_DAMAGED : ARTIFACT_FOREIGN;
+  const bytes = readBytes();
+  if (createHash('sha256').update(bytes).digest('hex') === meta.sha256) return ARTIFACT_INTACT;
+  return holdsNoData(bytes) ? ARTIFACT_DAMAGED : ARTIFACT_FOREIGN;
+}
+
+function existingArtifactStateSync(meta) {
+  let fd;
+  try {
+    lstatSync(meta.path);
+    fd = openSync(meta.path, ARTIFACT_READ_FLAGS);
+    const info = fstatSync(fd);
+    return artifactVerdict(meta, info, () => readFileSync(fd));
   } catch (error) {
-    if (error?.code !== 'EEXIST') return null;
-    let fd;
+    return error?.code === 'ENOENT' ? ARTIFACT_ABSENT : ARTIFACT_FOREIGN;
+  } finally {
     try {
-      if (!artifactShapeMatches(meta, lstatSync(meta.path))) return null;
-      fd = openSync(meta.path, ARTIFACT_READ_FLAGS);
-      if (!artifactShapeMatches(meta, fstatSync(fd))) return null;
-      if (createHash('sha256').update(readFileSync(fd)).digest('hex') !== meta.sha256) return null;
+      if (fd !== undefined) closeSync(fd);
     } catch {
-      return null;
-    } finally {
-      try {
-        if (fd !== undefined) closeSync(fd);
-      } catch {
-        // The artifact is already written and byte-verified above; a failed
-        // descriptor close is cleanup, not a failed persist, and must never
-        // replace the verified meta this function returns.
-      }
+      // A failed descriptor close is cleanup, not a failed persist.
     }
   }
-  return meta;
+}
+
+async function existingArtifactState(meta) {
+  let handle;
+  try {
+    await lstat(meta.path);
+    handle = await open(meta.path, ARTIFACT_READ_FLAGS);
+    const info = await handle.stat();
+    // The verdict needs the bytes only when the size matches: read them first.
+    const bytes = info.isFile() && artifactShapeMatches(meta, info) ? await handle.readFile() : null;
+    return artifactVerdict(meta, info, () => bytes);
+  } catch (error) {
+    return error?.code === 'ENOENT' ? ARTIFACT_ABSENT : ARTIFACT_FOREIGN;
+  } finally {
+    try {
+      await handle?.close();
+    } catch {
+      // A failed handle close is cleanup, not a failed persist.
+    }
+  }
 }
 
 async function persistToolResultArtifact({ sessionId, toolCallId, channel = 'result', content } = {}) {
@@ -259,32 +317,19 @@ async function persistToolResultArtifact({ sessionId, toolCallId, channel = 'res
   }
   if (!meta) return null;
   try {
-    await writeFile(meta.path, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-  } catch (error) {
-    if (error?.code !== 'EEXIST') return null;
-    let handle;
-    try {
-      if (!artifactShapeMatches(meta, await lstat(meta.path))) return null;
-      handle = await open(meta.path, ARTIFACT_READ_FLAGS);
-      if (!artifactShapeMatches(meta, await handle.stat())) return null;
-      if (
-        createHash('sha256')
-          .update(await handle.readFile())
-          .digest('hex') !== meta.sha256
-      )
-        return null;
-    } catch {
-      return null;
-    } finally {
-      try {
-        await handle?.close();
-      } catch {
-        // See persistToolResultArtifactSync: the verified artifact stands even
-        // when releasing the handle fails, so cleanup never nulls the result.
-      }
+    const state = await existingArtifactState(meta);
+    if (state === ARTIFACT_INTACT) return meta;
+    if (state === ARTIFACT_FOREIGN) return null;
+    // See persistToolResultArtifactSync.
+    if (state === ARTIFACT_DAMAGED) {
+      await writeFileAtomicAsync(meta.path, content, { mode: 0o600 });
+      return meta;
     }
+    if (await writeFileAtomicAsync(meta.path, content, { mode: 0o600, createOnly: true })) return meta;
+    return (await existingArtifactState(meta)) === ARTIFACT_INTACT ? meta : null;
+  } catch {
+    return null;
   }
-  return meta;
 }
 
 export async function maybeOffloadToolResult(sessionId, toolCallId, toolName, result, options = {}) {
@@ -318,11 +363,21 @@ async function offloadText(sessionId, toolCallId, toolName, text, channel) {
   });
   if (!artifact) return text;
 
-  const { preview, truncated } = buildPreview(text);
+  // git offloads were fetched 95% of the time from a 512-char preview, so git
+  // keeps a head+tail large enough to answer from directly.
+  const previewChars = String(toolName || '').toLowerCase() === 'git' ? TOOL_RESULT_GIT_PREVIEW_CHARS : undefined;
+  const { preview, truncated } = buildPreview(text, previewChars);
   const sizeKb = Math.max(1, Math.round(text.length / 1024));
   const displayPath = normalizeOutputPath(artifact.path);
   const header = `${TOOL_RESULT_OFFLOAD_PREFIX} ${toolName} → ${displayPath} (${sizeKb} KB, ${artifact.lines} lines)]`;
-  const suffix = truncated ? '\n[preview truncated; full output preserved at the artifact path above]' : '';
+  // The header already names the path; git repeats it after its long preview,
+  // where the header is far above the cut.
+  let suffix = '';
+  if (truncated) {
+    suffix = previewChars
+      ? `\n${capMarker({ limit: `${previewChars} chars`, narrow: 'read it with offset/limit', fullPath: displayPath })}`
+      : '\n[preview truncated; full output preserved at the artifact path above]';
+  }
   return `${header}\n\n${preview}${suffix}`;
 }
 
@@ -554,6 +609,7 @@ export const _internals = {
   TOOL_RESULT_SHELL_THRESHOLD_CHARS,
   TOOL_RESULT_SEARCH_THRESHOLD_CHARS,
   TOOL_RESULT_GREP_THRESHOLD_CHARS,
+  TOOL_RESULT_SETUP_THRESHOLD_CHARS,
   getOffloadThreshold,
   TOOL_RESULT_PREVIEW_CHARS,
   TOOL_RESULT_MESSAGE_MAX_CHARS,

@@ -29,9 +29,9 @@ export function createSessionSettingsApi(bag) {
 
   return {
     // A model selector (/model, a preset) is the user's model choice like any
-    // picker selection: the route surface switches an established
-    // conversation in place (pre-compaction, busy refusal, divider). False
-    // while another command holds the lock.
+    // picker selection: the route surface saves it for the conversation's
+    // next turn (a running turn keeps its model) and applies it there. Never
+    // refused: another command's lock does not block a selection.
     setModel: async (m) => (await bag.setSessionRoute({ model: m })) !== false,
     setEffort: withCommandLock(
       async (value) => {
@@ -112,6 +112,18 @@ export function createSessionSettingsApi(bag) {
     setAiSessionTitles: withCommandLock(async (enabled) => {
       return await runtime.setAiSessionTitles?.(enabled);
     }),
+    getLeadAppearance: () => {
+      return runtime.getLeadAppearance?.() || { avatar: null };
+    },
+    setLeadAppearance: withCommandLock(async (avatar) => {
+      return await runtime.setLeadAppearance?.(avatar);
+    }),
+    getBotOrder: () => {
+      return runtime.getBotOrder?.() || { order: [] };
+    },
+    setBotOrder: withCommandLock(async (order) => {
+      return await runtime.setBotOrder?.(order);
+    }),
     getToolModuleSettings: () => {
       return (
         runtime.getToolModuleSettings?.() || {
@@ -130,9 +142,10 @@ export function createSessionSettingsApi(bag) {
     setWorktreeSettings: lockedRuntimeCall((patch) => runtime.setWorktreeSettings(patch)),
     setWebSearchEnabled: lockedRuntimeCall((enabled) => runtime.setWebSearchEnabled?.(enabled)),
     setInstructionFiles: lockedRuntimeCall((mode) => runtime.setInstructionFiles?.(mode)),
+    setAutoEffortBase: lockedRuntimeCall((level) => runtime.setAutoEffortBase?.(level)),
     setMemoryToolsEnabled: lockedRuntimeCall((enabled) => runtime.setMemoryToolsEnabled?.(enabled)),
     setBuiltinToolEnabled: lockedRuntimeCall((name, enabled) => runtime.setBuiltinToolEnabled?.(name, enabled)),
-    installBuiltinFeature: lockedRuntimeCall((name) => runtime.installBuiltinFeature?.(name)),
+    installBuiltinFeature: lockedRuntimeCall((name, options) => runtime.installBuiltinFeature?.(name, options)),
     installLocalProviderModel: lockedRuntimeCall((modelId) => runtime.installLocalProviderModel?.(modelId)),
     // Background installs return promptly; cancellation must remain usable
     // even while a legacy blocking install owns commandBusy.

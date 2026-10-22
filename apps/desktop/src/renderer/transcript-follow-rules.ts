@@ -1,25 +1,45 @@
+import { logTranscriptScroll } from './transcript-scroll-diagnostics';
+
 export const GESTURE_WINDOW_MS = 250;
 // Keep reader ownership alive between native wheel/touch/scrollbar frames.
 // Unlike virtual-core's isScrolling this excludes the timeline's own writes,
 // so late idle measurements can still compensate in a continuous burst.
 export const READER_SCROLL_IDLE_MS = 180;
-const BOTTOM_THRESHOLD_PX = 10;
 // A virtualized transcript must have exactly one geometry authority.
 // Browser anchoring and virtual-core both compensate rows that resize above
 // the viewport, so enabling both makes upward reader motion oscillate.
 export const TRANSCRIPT_OVERFLOW_ANCHOR = 'none';
-// Re-attaching tolerates more slack than releasing does: while a turn streams,
-// the tail keeps moving away between the reader's last scroll frame and this
-// handler, so a deliberate scroll back down lands tens of px above a bottom
-// that has already grown.
-const REATTACH_THRESHOLD_PX = 32;
-export const SCROLL_KEYS = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '];
-// A release must be a real upward move, not sub-pixel reflow noise. Fractional
-// row heights under a parallel stream deliver 1px scrollTop wobble that is not
-// reader intent; a plain scroll listener never sees it because it does not
-// virtualize (user: 병렬 작업 중 타이핑하면 스크롤이 계속 풀린다).
-const RELEASE_MOVE_PX = 1;
-export const POINTER_DRAG_PX = 4;
+// A scroll that lands this close to the end, moving down with no reader
+// gesture behind it, is the reader arriving: follow re-engages on the spot.
+const REPIN_PX = 1;
+// Within this distance of the end an upward scroll is never a leave (a clamp
+// to a shrunken extent lands here), and a pinned resnap needs more than this.
+const END_TOLERANCE_PX = 2;
+// A wheel notch toward older rows vouches for the scrolls that follow it.
+const WHEEL_UP_WINDOW_MS = 200;
+// A key that scrolls up vouches for the scroll it causes, and keeps the end
+// pin off while it lands.
+export const KEY_UP_WINDOW_MS = 1_000;
+// A lifted finger that left the transcript above the end vouches for the
+// momentum scrolls that follow.
+const TOUCH_END_WINDOW_MS = 2_500;
+// A DOM mutation or a width change explains an upward scroll this long.
+const MUTATION_WINDOW_MS = 400;
+// Mutations right after a restore are the restore's own.
+const RESTORE_QUIET_MS = 150;
+// A scroll up smaller than this many device pixels after a zoom change is
+// rounding, not a leave.
+const DEVICE_PX_FLOOR = 0.75;
+// The jump control needs the end this far below the viewport.
+const JUMP_CONTROL_PX = 200;
+// A press on the scrollbar is held open by the pointer release, which the
+// native scrollbar does not always deliver (the pointer left the window mid
+// drag). Past this the press no longer vouches for upward scrolls.
+const CHROME_PRESS_MAX_MS = 15_000;
+const EDITABLE_TARGET =
+  'input,textarea,select,[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"]';
+// A finger that travels no more than this from where it landed is a tap.
+const TOUCH_MOVED_PX = 4;
 // Touch ownership cannot be a timer. A phone keeps flinging for a second or
 // more after the finger leaves, and a single slow markdown/tool frame on that
 // phone outlives the 250ms gesture window and the 180ms motion window. The
@@ -30,12 +50,14 @@ export const POINTER_DRAG_PX = 4;
 // browser's own scrollend — this idle is only the fallback for engines that do
 // not fire it.
 const TOUCH_FLING_IDLE_MS = 700;
-// Programmatic writes arrive in BURSTS: one measurement commit can move the
-// offset several times (core adjustment, spacer growth, end re-pin) before a
-// single scroll event lands. Remembering only the last one made every earlier
-// write in the burst read as reader intent.
-export const PROGRAMMATIC_WINDOW_MS = 1_500;
-export const PROGRAMMATIC_MEMORY = 12;
+/** iOS WebKit: a touch scroll's held corrections land once its scroll stream
+ *  (finger or momentum) has been quiet this long. iOS fires its last touch
+ *  event as momentum starts, so quiet scroll events are the only end signal. */
+export const IOS_TOUCH_SETTLE_MS = 150;
+// A scroll event this soon after a write of the timeline's own is that write.
+// Later events are the timeline's only when they land exactly on the value it
+// last wrote (the first event after that write).
+export const PROGRAMMATIC_WINDOW_MS = 150;
 // Jump-to-latest must BEAT the motion it interrupts. Both this hook and the
 // virtual timeline gate every end write on reader ownership, so a click that
 // landed inside a live gesture window (wheel ramp, fling tail, scrollbar drag)
@@ -45,88 +67,6 @@ export const PROGRAMMATIC_MEMORY = 12;
 // until the residual momentum Chromium still delivers is overwritten.
 export const JUMP_PIN_MS = 400;
 export const JUMP_PIN_SETTLE_FRAMES = 3;
-
-/**
- * Content-commit bottom rule: was the viewport at
- * the bottom BEFORE this growth? — and they answer it from a SNAPSHOT taken
- * before the mutation, never from the distance the mutation left behind.
- *
- * Deriving it after the fact (`distance < threshold + growth`) cannot tell
- * "the tail grew below me" from "a row ABOVE me resolved from its estimate and
- * pushed everything down". An idle transcript does the latter constantly — a
- * tool card measured at 60px resolves to hundreds — so a reader parked far
- * above the tail satisfied the after-the-fact band and was yanked back to the
- * bottom (user: 멈춰 있는 세션에서도 위로 못 올린다).
- */
-export function grewWhileAtBottom({
-  distanceBefore,
-  growth,
-  threshold = BOTTOM_THRESHOLD_PX,
-}: {
-  /** Distance from the bottom BEFORE the mutation that produced `growth`. */
-  distanceBefore: number;
-  growth: number;
-  threshold?: number;
-}): boolean {
-  if (!Number.isFinite(distanceBefore) || !Number.isFinite(growth)) return false;
-  if (growth <= 0) return false;
-  return distanceBefore < threshold;
-}
-
-/** Scrollbar / empty padding: the event target IS the overflow root. */
-export function isTranscriptChromeTarget(root: EventTarget | null, target: EventTarget | null): boolean {
-  return root != null && target === root;
-}
-
-/** Click, caret, and in-place selection stay armed. Only an upward leave
- *  from the tail unlocks follow (and with it end-anchored wrap). */
-export function pointerShouldReleaseFollow({
-  distance,
-  upwardMove,
-  threshold = BOTTOM_THRESHOLD_PX,
-}: {
-  distance: number;
-  upwardMove: number;
-  threshold?: number;
-}): boolean {
-  if (!Number.isFinite(distance) || !Number.isFinite(upwardMove)) return false;
-  if (distance < threshold) return false;
-  return upwardMove > RELEASE_MOVE_PX;
-}
-
-export function selectionAutoScrollShouldReleaseFollow(delta: number): boolean {
-  return Number.isFinite(delta) && delta < 0;
-}
-
-/** Follow releases only on a real reader leave: wheel, scrollbar, or key.
- *  Tool resize and content clicks change scrollTop but are not a leave. */
-export function readerScrollShouldReleaseFollow({
-  programmatic,
-  chromePointer,
-  upwardMove,
-}: {
-  programmatic: boolean;
-  chromePointer: boolean;
-  upwardMove: number;
-}): boolean {
-  if (programmatic || !chromePointer) return false;
-  return upwardMove > RELEASE_MOVE_PX;
-}
-
-/** A touch drag toward older history releases follow only when the gesture
- *  reaches the transcript itself. A nested code/tool scroller keeps ownership
- *  until its own leading boundary is reached. */
-export function touchMoveShouldReleaseFollow({
-  delta,
-  transcriptReached,
-}: {
-  /** Native scroll delta: negative moves the transcript toward older rows. */
-  delta: number;
-  transcriptReached: boolean;
-}): boolean {
-  if (!Number.isFinite(delta) || !transcriptReached) return false;
-  return -delta > RELEASE_MOVE_PX;
-}
 
 /** Is a touch scroll still in flight? A finger on the glass owns the viewport
  *  outright; once it lifts, the fling keeps that ownership until scrollend
@@ -149,20 +89,239 @@ export function touchScrollLatchOpen({
   return Number.isFinite(sinceScrollMs) && sinceScrollMs < idleMs;
 }
 
-/** A wheel notch toward older history releases follow as soon as the gesture
- *  reaches the transcript — either directly or through a nested scroller that
- *  is already at its leading boundary. Unlike touch, no minimum travel applies:
- *  a wheel notch is deliberate by construction. */
-export function wheelShouldReleaseFollow({
-  delta,
-  transcriptReached,
+/** Is this wheel a vertical scroll? A pinch-zoom (ctrl) and a sideways swipe
+ *  with a little vertical drift are not a move toward older rows. */
+export function wheelIsVerticalScroll(event: { deltaY: number; deltaX?: number; ctrlKey?: boolean }): boolean {
+  return !event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX ?? 0);
+}
+
+/** Does this keydown scroll the transcript up or down? A modified key is an
+ *  app shortcut (a tab switch), except the platform's jump to the top; a key
+ *  aimed at a field moves its caret instead. */
+export function classifyScrollKey(event: {
+  key: string;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  metaKey?: boolean;
+  target?: EventTarget | null;
+}): 'up' | 'down' | 'none' {
+  if ((event.ctrlKey || event.altKey || event.metaKey) && event.key !== 'ArrowUp' && event.key !== 'Home') {
+    return 'none';
+  }
+  // Shift+Tab moves focus back up the page, and the browser scrolls it into view.
+  if (event.key === 'Tab') return event.shiftKey ? 'up' : 'none';
+  if (event.target != null && event.target instanceof Element && event.target.closest(EDITABLE_TARGET)) {
+    return 'none';
+  }
+  switch (event.key) {
+    case 'ArrowUp':
+    case 'PageUp':
+    case 'Home':
+      return 'up';
+    case 'ArrowDown':
+    case 'PageDown':
+    case 'End':
+      return 'down';
+    case ' ':
+      return event.shiftKey ? 'up' : 'down';
+    default:
+      return 'none';
+  }
+}
+
+/** Does a mouse press inside the transcript still vouch for a native upward
+ *  scroll (a scrollbar drag, a selection drag autoscrolling)? `pressedAt` is 0
+ *  when no press is open. */
+export function chromePressHeld({ pressedAt, now }: { pressedAt: number; now: number }): boolean {
+  return pressedAt > 0 && now - pressedAt < CHROME_PRESS_MAX_MS;
+}
+
+/** Does this wheel notch release follow? Only a vertical notch toward older
+ *  rows over a transcript that has rows above its viewport, wherever in the
+ *  transcript (a nested scroller included) it lands. */
+export function wheelReleasesFollow(
+  event: { deltaY: number; deltaX?: number; ctrlKey?: boolean },
+  scrollTop: number
+): boolean {
+  return wheelIsVerticalScroll(event) && event.deltaY < 0 && scrollTop > 0;
+}
+
+/** Did a wheel notch toward older rows happen lately? */
+export function wheelUpRecent({ wheelUpAt, now }: { wheelUpAt: number; now: number }): boolean {
+  return wheelUpAt > 0 && now - wheelUpAt < WHEEL_UP_WINDOW_MS;
+}
+
+/** Is the up-key window open? A scroll up inside it is the key's. */
+export function keyUpRecent({ keyUpAt, now }: { keyUpAt: number; now: number }): boolean {
+  return keyUpAt > 0 && now - keyUpAt < KEY_UP_WINDOW_MS;
+}
+
+/** Did a finger lift lately from above the end? Its momentum scrolls are the reader's. */
+export function touchEndRecent({ touchEndUpAt, now }: { touchEndUpAt: number; now: number }): boolean {
+  return touchEndUpAt > 0 && now - touchEndUpAt < TOUCH_END_WINDOW_MS;
+}
+
+/** Has the finger travelled beyond a tap from where it landed? */
+export function touchTravelled(startY: number, y: number): boolean {
+  return Math.abs(y - startY) > TOUCH_MOVED_PX;
+}
+
+/** Which of the timeline's own writes explains this scroll event? */
+export function attributeWrite({
+  lastWriteAt,
+  writtenTops,
+  top,
+  now,
 }: {
-  /** Normalized wheel delta: negative moves the transcript toward older rows. */
-  delta: number;
-  transcriptReached: boolean;
+  /** When the timeline last wrote the offset; 0 before any write. */
+  lastWriteAt: number;
+  /** The offsets that write left (the target and where it landed). */
+  writtenTops: readonly number[];
+  top: number;
+  now: number;
+}): { recent: boolean; exact: boolean } {
+  return {
+    recent: lastWriteAt > 0 && now - lastWriteAt <= PROGRAMMATIC_WINDOW_MS,
+    exact: writtenTops.includes(Math.round(top)),
+  };
+}
+
+/** Is a mutation or width change fresh enough to explain an upward scroll, and
+ *  not the aftermath of a restore of ours? */
+export function mutationExplainsScroll({
+  mutationAt,
+  restoredAt,
+  now,
+}: {
+  mutationAt: number;
+  restoredAt: number;
+  now: number;
 }): boolean {
-  if (!Number.isFinite(delta) || !transcriptReached) return false;
-  return delta < 0;
+  return now - mutationAt < MUTATION_WINDOW_MS && mutationAt > restoredAt;
+}
+
+/** Was a mutation too close to the last restore to be counted? */
+export function mutationIsOwnRestore({ restoredAt, now }: { restoredAt: number; now: number }): boolean {
+  return now - restoredAt < RESTORE_QUIET_MS;
+}
+
+/** A container width change not yet answered by a restore: the client width is
+ *  a new one and has not been spent on a restore already. */
+export function widthShiftPending(seen: { client: number; spent: number | null } | null, clientWidth: number): boolean {
+  return seen !== null && clientWidth !== seen.client && clientWidth !== seen.spent;
+}
+
+export type ScrollVerdict = 'pin' | 'unpin' | 'restore' | 'none';
+
+/**
+ * What one scroll observation means for follow.
+ *
+ * Arriving at the end re-engages follow at once; a pinned viewport that moved
+ * up is a leave only when something corroborates it, and is otherwise put
+ * back whenever the timeline's own write, a zoom change, or a fresh layout
+ * change explains the move. A move nothing explains is a leave as well.
+ */
+export function judgeScrollEvent(input: {
+  pinned: boolean;
+  previousTop: number;
+  top: number;
+  /** Distance from the end after this move. */
+  distance: number;
+  /** Direction of the last move that changed the offset: 1 down, -1 up, 0 unknown. */
+  lastDirection: number;
+  touchDown: boolean;
+  wheelUpRecent: boolean;
+  /** This is a scroll event within the write window of the timeline's last write. */
+  inWriteWindow: boolean;
+  /** This scroll event is exactly the value the timeline last wrote. */
+  atWrittenTop: boolean;
+  /** A mouse press (scrollbar, selection drag) is held. */
+  pressHeld: boolean;
+  keyUpRecent: boolean;
+  touchEndRecent: boolean;
+  zoomChanged: boolean;
+  /** Zoom factor now. */
+  zoom: number;
+  mutationRecent: boolean;
+  widthShifted: boolean;
+}): ScrollVerdict {
+  const gesture = input.touchDown || input.wheelUpRecent;
+  // Inside the write window an event at an offset the timeline did not write,
+  // moving down, is the reader's own arrival: nothing would reconsider it
+  // once the window closes.
+  const writeExplains = input.atWrittenTop || (input.inWriteWindow && !(input.top > input.previousTop));
+  if (
+    !gesture &&
+    !writeExplains &&
+    input.lastDirection > 0 &&
+    input.distance <= REPIN_PX
+  ) {
+    return 'pin';
+  }
+  if (!input.pinned || !(input.top < input.previousTop) || input.distance <= END_TOLERANCE_PX) return 'none';
+  const corroborated = gesture || input.pressHeld || input.keyUpRecent || input.touchEndRecent;
+  if ((input.inWriteWindow || input.atWrittenTop) && !corroborated) return 'restore';
+  if (corroborated) return 'unpin';
+  if (input.zoomChanged && (input.previousTop - input.top) * input.zoom < DEVICE_PX_FLOOR) return 'restore';
+  if (input.mutationRecent || input.widthShifted) return 'restore';
+  return 'unpin';
+}
+
+/** Does a finger lift need its own judgement of the scroll it ended? Only a
+ *  lift after a scroll the timeline did not write, or after a travelled drag
+ *  (or no timeline write at all) that moved the offset. */
+export function touchLiftNeedsJudgement({
+  scrolledNatively,
+  moved,
+  top,
+  startTop,
+  writesSinceStart,
+}: {
+  scrolledNatively: boolean;
+  moved: boolean;
+  top: number;
+  startTop: number;
+  writesSinceStart: boolean;
+}): boolean {
+  return scrolledNatively || (top !== startTop && (moved || !writesSinceStart));
+}
+
+/** Does a lift from above the end vouch for the momentum scrolls that follow? */
+export function liftLeftAboveEnd({
+  top,
+  startTop,
+  distance,
+}: {
+  top: number;
+  startTop: number;
+  distance: number;
+}): boolean {
+  return top < startTop && distance > END_TOLERANCE_PX;
+}
+
+const PRESS_INTERACTIVE =
+  'a[href],button,summary,label,input,select,textarea,iframe,video,audio,[contenteditable]:not([contenteditable="false"]),[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="switch"],[role="radio"]';
+const KEEPS_FOLLOW = '[data-transcript-keeps-follow]';
+
+/** Does a press, or an Enter/Space, on this target let go of follow? Activating
+ *  an interactive control (an expander, a link, a button) is about to change
+ *  the content under the reader; prose, code text and chrome are not. */
+export function activationReleasesFollow(root: Element, target: EventTarget | null): boolean {
+  if (!(target instanceof Element) || target === root || target.closest(KEEPS_FOLLOW)) return false;
+  const control = target.closest(PRESS_INTERACTIVE);
+  return control !== null && control !== root && root.contains(control);
+}
+
+/** Is this target an editable field? Enter and Space there are typing. */
+export function editableTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(EDITABLE_TARGET) !== null;
+}
+
+/** Is the tail far enough out of sight to offer the jump? Only when follow is
+ *  off and the end is more than a short step below the viewport. */
+export function jumpButtonVisible(metrics: ScrollMetrics, following: boolean): boolean {
+  return !following && distanceFromBottom(metrics) > JUMP_CONTROL_PX;
 }
 
 /** Does a scroller own this delta, or has it reached its boundary and handed
@@ -179,24 +338,8 @@ export function boundaryGestureReached(
   return delta > max - metrics.scrollTop;
 }
 
-/** Does this offset belong to a write the timeline itself made? Bursts are
- *  remembered, so an earlier write in the same commit still counts. */
-export function programmaticWriteMatches({
-  writes,
-  top,
-  now,
-  windowMs = PROGRAMMATIC_WINDOW_MS,
-}: {
-  writes: readonly { top: number; time: number }[];
-  top: number;
-  now: number;
-  windowMs?: number;
-}): boolean {
-  const rounded = Math.round(top);
-  return writes.some((entry) => now - entry.time < windowMs && Math.abs(rounded - entry.top) < 2);
-}
-
 export function reportRelease(reason: string, metrics: ScrollMetrics, previousTop: number): void {
+  logTranscriptScroll('follow-release', { reason, top: metrics.top, delta: metrics.top - previousTop });
   try {
     window.mixdogDesktop?.perfLog?.(
       `transcript-follow-release reason=${reason}` +
@@ -213,14 +356,15 @@ export type WheelLike = {
   target: EventTarget | null;
   currentTarget: HTMLDivElement;
   deltaY: number;
+  deltaX?: number;
   deltaMode?: number;
+  ctrlKey?: boolean;
 };
 export type PointerLike = {
   target: EventTarget | null;
   currentTarget: HTMLDivElement;
-  buttons?: number;
-  clientX?: number;
-  clientY?: number;
+  button?: number;
+  pointerType?: string;
 };
 export type TouchLike = {
   target: EventTarget | null;
@@ -323,37 +467,4 @@ export function distanceFromBottom(metrics: ScrollMetrics): number {
 
 export function canScroll(metrics: ScrollMetrics): boolean {
   return metrics.maxScrollTop > 1;
-}
-
-// The downward-arrival band scales with the pane: on a tall transcript a fast
-// turn appends far more than 32px between the reader's last scroll frame and
-// the scroll event that lands, so a fixed band left the reader detached right
-// under the tail (user: 스크롤이 너무 자주 풀린다).
-function reattachBand(metrics: ScrollMetrics): number {
-  return Math.max(REATTACH_THRESHOLD_PX, Math.round(metrics.viewportHeight * 0.12));
-}
-
-/** Has the viewport arrived back at the tail? A transcript that no longer
- *  overflows holds no reading position at all, the ten-pixel band IS the
- *  bottom, and a DOWNWARD arrival is judged against the wider band: while a
- *  turn streams, the bottom keeps moving away between the reader's last scroll
- *  frame and the handler, so the narrow band could never be met on the way
- *  back. Re-attaching only flips the flag; nothing here writes scrollTop. */
-export function scrollShouldReattachFollow(metrics: ScrollMetrics, previousTop: number): boolean {
-  if (!canScroll(metrics)) return true;
-  const distance = distanceFromBottom(metrics);
-  // An upward frame is the reader leaving: the first smooth-scroll frame of
-  // the wheel notch that just released follow still lands inside the band,
-  // and re-attaching there kept follow armed for the whole climb, so the next
-  // resize (a card opening, the side panel) yanked the reader to the bottom.
-  if (metrics.top < previousTop) return false;
-  if (distance < BOTTOM_THRESHOLD_PX) return true;
-  return metrics.top > previousTop && distance <= reattachBand(metrics);
-}
-
-/** Is the tail far enough out of sight to offer the jump? One viewport, and
- *  never less than 400px, on a transcript that actually overflows. */
-export function jumpButtonVisible(metrics: ScrollMetrics): boolean {
-  if (!canScroll(metrics)) return false;
-  return distanceFromBottom(metrics) > Math.max(400, metrics.viewportHeight);
 }

@@ -1,3 +1,4 @@
+import '../../../scripts/lib/isolated-test-env.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSessionFlow } from './session-flow.mjs';
@@ -90,10 +91,69 @@ test('a command that takes the lock while a turn settles runs before the next qu
   assert.equal(String(f.turns[1].content), 'second');
 });
 
+test('an absolute path is an ordinary message: first, and mid-session', async () => {
+  const f = fixture({ busy: false });
+  const path = '/Users/example/python-learn 이 폴더 봐줘';
+  assert.equal(f.flow.enqueue(path, { id: 'p1' }), true);
+  await tick();
+  assert.deepEqual(
+    f.turns.map((turn) => String(turn.content)),
+    [path],
+    'a new chat\u2019s first message reaches the model'
+  );
+  assert.deepEqual(f.pending, []);
+
+  f.state.busy = true;
+  assert.equal(f.flow.enqueue('/var/log/app.log 확인', { id: 'p2' }), true);
+  f.state.busy = false;
+  await f.flow.drain();
+  await tick();
+  assert.equal(f.turns.length, 2, 'a path queued mid-session reaches the model too');
+  assert.equal(String(f.turns[1].content), '/var/log/app.log 확인');
+  assert.deepEqual(f.pending, []);
+});
+
+test('a registered command is never delivered to the model', async () => {
+  const f = fixture({ busy: false });
+  assert.equal(f.flow.enqueue('/compact', { id: 'c1' }), true);
+  assert.equal(f.flow.enqueue('/model gpt-5', { id: 'c2' }), true);
+  await tick();
+  assert.deepEqual(f.turns, []);
+  assert.equal(f.pending.length, 2, 'commands stay for the command dispatcher');
+});
+
+test('a prompt sent with skipSlashCommands goes out even when it names a command', async () => {
+  const f = fixture({ busy: false });
+  assert.equal(f.flow.enqueue('/model is the word', { id: 'b1', skipSlashCommands: true }), true);
+  await tick();
+  assert.equal(f.turns.length, 1);
+});
+
 test('a drained prompt row is attributed to the device that submitted it', async () => {
   const f = fixture({ busy: false });
   assert.equal(f.flow.enqueue('from the phone', { id: 'p1', transcriptMeta: { device: 'Pixel' } }), true);
   await tick();
   assert.equal(f.items[0].id, 'p1');
   assert.deepEqual(f.items[0].extra, { device: 'Pixel' });
+});
+
+test('a bot message and a user message queued together run as separate turns, each with its own sender', async () => {
+  const f = fixture();
+  assert.equal(f.flow.enqueue('first', { id: 'u0', transcriptMeta: { sender: 'user' } }), true);
+  assert.equal(
+    f.flow.enqueue('from the marketer', { id: 'b1', transcriptMeta: { sender: 'lead', fromAgent: 'agent-1' } }),
+    true
+  );
+  assert.equal(f.flow.enqueue('from the user', { id: 'u1', transcriptMeta: { sender: 'user' } }), true);
+  f.state.busy = false;
+  await f.flow.drain();
+  await tick();
+  assert.deepEqual(
+    f.turns.map((turn) => [String(turn.content), turn.options.transcriptMeta]),
+    [
+      ['first', { sender: 'user' }],
+      ['from the marketer', { sender: 'lead', fromAgent: 'agent-1' }],
+      ['from the user', { sender: 'user' }],
+    ]
+  );
 });

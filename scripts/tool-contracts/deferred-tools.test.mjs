@@ -194,6 +194,27 @@ test('native provider loading keeps the base tool surface byte-stable', () => {
   }
 });
 
+test('load_tool loads every tool of a connector by server name; exact names still work', () => {
+  const mcp = (name) => ({ name, description: `${name}.`, inputSchema: { type: 'object', properties: {} } });
+  const serverTools = ['mcp__notion__search', 'mcp__notion__create_page', 'mcp__notion__update_page'];
+  const session = {
+    provider: 'openai-oauth',
+    tools: [TOOL_SEARCH_TOOL],
+    deferredToolCatalog: [TOOL_SEARCH_TOOL, ...serverTools.map(mcp), mcp('mcp__linear__list_issues')],
+    deferredDiscoveredTools: [],
+    deferredCallableTools: ['load_tool'],
+    deferredProviderMode: 'native',
+    deferredNativeTools: true,
+  };
+  const byServer = JSON.parse(__renderToolSearchForTest({ names: ['mcp__Notion', 'mcp__nope'] }, session, 'full'));
+  assert.deepEqual([...byServer.loaded].sort(), [...serverTools].sort());
+  assert.deepEqual(byServer.missing, ['mcp__nope']);
+  assert.deepEqual([...byServer.nativeToolSearch.toolReferences].sort(), [...serverTools].sort());
+  assert.equal(session.deferredCallableTools.includes('mcp__linear__list_issues'), false);
+  const exact = JSON.parse(__renderToolSearchForTest({ names: ['mcp__linear__list_issues'] }, session, 'full'));
+  assert.deepEqual(exact.loaded, ['mcp__linear__list_issues']);
+});
+
 test('readonly blocks, missing names, and MCP status reporting', () => {
   const readonlyReportingSession = {
     tools: [TOOL_SEARCH_TOOL],
@@ -253,7 +274,8 @@ function assertNativeCustomApplyPatch() {
   }
 }
 
-// Grok keeps one fixed canonical ordinary-function surface, never native loading.
+// Grok keeps one fixed ordinary-function bridge surface, never native loading:
+// load_tool describes and never changes the surface.
 function assertGrokCanonicalSurface() {
   const grokCanonicalSession = { provider: 'grok-oauth', model: 'grok-code-fast-1', tools: [], messages: [] };
   applyDeferredToolSurface(grokCanonicalSession, 'full', smokeCatalog, { provider: 'grok-oauth' });
@@ -261,11 +283,12 @@ function assertGrokCanonicalSurface() {
   const grokLoadResult = JSON.parse(__renderToolSearchForTest({ names: ['edit'] }, grokCanonicalSession, 'full'));
   if (
     grokCanonicalSession.deferredNativeTools ||
+    grokCanonicalSession.toolExposureMode !== 'bridge-v1' ||
     grokLoadResult.nativeToolSearch ||
     JSON.stringify(grokCanonicalSession.tools) !== grokCanonicalJson ||
-    !grokLoadResult.alreadyActive.includes('edit')
+    !grokLoadResult.entries?.some((entry) => entry.name === 'edit')
   ) {
-    throw new Error(`Grok must use a fixed canonical ordinary-function surface: ${JSON.stringify(grokLoadResult)}`);
+    throw new Error(`Grok must use a fixed ordinary-function bridge surface: ${JSON.stringify(grokLoadResult)}`);
   }
 }
 
@@ -375,9 +398,14 @@ test('late MCP reconciliation: Gemini manifests and native typed deltas', () => 
   if (JSON.stringify(geminiManifestSession.tools) !== geminiTurnManifest) {
     throw new Error('Gemini manifest changed within a user turn');
   }
+  // A late tool joins the bridge catalog and is announced; the fixed surface keeps its bytes.
   reconcileDeferredMcpToolCatalog(geminiManifestSession, [geminiLate]);
-  if (!geminiManifestSession.tools.some((tool) => tool.name === 'mcp__gemini__late')) {
-    throw new Error('Gemini must adopt the complete ordered live manifest at reconciliation');
+  if (
+    JSON.stringify(geminiManifestSession.tools) !== geminiTurnManifest ||
+    !geminiManifestSession.deferredLateToolCatalog?.some((tool) => tool.name === 'mcp__gemini__late') ||
+    !geminiManifestSession.pendingDeferredToolDelta?.added?.some((entry) => entry.name === 'mcp__gemini__late')
+  ) {
+    throw new Error('Gemini must announce a late MCP tool and keep its fixed bridge surface');
   }
   const nativeLateSession = {
     provider: 'openai-oauth',
@@ -499,7 +527,7 @@ test('BP2 omits descriptions only for tools routed by visible skills, preserving
   const manifest = session.messages[1].content;
   assert.match(manifest, /^- office$/m);
   assert.match(manifest, /^- github: Manage GitHub repositories\.$/m);
-  assert.match(manifest, /^- mcp__docs__read: Read a remote document\.$/m);
+  assert.match(manifest, /^- mcp__docs: Read a remote document$/m);
   assert.deepEqual(session.deferredToolCatalog, originalCatalog);
 
   // Removing the visible skill restores discovery guidance on rebuild.

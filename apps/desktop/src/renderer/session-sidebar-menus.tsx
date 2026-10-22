@@ -8,6 +8,7 @@ import { sessionLabel } from './session-sidebar-rows';
 import type { ProjectSessionGroup } from './session-sidebar-sections';
 import { isOpen, type OpenMap } from './sidebar-open-state';
 import { copyTextToClipboard } from './text-format';
+import { useStableEvent } from './use-stable-event';
 
 type MenuPoint = { x: number; y: number };
 type ProjectRename = { key: string; draft: string; original: string };
@@ -22,7 +23,7 @@ interface SessionMenuActions {
   onAddProject?(onAdded?: (projectPath: string) => void): void;
   openSessionEditor(session: DesktopSessionSummary, rowKey: string): void;
   closeSessionEditor(): void;
-  setConfirmingSessionId(sessionId: string): void;
+  requestDelete(sessionId: string): void;
   sessionGroupKeys: ReadonlyMap<string, string>;
   projectGroups: readonly ProjectSessionGroup[];
   moveSession(sessionId: string, projectPath: string): void;
@@ -71,6 +72,7 @@ function sessionMenuItems(
   if (onInheritSession && !archived) {
     items.push({ id: 'inherit', label: t('Fork session'), onSelect: () => onInheritSession(session.id) });
   }
+  // A deleted bot's archived chat restores the bot with it (session-sidebar.tsx).
   if (archived) {
     items.push({
       id: 'restore',
@@ -124,7 +126,8 @@ function sessionMenuItems(
     }
   }
   // Delete never runs from the menu itself: it arms the row's inline
-  // cancel/confirm pair, the same confirmation archived rows use.
+  // cancel/confirm pair, the same confirmation archived rows use (a busy
+  // session asks in a dialog instead).
   items.push({
     id: 'delete',
     label: t('Delete'),
@@ -132,7 +135,7 @@ function sessionMenuItems(
     separatorBefore: true,
     onSelect: afterMenu(() => {
       actions.closeSessionEditor();
-      actions.setConfirmingSessionId(session.id);
+      actions.requestDelete(session.id);
     }),
   });
   return items;
@@ -194,10 +197,17 @@ function projectMenuItems(
  *  or project folder), plus the inline project rename a folder menu starts. */
 export function useSidebarMenus(actions: SessionMenuActions & ProjectMenuActions) {
   const [contextMenu, setContextMenu] = useState<ScmContextMenuState | null>(null);
+  // The session whose row opened the last session menu (right-click, long-press,
+  // Menu key). A windowed list keeps that row mounted: the menu hands focus
+  // back to it on close, and Rename/Delete run on it after the menu is gone,
+  // so the pin outlives the menu until another menu opens.
+  const [menuOriginId, setMenuOriginId] = useState('');
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
-  const openSessionMenu = (session: DesktopSessionSummary, point: MenuPoint, rowKey: string) => {
+  // One identity for the memoised rows; the menu reads the current actions.
+  const openSessionMenu = useStableEvent((session: DesktopSessionSummary, point: MenuPoint, rowKey: string) => {
+    setMenuOriginId(session.id);
     setContextMenu({ label: sessionLabel(session), ...point, items: sessionMenuItems(session, rowKey, actions) });
-  };
+  });
   const [projectRename, setProjectRename] = useState<ProjectRename | null>(null);
   const projectRenameRef = useRef(projectRename);
   projectRenameRef.current = projectRename;
@@ -212,8 +222,14 @@ export function useSidebarMenus(actions: SessionMenuActions & ProjectMenuActions
     if (alias && alias !== current.original) actions.onRenameProject?.(group.path, alias);
   };
   const openProjectMenu = (group: ProjectSessionGroup, point: MenuPoint) => {
+    setMenuOriginId('');
     setContextMenu({ label: group.name, ...point, items: projectMenuItems(group, actions, setProjectRename) });
   };
+  /** Any other row's menu on the same surface (a bot row's contact menu). */
+  const openMenu = useCallback((menu: ScmContextMenuState) => {
+    setMenuOriginId('');
+    setContextMenu(menu);
+  }, []);
   const projectRenameEditor = projectRename && {
     key: projectRename.key,
     draft: projectRename.draft,
@@ -224,5 +240,13 @@ export function useSidebarMenus(actions: SessionMenuActions & ProjectMenuActions
       setProjectRename(null);
     },
   };
-  return { contextMenu, closeContextMenu, openSessionMenu, openProjectMenu, projectRenameEditor };
+  return {
+    contextMenu,
+    menuOriginId,
+    closeContextMenu,
+    openSessionMenu,
+    openProjectMenu,
+    openMenu,
+    projectRenameEditor,
+  };
 }

@@ -61,6 +61,12 @@ export interface NativeAppUpdateState {
   /** The user postponed this version. */
   dismissed?: boolean;
   error?: 'network' | 'verify' | 'storage' | 'install';
+  /** The shell downloads updates on its own (no user Update tap). */
+  auto?: boolean;
+  /** The last release lookup failed; absent from older shells. */
+  lastCheckError?: 'network';
+  /** When the last release lookup ran (ms since epoch); absent from older shells. */
+  lastCheckAt?: number;
 }
 
 export interface MixdogNativeCalls extends NativeFileSaveCalls {
@@ -73,6 +79,12 @@ export interface MixdogNativeCalls extends NativeFileSaveCalls {
   openAppUpdateInBrowser: [undefined, boolean];
   getPushState: [undefined, NativePushState];
   requestPush: [undefined, NativePushState];
+  /** Opens this app's notification settings in the system (Android: app
+   *  notification settings, else app details; iOS 16+: notification settings,
+   *  else the app's settings). False when the system could not open them;
+   *  older shells answer `null`. The shell fires `mixdognativepush` when the
+   *  app returns to the foreground. */
+  openNotificationSettings: [undefined, boolean | null];
   takePendingAction: [undefined, NativeNotificationAction | null];
   /** Actions this host may act on; they stay parked until acknowledged. */
   peekPendingActions: [{ hostId: string }, NativeNotificationAction[]];

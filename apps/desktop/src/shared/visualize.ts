@@ -1,10 +1,21 @@
 // The agent `visualize` tool's side-panel tabs, shared by main and renderer.
 // Main owns the tab state; the renderer only draws it and reports the user's
 // tab clicks and closes.
+import { fileExtension } from './file-extension';
+import { documentPreviewFormatForPath, filePreviewTypeForPath } from './file-preview';
+import { type VisualizeAnnotation, visualizeAnnotations } from './visualize-annotations';
 
 /** How one pane renders: HTML through the local page server, Office
  *  documents through their PDF conversion, the rest as native previews. */
 export type VisualizePaneKind = 'html' | 'document' | 'pdf' | 'image' | 'audio' | 'video' | 'inline';
+
+/** The pane kind a file renders as, or '' when visualize cannot show it. */
+export function visualizeKindForPath(path: string): Exclude<VisualizePaneKind, 'inline'> | '' {
+  const extension = fileExtension(path);
+  if (extension === 'html' || extension === 'htm') return 'html';
+  if (documentPreviewFormatForPath(path)) return 'document';
+  return filePreviewTypeForPath(path)?.kind ?? '';
+}
 
 /** What `open` can render straight from `input.content`, with no file. */
 export const VISUALIZE_INLINE_KINDS = ['mermaid', 'svg', 'chart', 'html', 'markdown'] as const;
@@ -24,8 +35,9 @@ export interface VisualizePaneView {
   kind: VisualizePaneKind;
   /** Set on `inline` panes: the content drawn by the sandboxed renderer. */
   inline?: VisualizeInlineContent;
-  /** Static inline panes, desktop window only: the one-time id its render
-   *  report must carry (never sent to remote clients). */
+  /** Static inline panes: the one-time id its render report must carry. The
+   *  desktop window's and a remote client's are signed apart (a remote
+   *  state never carries the desktop's). */
   renderId?: string;
   /** Small caption over the pane (the file name). */
   label: string;
@@ -47,6 +59,38 @@ export interface VisualizeVersionView {
   /** When it was kept (ms since epoch). */
   at: number;
   label?: string;
+  /** The agent turns (start, end; ms since epoch) that ended on this version
+   *  of the tab: a turn's card reads the version its turn produced from here,
+   *  on any device and after any renderer reload. Kept with the version. */
+  turns?: VisualizeVersionTurn[];
+}
+
+/** One agent turn's span, as the host saw it start and end. */
+export interface VisualizeVersionTurn {
+  since: number;
+  end: number;
+}
+
+/** Most turns one version remembers. */
+export const MAX_VERSION_TURNS = 20;
+
+/** The version of `versions` whose turn contains `at` (ms): what the card of
+ *  a call made at `at` stands for; 0 when no turn of this tab ended there. */
+export function versionProducedAt(versions: readonly VisualizeVersionView[] | undefined, at: number): number {
+  if (!versions || !at) return 0;
+  // A turn start is seen a moment after its first call was made.
+  const SLACK_MS = 2000;
+  let found = 0;
+  let foundEnd = Infinity;
+  for (const version of versions) {
+    for (const turn of version.turns ?? []) {
+      if (turn.end >= at && turn.since - SLACK_MS <= at && turn.end < foundEnd) {
+        found = version.n;
+        foundEnd = turn.end;
+      }
+    }
+  }
+  return found;
 }
 
 /** Most versions a tab keeps; older ones are evicted first. */
@@ -69,7 +113,16 @@ export function visualizeThumbnail(value: unknown): string {
 /** What went wrong in an HTML pane: an uncaught exception, an unhandled
  *  promise rejection, a CSP violation, a failed resource load (a 404 from the
  *  local page server), a failed page load, or a page's own console output. */
-export type VisualizeProblemKind = 'exception' | 'rejection' | 'csp' | 'asset-failed' | 'blocked-network' | 'blocked-navigation' | 'load' | 'console-error' | 'console-warn'
+export type VisualizeProblemKind =
+  | 'exception'
+  | 'rejection'
+  | 'csp'
+  | 'asset-failed'
+  | 'blocked-network'
+  | 'blocked-navigation'
+  | 'load'
+  | 'console-error'
+  | 'console-warn'
   /** An inline pane's content failed to render (Mermaid parse error, bad chart JSON…). */
   | 'render';
 
@@ -93,7 +146,9 @@ export const MAX_VISUALIZE_PROBLEMS = 20;
 
 /** `source:line` of a problem (the line only when known). */
 export function visualizeProblemLocation(problem: Pick<VisualizeProblem, 'source' | 'line'>): string {
-  return problem.source ? `${problem.source}${problem.line > 0 ? `:${problem.line}` : ''}` : '';
+  if (!problem.source) return '';
+  const line = problem.line > 0 ? `:${problem.line}` : '';
+  return `${problem.source}${line}`;
 }
 
 /** A page-server URL (`http://127.0.0.1:<port>/<token>/rel`) reduced to the
@@ -109,10 +164,14 @@ export interface VisualizeTabView {
   revision: number;
   /** 1-3 panes shown side by side. */
   panes: VisualizePaneView[];
+  /** The live files were removed: the panel shows a notice instead of the
+   *  panes until they are back (the next revision). */
+  missing?: true;
   /** Runtime problems of the tab's HTML panes; absent when there are none. */
   problems?: VisualizeProblem[];
-  /** The user allowed outside network for the tab's HTML pages (off by
-   *  default: only the page's own files load). Desktop only. */
+  /** Outside network for the tab's HTML pages (on when a tab opens; the
+   *  desktop user can switch it off, then only the page's own files load).
+   *  A paired device's page frame follows it with its CSP. */
   networkAllowed?: true;
   /** Kept versions, oldest first (absent from hosts without history). */
   versions?: VisualizeVersionView[];
@@ -127,6 +186,12 @@ export interface VisualizeTabView {
   /** The chat card's picture of the tab (see `visualizeThumbnail`); absent
    *  until one could be taken. */
   thumbnail?: string;
+  /** The version `thumbnail` shows (0 for a tab without versions): a card
+   *  of another version never takes it. */
+  thumbnailVersion?: number;
+  /** The agent's annotation marks on the displayed panes (main draws them in
+   *  the desktop window; a paired device draws them from here). */
+  annotations?: VisualizeAnnotation[];
 }
 
 /** Most entries a session's "All visuals" list keeps; older ones fall out. */
@@ -162,6 +227,9 @@ export interface VisualizeCommandResult {
   path?: string;
   openable?: boolean;
   canceled?: boolean;
+  /** `thumbnail`: the kept picture of the asked version (a data URL), absent
+   *  when it has none. */
+  thumbnail?: string;
 }
 
 /** A text pane's source (an HTML file; inline content travels in the tab). */
@@ -174,13 +242,41 @@ export interface VisualizePaneText {
 /** Largest source a pane's source view reads, in bytes. */
 export const MAX_VISUALIZE_SOURCE_BYTES = 512 * 1024;
 
+/** A zoom gesture seen in a pane's own frame (a page, a PDF), which the panel's
+ *  document never receives: Ctrl+wheel, or Ctrl/Cmd + = / − / 0. */
+export type VisualizeZoomInput = 'in' | 'out' | 'reset';
+
 /** Main → renderer: a session's visualize tabs changed (`state`), optionally
- *  asking to reveal the panel, or a web URL to hand to the browser panel. */
+ *  asking to reveal the panel, or a web URL to hand to the browser panel. A
+ *  `zoom` event names no session: with a `point` (the wheel's place in the
+ *  window, CSS px) the panel there takes it, without one (a key) the panel
+ *  that holds focus. */
 export interface DesktopVisualizeEvent {
   sessionId: string;
   state?: VisualizeSessionState;
+  /** An agent open or a content update: bring the panel up on `tab` (by the
+   *  open policy in visualize-store); hosts before `tab` mean the active tab. */
   reveal?: boolean;
+  tab?: string;
+  /** A content update of this tab (its file changed): applied in place, it
+   *  never activates a tab or reveals the panel; an inactive tab gets an
+   *  "updated" mark until it is viewed. Only `reveal` brings anything up. */
+  updated?: string;
+  /** Sent while the session's agent turn runs: `state` is what the turn has
+   *  made so far. The panel keeps showing what it showed (nothing opens,
+   *  activates or reloads), and `updated` still marks its tab. The turn's
+   *  end sends the final state as an ordinary event. */
+  held?: boolean;
+  /** With `held`: when the turn started (ms). Chat cards of opens made since
+   *  then wait for the turn's end. */
+  heldSince?: number;
   openUrl?: string;
+  zoom?: VisualizeZoomInput;
+  point?: { x: number; y: number };
+  /** Ctrl/Cmd went down (true) or up while a pane frame held focus, so the
+   *  panel's document saw no key event. Lets a document frame (the PDF
+   *  viewer) hand Ctrl+wheel to the panel (visualize.css). */
+  zoomModifier?: boolean;
 }
 
 /** Renderer → main: the user picked or closed a visualize tab, or stepped
@@ -201,9 +297,17 @@ export type DesktopVisualizeTabCommand =
    *  `design/mockups/<slug>/` in the working directory (never overwrites). */
   | { sessionId: string; tabId: string; action: 'export'; format: 'png' | 'pdf' | 'project'; pane?: number }
   /** An inline pane (displayed index `pane`) finished rendering; `error` when
-   *  it failed. Desktop window only, carrying the pane's issued `renderId`;
-   *  refused on the remote command path. */
+   *  it failed, carrying the pane's issued `renderId` (the desktop window's
+   *  or, on the remote command path, the remote one). */
   | { sessionId: string; tabId: string; action: 'render'; pane: number; renderId: string; error?: string }
+  /** A paired device's page frame refused a request to the outside network
+   *  (its CSP stands in for the desktop's session filter): `url` is the refused
+   *  address, `resource` what asked for it (an Electron `resourceType`). It is
+   *  listed as the same `blocked-network` page problem as on the desktop. */
+  | { sessionId: string; tabId: string; action: 'blocked'; pane: number; url: string; resource: string }
+  /** A chat card's picture of kept version `version` (taken when its turn
+   *  ended), for a card of an earlier version; changes nothing. */
+  | { sessionId: string; tabId: string; action: 'thumbnail'; version: number }
   /** A chat card of a closed tab: open the same file targets again in the
    *  session's working directory (validated like an agent open). */
   | {
@@ -237,6 +341,9 @@ export interface VisualizeHostPane {
    *  the tab's cwd (a kept version's snapshot folder). */
   root?: string;
   version?: number;
+  /** Inline panes: the render id a remote client's report must carry (signed
+   *  apart from the desktop window's, see `renderId`). */
+  remoteRenderId?: string;
 }
 
 export interface VisualizeHostTab {
@@ -249,8 +356,10 @@ export interface VisualizeHostTab {
   /** The working directory every pane and page asset must stay inside. */
   cwd: string;
   panes: VisualizeHostPane[];
+  missing?: true;
   /** Already project-relative (see `VisualizeProblem`). */
   problems?: VisualizeProblem[];
+  networkAllowed?: true;
   /** Path-free already. */
   versions?: VisualizeVersionView[];
   version?: number | null;
@@ -259,6 +368,9 @@ export interface VisualizeHostTab {
   restoreAssets?: string[];
   /** A data URL (path-free). */
   thumbnail?: string;
+  thumbnailVersion?: number;
+  /** Selectors and labels only (path-free). */
+  annotations?: VisualizeAnnotation[];
 }
 
 export interface VisualizeHostState {
@@ -274,6 +386,12 @@ export interface VisualizeHostEvent {
   sessionId: string;
   state?: VisualizeHostState;
   reveal?: boolean;
+  /** With `reveal`: the tab the open or update was for. */
+  tab?: string;
+  /** See `DesktopVisualizeEvent.updated` / `held` / `heldSince`. */
+  updated?: string;
+  held?: boolean;
+  heldSince?: number;
   openUrl?: string;
 }
 
@@ -284,6 +402,10 @@ export const REMOTE_VISUALIZE_CHANGED_EVENT = 'visualizeChanged';
 /** The push lane a remote client registers to receive visualize changes. */
 export const REMOTE_VISUALIZE_LANE = 'visualize';
 
+/** Largest page file a remote client builds into a document; the host gives
+ *  no content identity (no client cache) to a larger one. */
+export const REMOTE_PAGE_MAX_BYTES = 4 * 1024 * 1024;
+
 /** `visualizePaneFile`: what a remote pane loads (`rel` is relative to the
  *  tab's working directory; page assets resolve against it). */
 export interface VisualizeRemotePaneFile {
@@ -292,13 +414,34 @@ export interface VisualizeRemotePaneFile {
   size: number;
   mtimeMs: number;
   rel: string;
+  /** HTML panes: `<live|v<version>>:<sha256 hex of the file's bytes>`, what
+   *  a device's page cache is keyed on (absent from older hosts: no cache). */
+  contentId?: string;
+  /** Image/audio/video panes: a lease the encrypted media lane streams
+   *  (absent from older hosts and other kinds). */
+  mediaAssetId?: string;
 }
 
-/** A remote pane ready to draw: a blob URL, or a self-contained page. */
+/** A remote pane ready to draw: a blob or media-lane URL, or a
+ *  self-contained page. */
 export interface VisualizePaneSource {
   kind: VisualizePaneKind;
   url?: string;
   srcdoc?: string;
+  /** A page's own path (relative to its root), what its requests resolve against. */
+  page?: string;
+  /** A page's host content identity (see VisualizeRemotePaneFile). */
+  contentId?: string;
+  /** Serves the page's own `fetch`/XHR of a project file (`reference` as the
+   *  page wrote it, resolved against `page`); rejects anything else. */
+  fetch?(reference: string): Promise<{ bytes: Uint8Array; mime: string }>;
+}
+
+/** Remote PNG/PDF export (`visualizeExport`): the rendered file as a download
+ *  source the device's download path redeems, and its file name. */
+export interface VisualizeRemoteExport {
+  source: { kind: 'export'; sessionId: string; exportId: string };
+  name: string;
 }
 
 /** The client view of a host state: no host paths (only cwd-relative targets
@@ -330,6 +473,17 @@ export function remoteVisualizeState(state: VisualizeHostState): VisualizeSessio
         pane: problem.pane,
         ...(typeof problem.version === 'number' ? { version: problem.version } : {}),
       }));
+      const annotations = visualizeAnnotations(tab.annotations);
+      const remoteVersion = (version: NonNullable<typeof tab.versions>[number]) => {
+        const turns = version.turns?.length ? { turns: version.turns.map(({ since, end }) => ({ since, end })) } : {};
+        return { n: version.n, at: version.at, ...(version.label ? { label: version.label } : {}), ...turns };
+      };
+      const versionFields = (versions: NonNullable<typeof tab.versions>) => ({
+        versions: versions.map(remoteVersion),
+        version: tab.version ?? null,
+        ...(tab.compare ? { compare: true } : {}),
+        ...(tab.restoreAssets?.length ? { restoreAssets: tab.restoreAssets.map(String) } : {}),
+      });
       return {
         id: tab.id,
         label: tab.remoteLabel,
@@ -341,22 +495,19 @@ export function remoteVisualizeState(state: VisualizeHostState): VisualizeSessio
           url: '',
           // Inline content has no host file: it travels with the state.
           ...(pane.inline ? { inline: pane.inline } : {}),
+          ...(pane.inline && typeof pane.remoteRenderId === 'string' ? { renderId: pane.remoteRenderId } : {}),
           ...(typeof pane.version === 'number' ? { version: pane.version } : {}),
         })),
+        ...(tab.missing === true ? { missing: true as const } : {}),
         ...(problems.length ? { problems } : {}),
-        ...(tab.versions
-          ? {
-              versions: tab.versions.map((version) => ({
-                n: version.n,
-                at: version.at,
-                ...(version.label ? { label: version.label } : {}),
-              })),
-              version: tab.version ?? null,
-              ...(tab.compare ? { compare: true } : {}),
-              ...(tab.restoreAssets?.length ? { restoreAssets: tab.restoreAssets.map(String) } : {}),
-            }
-          : {}),
+        // The device's frame drops its no-outside-network CSP only on this flag.
+        ...(tab.networkAllowed === true ? { networkAllowed: true as const } : {}),
+        ...(tab.versions ? versionFields(tab.versions) : {}),
         ...(visualizeThumbnail(tab.thumbnail) ? { thumbnail: visualizeThumbnail(tab.thumbnail) } : {}),
+        ...(visualizeThumbnail(tab.thumbnail) && Number.isInteger(tab.thumbnailVersion)
+          ? { thumbnailVersion: tab.thumbnailVersion }
+          : {}),
+        ...(annotations.length ? { annotations } : {}),
       };
     }),
   };

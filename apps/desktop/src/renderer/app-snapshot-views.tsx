@@ -24,7 +24,10 @@ import {
   type DesktopSnapshotStore,
 } from './desktop-snapshot-store';
 import { EMPTY_SNAPSHOT, type Snapshot, type TranscriptItem } from './desktop-types';
+import { draftModelSelectionFromSnapshot } from './draft-pane-prefs-store';
+import { focusedDraftModelSelection } from './use-focused-draft-route';
 import { PaneSurfaceCover } from './PaneSurfaceGate';
+import { useMobileRemoteSurface } from './mobile-surface';
 import { defaultSessionLaneStore, useSessionLane } from './session-lane-store';
 import { useSessionLaneRead } from './use-session-lane-read';
 import { requestSessionRead } from './session-read-request';
@@ -39,9 +42,14 @@ import {
   conversationPresentedSessionId,
   nextConversationOriginSessionId,
   conversationMarkdownPending,
+  conversationLaneIsEmpty,
 } from './first-submit-stability';
 import { readTranscriptVirtualSnapshot } from './transcript-virtual-cache';
 import { ContextUsageIndicator } from './transcript-status';
+import { agentIdOfHomeSession } from '../../../../src/runtime/agent/orchestrator/session/agent-home.mjs';
+import { roomIdOfSession } from '../../../../src/runtime/agent/orchestrator/session/agent-room.mjs';
+import { ComposerRoutineReadout } from './composer-routine-readout';
+import { ComposerUsageReadout } from './composer-usage-readout';
 import { TranscriptAssistantRow, type TranscriptAssistantRowProps } from './TranscriptAssistantRow';
 
 let utilityDockModulePromise: Promise<typeof import('./UtilityDock')> | null = null;
@@ -160,6 +168,7 @@ export const PaneConversation = memo(function PaneConversation({
   ...props
 }: PaneConversationProps) {
   const lane = useSessionLane(sessionId, defaultSessionLaneStore, desktopConversationShellSnapshotsEqual, !hidden);
+  const mobileSurface = useMobileRemoteSurface();
   const { readUnavailable, retryRead } = useSessionLaneRead({
     sessionId,
     hasLane: lane !== null,
@@ -257,6 +266,15 @@ export const PaneConversation = memo(function PaneConversation({
     setEnteredSessions((current) => (current.has(sessionKey) ? current : new Set(current).add(sessionKey)));
   }, []);
   const entryPending = !hidden && Boolean(sessionId) && !promotingFromDraft && !enteredSessions.has(sessionId);
+  // The timeline records an entry only after populated rows were revealed. A
+  // loaded lane with no rows has none to reveal, so it is entered as it lands.
+  const laneEmpty = !hidden && Boolean(sessionId) && !markdownPending && conversationLaneIsEmpty(lane);
+  useLayoutEffect(() => {
+    if (laneEmpty) onEntryRevealed(sessionId);
+  }, [laneEmpty, onEntryRevealed, sessionId]);
+  // The transcript is hidden while its reveal settles. A revisit latches the
+  // cover as already revealed, so the hidden transcript must hold it up.
+  const [transcriptHidden, setTranscriptHidden] = useState(false);
   // Only the conversation can declare its dock and row geometry ready.
   // A parallel timer would uncover a slow diff/Goal before its height lands.
   // Sidebar session registration remounts the virtualizer. Keep the sheet
@@ -306,6 +324,46 @@ export const PaneConversation = memo(function PaneConversation({
     ),
     [hidden, presentedSessionId, props.onOpenCommandSurface]
   );
+  const usageReadout = useMemo(
+    () => (
+      <PaneUsageReadout
+        sessionId={presentedSessionId}
+        hidden={hidden}
+        onOpenUsage={() => props.onOpenCommandSurface('stats')}
+      />
+    ),
+    [hidden, presentedSessionId, props.onOpenCommandSurface]
+  );
+  // A phone keeps its pane-sized cover (its skeleton draws its own composer
+  // bar); a wide pane covers the transcript viewport only, so the composer
+  // dock never disappears under a session switch.
+  // The cover, the Goal island and the assistant row renderer keep their
+  // identities between the conversation's own commits (a session switch is
+  // several), so the transcript and the memoised island skip those renders.
+  const coverHold = transcriptHidden && !hidden;
+  const coverSkeleton = mobileSurface && Boolean(sessionId);
+  const surfaceCover = useMemo(
+    () => (
+      <PaneSurfaceCover
+        ready={surfaceReady}
+        label={t('Loading conversation…')}
+        transitionKey={coverKey}
+        hold={coverHold}
+        skeleton={coverSkeleton}
+        revealOnReady
+      />
+    ),
+    [surfaceReady, coverKey, coverHold, coverSkeleton]
+  );
+  const goalIsland = useMemo(
+    () => <PaneGoalIsland sessionId={presentedSessionId} hidden={hidden} />,
+    [presentedSessionId, hidden]
+  );
+  const renderAssistantRow = useCallback(
+    (row: TranscriptAssistantRowProps) => <PaneAssistantRow {...row} sessionId={sessionId} hidden={hidden} />,
+    [sessionId, hidden]
+  );
+  const unavailable = readUnavailable && lane === null && !hidden;
   return (
     <>
       <Conversation
@@ -317,14 +375,17 @@ export const PaneConversation = memo(function PaneConversation({
         reviewActive={focused && !hidden}
         warmPaintHandoff={warmDraftHandoff}
         onEntryRevealed={onEntryRevealed}
-        renderAssistantRow={(row) => <PaneAssistantRow {...row} sessionId={sessionId} hidden={hidden} />}
+        onTranscriptHiddenChange={setTranscriptHidden}
+        renderAssistantRow={renderAssistantRow}
         {...props}
         onInheritSession={onInheritSession}
         submit={submit}
-        goalIsland={<PaneGoalIsland sessionId={presentedSessionId} hidden={hidden} />}
+        goalIsland={goalIsland}
         contextIndicator={contextIndicator}
+        usageReadout={usageReadout}
+        transcriptCover={unavailable || mobileSurface ? undefined : surfaceCover}
       />
-      {readUnavailable && lane === null && !hidden ? (
+      {unavailable ? (
         <div className="pane-surface-cover session-unavailable" role="alert">
           <div className="session-unavailable-card">
             <strong>{t('Session unavailable')}</strong>
@@ -335,7 +396,7 @@ export const PaneConversation = memo(function PaneConversation({
           </div>
         </div>
       ) : (
-        <PaneSurfaceCover ready={surfaceReady} label={t('Loading conversation…')} transitionKey={coverKey} />
+        mobileSurface && surfaceCover
       )}
     </>
   );
@@ -451,6 +512,36 @@ export function PaneContextIndicator({
   return <ContextUsageIndicator snapshot={visibleSnapshot} onViewDetails={onViewDetails} />;
 }
 
+/** The composer line's speed and cache-hit readout, on the same lane read. */
+export function PaneUsageReadout({
+  sessionId,
+  hidden,
+  onOpenUsage,
+}: {
+  sessionId: string;
+  hidden: boolean;
+  onOpenUsage(): void;
+}) {
+  // A bot's home thread or a group room (agent mode) reads routines here; a coding session its usage.
+  return agentIdOfHomeSession(sessionId) || roomIdOfSession(sessionId) ? (
+    <ComposerRoutineReadout sessionId={sessionId} hidden={hidden} />
+  ) : (
+    <PaneCodingUsageReadout sessionId={sessionId} hidden={hidden} onOpenUsage={onOpenUsage} />
+  );
+}
+
+function PaneCodingUsageReadout({
+  sessionId,
+  hidden,
+  onOpenUsage,
+}: {
+  sessionId: string;
+  hidden: boolean;
+  onOpenUsage(): void;
+}) {
+  return <ComposerUsageReadout snapshot={usePaneIslandSnapshot(sessionId, hidden)} onOpenUsage={onOpenUsage} />;
+}
+
 type SnapshotUtilityDockProps = Omit<
   React.ComponentProps<typeof import('./UtilityDock')['UtilityDock']>,
   'snapshot'
@@ -484,10 +575,22 @@ export const SnapshotUtilityDock = memo(function SnapshotUtilityDock({
     desktopDockSnapshotsEqual,
     activated || !hidden
   );
+  // Read at the moment of use: the dock's snapshot slice skips model changes.
+  const readComposerModel = useCallback(
+    // A focused session owns the engine snapshot's model; a draft composer
+    // (blank engine) paints its own selection.
+    () => draftModelSelectionFromSnapshot(snapshotStore.getSnapshot()) ?? focusedDraftModelSelection(),
+    [snapshotStore]
+  );
   if (!activated && hidden) return null;
   return (
     <React.Suspense fallback={<InitialSurface />}>
-      <UtilityDock {...props} prewarm={prewarm} snapshot={hidden ? EMPTY_SNAPSHOT : hostSnapshot} />
+      <UtilityDock
+        {...props}
+        prewarm={prewarm}
+        snapshot={hidden ? EMPTY_SNAPSHOT : hostSnapshot}
+        readComposerModel={readComposerModel}
+      />
     </React.Suspense>
   );
 });

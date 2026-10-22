@@ -40,8 +40,11 @@ import {
   textContent,
 } from './cursor-wire-request.mjs';
 import { handleExecMessage, heartbeatFrame, sendToolResult } from './cursor-wire-exec.mjs';
+import { releaseCursorNativeCall } from './cursor-native-context.mjs';
 import { completionChunk, createStreamSink } from './cursor-wire-stream-sink.mjs';
 import { createBridgeController } from './cursor-wire-stream-bridge.mjs';
+import { markProviderRecoveryExhausted } from './retry-classifier.mjs';
+import { TRANSPORT_SCOPE_DISPOSED } from './transport-scope.mjs';
 
 export { clearModelCache, getCursorModels, getCursorUsage } from './cursor-wire-models.mjs';
 
@@ -69,16 +72,22 @@ function storeActiveRun(key, active) {
   activeRuns.set(key, active);
 }
 
-// Tear down one stored run: drop it from the registry, stop its 5s heartbeat
-// interval, and close the Cursor bridge it was holding open.
-function closeActiveRun(key, active, error) {
-  if (!forgetActiveRun(key, active)) return false;
+function disposeActiveRun(active, error) {
   clearInterval(active.heartbeat);
+  for (const pending of active.pending) releaseCursorNativeCall(pending);
+  active.pending = [];
   try {
     active.bridge.close(error);
   } catch {
     /* already closing */
   }
+}
+
+// Tear down one stored run: drop it from the registry, stop its 5s heartbeat
+// interval, and close the Cursor bridge it was holding open.
+function closeActiveRun(key, active, error) {
+  if (!forgetActiveRun(key, active)) return false;
+  disposeActiveRun(active, error);
   return true;
 }
 
@@ -117,6 +126,8 @@ globalThis.__mixdogCloseProviderConnectionsForSession = (sessionId, reason) => {
     _priorCursorSessionCloseHook?.(sessionId, reason);
   } finally {
     closeCursorRunsForSession(sessionId, reason);
+    // A disposed transport scope never sends again: drop its conversation.
+    if (reason === TRANSPORT_SCOPE_DISPOSED && sessionId) conversations.delete(conversationKey([], sessionId));
   }
 };
 const _priorCursorDrainHook = globalThis.__mixdogDrainProviderConnections;
@@ -325,11 +336,12 @@ function createPendingToolBatchResponse(active, model, key) {
 }
 
 // Stream state shared by the sink, the message router and the bridge controller.
-function freshStreamState(sawTurnEnded) {
+function freshStreamState(sawTurnEnded, executions) {
   return {
     outputTokens: 0,
     contextTokens: null,
     pending: [],
+    executions,
     closed: false,
     sawEnd: false,
     sawTurnEnded: sawTurnEnded === true,
@@ -357,7 +369,9 @@ function createStreamResponse({
   // Owning session, carried into the stored run so a session close can find
   // and tear down the pending batch's bridge/heartbeat.
   sessionId = '',
+  ownerSessionId = sessionId,
   sawTurnEnded = false,
+  executions = new Map(),
   restart = null,
   sleep = undefined,
   onStageChange = null,
@@ -373,7 +387,7 @@ function createStreamResponse({
   const stream = new ReadableStream({
     start(controller) {
       const filter = thinkingFilter();
-      const state = freshStreamState(sawTurnEnded);
+      const state = freshStreamState(sawTurnEnded, executions);
       const tuning = resolveCursorStreamTuning();
       watchdog = createCursorStreamWatchdog({
         idleTimeoutMs: tuning.idleTimeoutMs,
@@ -397,7 +411,7 @@ function createStreamResponse({
         watchdog,
         sink,
         tuning,
-        run: { key, conversation, tools, cloudRule, modelParameters, maxMode, sessionId },
+        run: { key, conversation, tools, cloudRule, modelParameters, maxMode, sessionId, ownerSessionId },
         runs,
         restart,
         sleep,
@@ -446,10 +460,30 @@ function resumeRun(active, toolResults, userText, model, key) {
     }
     const payload = { ...result, content: String(result.content ?? '') };
     if (pendingUserText && pending.exec.execId === lastExecId) {
+      if (pending.native?.resultType === 'readResult') pending.nativeUserMessage = pendingUserText;
       payload.content += `\n\n<user_message>\n${pendingUserText}\n</user_message>`;
       userTextDelivered = true;
     }
     sendToolResult(active.bridge, pending, payload, result.isError !== true);
+  }
+  // Every pending call was already handed to the executor. Re-emitting the
+  // same batch without accepting a result makes the transcript rename its
+  // ids, breaks native authorization, and can loop without another model call.
+  // Partial progress is valid; an unchanged pending batch is a terminal
+  // handoff failure, not a transport retry or an invitation to execute again.
+  if (remaining.length > 0 && remaining.length === active.pending.length) {
+    const error = markProviderRecoveryExhausted(
+      cursorError(
+        `Cursor tool-result handoff made no progress: ${remaining.length} pending call(s) received no matching result. Stopped to avoid repeating tool execution.`,
+        { status: 400, code: 'tool_result_no_progress' }
+      ),
+      { owner: 'cursor-wire', terminal: true }
+    );
+    // handleChatCompletion already detached this run; direct partial-batch
+    // resumes may still own its registry entry and expiry timer.
+    forgetActiveRun(key, active);
+    disposeActiveRun(active, error);
+    throw error;
   }
   active.pending = remaining;
   active.pendingUserText = userTextDelivered ? '' : pendingUserText;
@@ -468,7 +502,11 @@ function noUserMessageResponse() {
   });
 }
 
-export async function handleChatCompletion(body, accessToken, { onStageChange = null, getAccessToken = null } = {}) {
+export async function handleChatCompletion(
+  body,
+  accessToken,
+  { onStageChange = null, getAccessToken = null, resetActiveRun = false, ownerSessionId = '' } = {}
+) {
   await warmCursorClientVersion();
   const parsed = parseMessages(body.messages);
   if (
@@ -489,6 +527,7 @@ export async function handleChatCompletion(body, accessToken, { onStageChange = 
   const cloudRule = parsed.systems.join('\n\n') || undefined;
   const active = activeRuns.get(key);
   if (
+    !resetActiveRun &&
     active &&
     parsed.toolResults.length &&
     active.bridge.alive &&
@@ -528,6 +567,7 @@ export async function handleChatCompletion(body, accessToken, { onStageChange = 
     maxMode,
     key,
     sessionId,
+    ownerSessionId,
     onStageChange,
     restart: async ({ fromCheckpoint, reason, error }) => {
       if (reason === 'throttle') {

@@ -5,24 +5,31 @@ import { estimateMessagesTokens, reconcileDedupStubs, sanitizeToolPairs } from '
 import { HANDOFF_TIMEOUT_MAX_MS, SUMMARY_OUTPUT_TOKENS, compactDebugLog } from './constants.mjs';
 import {
   contentText,
+  redactRawSecretString,
   redactToolCallSecretsInMessages,
   safeEstimateMessagesTokens,
   textByteLength,
 } from './text-utils.mjs';
 import {
+  contextAckMessage,
+  isCompactConversationRow,
+  isProtectedContextAckMessage,
   isSummaryMessage,
   latestActualUserInstructionIndex,
   latestActualUserInstructionMessage,
+  pendingTaskNotificationIndexes,
   splitProtectedContext,
 } from './messages.mjs';
 import { activeTurnContinuationMessage } from './continuation.mjs';
-import { buildExecutionTail } from './execution-tail.mjs';
+import { EXECUTION_RECOVERY_SOURCE, buildExecutionTail } from './execution-tail.mjs';
 import { latestSkillBodies } from '../../context/skill-state.mjs';
 import { effectiveBudget } from './budget.mjs';
 import { stripRuntimeUserContext, withRuntimeUserContext } from '../runtime-user-context.mjs';
-import { carryMessageId } from '../message-ids.mjs';
+import { carryMessageId, messageIdOf } from '../message-ids.mjs';
 import { normalizeIngestRole, shouldExcludeIngestMessage } from '../../../../memory/lib/session-ingest.mjs';
 import { codexWireSendOpts } from '../manager/session-id.mjs';
+import { messageHasReferencableMedia, referenceMessageMedia } from '../../../../attachments/attachment-reference.mjs';
+import { messageAttachmentTokens } from '../attachment-preflight.mjs';
 import { rebaseCompactedEffortConfiguration } from '../../providers/effort-configuration.mjs';
 import {
   COMPACTION_SYSTEM_PROMPT,
@@ -46,11 +53,19 @@ function combinedSignal(parent, timeoutMs) {
 
 function splitFreshSource(messages) {
   const sanitized = redactToolCallSecretsInMessages(reconcileDedupStubs(sanitizeToolPairs(messages)));
-  const { protectedPrefix, conversation } = splitProtectedContext(sanitized);
+  const split = splitProtectedContext(sanitized);
+  // A recovery reminder right after the system prompt reads as protected
+  // prefix and would outlive every pass. It belongs to the conversation, where
+  // buildExecutionTail replaces it with the newest compaction's reminder.
+  const isRecovery = (message) => message?.meta?.source === EXECUTION_RECOVERY_SOURCE;
+  const protectedPrefix = split.protectedPrefix.filter((message) => !isRecovery(message));
+  const conversation = [...split.protectedPrefix.filter(isRecovery), ...split.conversation];
   let previousSummaryMessage = null;
+  let previousAck = null;
   for (let index = conversation.length - 1; index >= 0; index -= 1) {
     if (isSummaryMessage(conversation[index])) {
       previousSummaryMessage = conversation[index];
+      if (isProtectedContextAckMessage(conversation[index + 1])) previousAck = conversation[index + 1];
       break;
     }
   }
@@ -59,11 +74,17 @@ function splitFreshSource(messages) {
     protectedPrefix,
     previousSummary: previousSummaryMessage?.content || null,
     previousSummaryMessage,
+    previousAck,
     // Budgeting, AI input and rule-only retention use this same projection.
     // Keep current-turn reminders; remove only proven runtime additions from
     // older requests. Unmarked legacy text remains part of the summary budget.
+    // Older requests also carry their attachments by reference from here on:
+    // the file stays on disk under the path the reference names, so the
+    // compacted context keeps the pointer instead of the whole document.
     live: conversation
-      .map((message, index) => (index === latestUserIndex ? message : stripRuntimeUserContext(message)))
+      .map((message, index) =>
+        index === latestUserIndex ? message : referenceMessageMedia(stripRuntimeUserContext(message))
+      )
       .filter((message) => !isSummaryMessage(message)),
     sanitized,
   };
@@ -84,28 +105,76 @@ function chunkConversationMessage(role, content, source = {}) {
   return out;
 }
 
-function pureConversationForHandoff(messages) {
+// What the summary reads of runtime conversation rows and tool calls. The
+// rows stay whole in rule-only Compact; the calls stay in the execution tail
+// and archive.
+const SUMMARY_RUNTIME_ROW_CHARS = 4_000;
+const SUMMARY_TOOL_ARGS_CHARS = 200;
+const SUMMARY_TOOL_OUTCOME_CHARS = 300;
+
+function boundedSummaryText(text, limit) {
+  return text.length > limit ? `${text.slice(0, limit)}… [${text.length - limit} more chars]` : text;
+}
+
+function toolCallSummaryLine(call, result) {
+  const rawArgs = typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments ?? {});
+  const args = boundedSummaryText(rawArgs.replace(/\s+/g, ' '), SUMMARY_TOOL_ARGS_CHARS);
+  // Arguments arrive redacted (splitFreshSource); the outcome is redacted
+  // here, before any cut can split a secret from its key.
+  const outcome = redactRawSecretString(contentText(result?.content)).trim();
+  // An ask_user result is the user's own answer: never cut.
+  const shown =
+    call.name === 'ask_user' ? outcome : boundedSummaryText(outcome.replace(/\s+/g, ' '), SUMMARY_TOOL_OUTCOME_CHARS);
+  return `[tool call] ${call.name}(${args}) → ${result ? shown || '(empty result)' : '(no result)'}`;
+}
+
+// The conversation Compact measures and summarizes: user and assistant text
+// (the memory-ingest projection) plus runtime conversation rows. `summary`
+// bounds those rows and adds one line per tool call with its outcome.
+function compactionConversationRows(messages, { summary = false } = {}) {
+  const list = messages || [];
+  const results = new Map(list.filter((m) => m?.role === 'tool').map((m) => [m.toolCallId, m]));
   const out = [];
-  for (const message of messages || []) {
+  for (const message of list) {
     if (!message || typeof message !== 'object') continue;
-    const role = normalizeIngestRole(message.role);
-    if (!role || shouldExcludeIngestMessage(message)) continue;
     const content = contentText(message.content).trim();
-    if (!content) continue;
-    out.push(...chunkConversationMessage(role, content, message));
+    if (isCompactConversationRow(message)) {
+      // A notification can carry a background command's output: the summary
+      // reads it redacted like a tool outcome.
+      const text = summary ? boundedSummaryText(redactRawSecretString(content), SUMMARY_RUNTIME_ROW_CHARS) : content;
+      if (text) out.push(...chunkConversationMessage('user', text, message));
+      continue;
+    }
+    const role = normalizeIngestRole(message.role);
+    if (role && content && !shouldExcludeIngestMessage(message)) {
+      out.push(...chunkConversationMessage(role, content, message));
+    }
+    if (summary && message.role === 'assistant' && message.toolCalls?.length) {
+      const lines = message.toolCalls.map((call) => toolCallSummaryLine(call, results.get(call.id)));
+      out.push(...chunkConversationMessage('assistant', lines.join('\n'), message));
+    }
   }
   return out;
 }
 
-export function conversationCompactionInput(messages) {
+/** The conversation Compact measures against its summary threshold, or with
+ *  `summary`, the input the summary is written from. */
+export function conversationCompactionInput(messages, { summary = false } = {}) {
   const source = splitFreshSource(messages);
-  const latest = latestActualUserInstructionIndex(source.live);
+  // The turn input (the latest actual request and unanswered notifications)
+  // is mandatory and must never be replaced by a summary. Skills and runtime
+  // injections are excluded by the same conversation projection used by
+  // summary generation.
+  const turnInput = new Set([
+    latestActualUserInstructionIndex(source.live),
+    ...pendingTaskNotificationIndexes(source.live),
+  ]);
   return [
     ...(source.previousSummaryMessage ? [source.previousSummaryMessage] : []),
-    // The latest actual request is mandatory and must never be replaced by
-    // a summary. Tool outputs, skills and runtime injections are excluded
-    // by the same conversation projection used by summary generation.
-    ...pureConversationForHandoff(source.live.filter((_, index) => index !== latest)),
+    ...compactionConversationRows(
+      source.live.filter((_, index) => !turnInput.has(index)),
+      { summary }
+    ),
   ];
 }
 
@@ -124,6 +193,9 @@ function summarySendOpts(opts) {
     // Fast mode is opt-in (it needs separate account credits); the summary
     // follows the route/session choice and never enables it on its own.
     fast: opts.fast ?? opts.sendOpts?.fast ?? false,
+    // Usage-ledger source for a foreground session's summary call (a
+    // background session's own sourceType still wins there).
+    requestKind: 'compaction',
     maxOutputTokens: opts.maxOutputTokens || SUMMARY_OUTPUT_TOKENS,
     providerState: undefined,
     onToolCall: undefined,
@@ -208,7 +280,8 @@ export async function generateFreshHandoffSummary(provider, messages, model, bud
   const startedAt = Date.now();
   const budget = effectiveBudget(budgetTokens, opts);
   const source = splitFreshSource(messages);
-  let head = opts.filterOldHistoryForIngest === true ? pureConversationForHandoff(source.live) : source.live;
+  let head =
+    opts.filterOldHistoryForIngest === true ? compactionConversationRows(source.live, { summary: true }) : source.live;
   if (head.length === 0 && !source.previousSummary) {
     throw new Error('generateFreshHandoffSummary: no compactable session history');
   }
@@ -320,7 +393,12 @@ function prependLatestUserContext(message, prefix) {
   if (replacesGoalState) {
     suffix = suffix.replace(/<system-reminder>\s*<goal_state>[\s\S]*?<\/goal_state>\s*<\/system-reminder>\s*/gi, '');
   }
-  return withRuntimeUserContext(bare, { prefix: `${text}\n\n`, suffix });
+  // The kept suffix still carries the turn's agent list reminder: it stays told.
+  const told = bare !== message && message.meta.agentListing ? { agentListing: message.meta.agentListing } : null;
+  return withRuntimeUserContext(told ? { ...bare, meta: { ...bare.meta, ...told } } : bare, {
+    prefix: `${text}\n\n`,
+    suffix,
+  });
 }
 
 // The retained execution tail plus the current-turn messages that must
@@ -339,8 +417,11 @@ function freshContextTail(source, budgetTokens, preserveConversation, opts) {
   const retainedTail = execution.messages.map((message, index) =>
     index === latestIndex ? prependLatestUserContext(message, opts.latestUserPrefix) : message
   );
+  // The turn's input: the latest real request or an unanswered notification
+  // (a bot home thread may hold no human request at all).
+  const turnInput = !!latestUser || pendingTaskNotificationIndexes(source.live).length > 0;
   const activeTurnContinuation =
-    latestUser && opts.activeTurn === true ? activeTurnContinuationMessage(source.live) : null;
+    turnInput && opts.activeTurn === true ? activeTurnContinuationMessage(source.live) : null;
   // Older compacted sessions may have only synthetic Goal turns left.
   // Preserve the current snapshot without inventing a human instruction
   // to attach it to or resurrecting every historical Goal reminder.
@@ -355,6 +436,7 @@ function freshContextTail(source, budgetTokens, preserveConversation, opts) {
   return {
     execution,
     latestUser,
+    turnInput,
     retainedTail,
     activeTurnContinuation,
     volatileTail: [
@@ -387,20 +469,57 @@ function skillLoaderPair(live, bodyIndex, name, retainedCallIds) {
   return [];
 }
 
+const SKILL_RELOAD_SOURCE = 'compact-skill-reload';
+
+function skillReloadReminder(name) {
+  return {
+    role: 'user',
+    content: `[mixdog-runtime] Skill "${name}" was active, but its instructions did not fit after Compact. Reload it with the Skill tool before relying on them.`,
+    meta: { source: SKILL_RELOAD_SOURCE, synthetic: true, skill: name },
+  };
+}
+
 // Preserve complete, most-recent skill bodies from the durable transcript.
 // Never summarize/truncate operating instructions or displace the handoff
-// and current task. An omitted body remains eligible for a normal reload.
+// and current task. An omitted body leaves a one-line reload reminder, which
+// stands through later Compacts until the skill is loaded again. Reminders
+// are charged to the same budget: every skill's reminder is reserved before
+// any body is restored, and restoring a body releases its own reminder.
 function restoreSkillBodies(live, skillBudget, retainedTail) {
   const retainedCallIds = new Set(retainedTail.filter((m) => m?.role === 'tool').map((m) => m.toolCallId));
+  const bodies = latestSkillBodies(live);
+  const loaded = new Set(bodies.map((body) => body.name));
+  const reload = live
+    .filter((m) => m?.meta?.source === SKILL_RELOAD_SOURCE && !loaded.has(m.meta.skill))
+    .map((m) => m.meta.skill);
+  const reminderCost = (name) => estimateMessagesTokens([skillReloadReminder(name)]);
+  let reserved = [...new Set([...reload, ...loaded])].reduce((sum, name) => sum + reminderCost(name), 0);
+  const dropped = [];
   const restoredSkills = [];
   let skillTokens = 0;
-  for (const { name, message } of latestSkillBodies(live).reverse()) {
+  for (const { name, message } of bodies.reverse()) {
     const restored = [...skillLoaderPair(live, live.lastIndexOf(message), name, retainedCallIds), message];
     const cost = estimateMessagesTokens(restored);
-    if (skillTokens + cost > skillBudget) continue;
+    const own = reminderCost(name);
+    if (skillTokens + cost + reserved - own > skillBudget) {
+      dropped.unshift(name);
+      continue;
+    }
     restoredSkills.unshift(...restored);
     skillTokens += cost;
+    reserved -= own;
   }
+  // Newest skill first; only a budget too small for the reminders themselves
+  // leaves one out.
+  const pending = [...new Set([...reload, ...dropped])];
+  const reminded = new Set();
+  for (const name of pending.toReversed()) {
+    const cost = reminderCost(name);
+    if (skillTokens + cost > skillBudget) continue;
+    reminded.add(name);
+    skillTokens += cost;
+  }
+  restoredSkills.push(...pending.filter((name) => reminded.has(name)).map(skillReloadReminder));
   return { restoredSkills, skillTokens };
 }
 
@@ -505,6 +624,15 @@ function freshSkillBudget(targetBudget, budget, committed) {
   return Math.max(0, Math.min(25_000, Math.floor(targetBudget * 0.2), budget - estimateMessagesTokens(committed)));
 }
 
+// Every pass rebuilds the ack; it keeps the previous ack's id so the archive
+// does not count an unchanged ack as dropped, unless the tail still holds it.
+function stableAckMessage(previousAck, volatileTail) {
+  const ack = contextAckMessage();
+  const id = messageIdOf(previousAck);
+  if (!id || volatileTail.some((message) => messageIdOf(message) === id)) return ack;
+  return carryMessageId(ack, previousAck);
+}
+
 // The pieces every fresh context carries: the protected prefix, the handoff
 // summary (or the previous one when no handoff was produced), the stable
 // acknowledgement between them and the volatile tail. `mandatory` is what
@@ -518,7 +646,7 @@ function freshContextLayout(source, budgetTokens, opts) {
     ? fitFreshContextSummaryMessage(source.live, handoffText, Number.MAX_SAFE_INTEGER)
     : source.previousSummaryMessage;
   const tail = freshContextTail(source, budgetTokens, !replaceConversation, opts);
-  const stableAck = tail.latestUser && summaryMessage ? { role: 'assistant', content: '.' } : null;
+  const stableAck = tail.turnInput && summaryMessage ? stableAckMessage(source.previousAck, tail.volatileTail) : null;
   const stableHead = [
     ...source.protectedPrefix,
     ...(summaryMessage ? [summaryMessage] : []),
@@ -528,15 +656,43 @@ function freshContextLayout(source, budgetTokens, opts) {
   return { handoffText, summaryMessage, tail, stableHead, mandatory, mandatoryCost: estimateMessagesTokens(mandatory) };
 }
 
-function assertMandatoryFits(budget, mandatoryCost, summaryMessage, contextWindow) {
-  if (mandatoryCost > budget || (summaryMessage && mandatoryCost === budget)) {
-    const window = Number(contextWindow) > 0 ? ` (currently ${contextWindow} tokens)` : '';
-    throw new Error(
-      `freshContextCompactMessages: mandatory session context/latest instruction exceeds compact budget=${budget} ` +
-        `(mandatory=${mandatoryCost}); the model context window${window} is too small for the tool definitions ` +
-        'and session context. Increase the model context size.'
-    );
-  }
+function mandatoryOverflows(budget, mandatoryCost, summaryMessage) {
+  return mandatoryCost > budget || (summaryMessage && mandatoryCost === budget);
+}
+
+export const LATEST_TURN_EXCEEDS_CONTEXT = 'LATEST_TURN_EXCEEDS_CONTEXT';
+
+// Says what does not fit and what would make it fit. A larger window is only
+// offered when one would actually hold the required size.
+function assertMandatoryFits(budget, mandatoryCost, summaryMessage, contextWindow, latestUser) {
+  if (!mandatoryOverflows(budget, mandatoryCost, summaryMessage)) return;
+  // Fixed sentences with the sizes inline: the desktop re-speaks each one
+  // through its catalog (error-notice-copy / transcript-failure-text).
+  const count = (value) => Number(value).toLocaleString('en-US');
+  const window = Number(contextWindow) > 0 ? `${count(contextWindow)}-token` : 'current';
+  const attachments = messageAttachmentTokens(latestUser);
+  const cause =
+    attachments > 0
+      ? `Its attachments alone are about ${count(attachments)} tokens.`
+      : 'The latest message and protected session context (system rules, tool definitions) are that large.';
+  const error = new Error(
+    `The latest message cannot fit this model (${LATEST_TURN_EXCEEDS_CONTEXT}): it needs about ` +
+      `${count(mandatoryCost)} tokens, but the ${window} window leaves ${count(budget)} for it. ${cause} ` +
+      'Shorten the message or move large pasted text into a file the model can read. ' +
+      `A larger context window helps only if it holds ${count(mandatoryCost)} tokens plus room for the answer.`
+  );
+  error.code = LATEST_TURN_EXCEEDS_CONTEXT;
+  throw error;
+}
+
+// The source with the latest request's attachments sent by reference. Same
+// source when it carries none.
+function withLatestAttachmentsReferenced(source) {
+  const latest = latestActualUserInstructionIndex(source.live);
+  if (latest < 0 || !messageHasReferencableMedia(source.live[latest])) return source;
+  const live = source.live.slice();
+  live[latest] = referenceMessageMedia(live[latest]);
+  return { ...source, live };
 }
 
 function assertHandoffFits(summaryMessage, room) {
@@ -564,14 +720,26 @@ export function freshContextCompactMessages(messages, budgetTokens, opts = {}) {
     });
   }
 
-  const source = splitFreshSource(baseSanitized);
-  const { handoffText, summaryMessage, tail, stableHead, mandatory, mandatoryCost } = freshContextLayout(
-    source,
-    budgetTokens,
-    opts
-  );
-  const budget = freshContextBudget({ targetBudget, budgetTokens, mandatoryCost, summaryMessage, opts });
-  assertMandatoryFits(budget, mandatoryCost, summaryMessage, opts.contextWindow);
+  let source = splitFreshSource(baseSanitized);
+  let layout = freshContextLayout(source, budgetTokens, opts);
+  let budget = freshContextBudget({ targetBudget, budgetTokens, ...layout, opts });
+  // The latest request is mandatory and kept verbatim — except its
+  // attachments: when they are what does not fit (or the provider already
+  // refused this request as too long), they travel by reference instead of
+  // failing the turn, and every later turn, forever.
+  if (
+    opts.referenceLatestAttachments === true ||
+    mandatoryOverflows(budget, layout.mandatoryCost, layout.summaryMessage)
+  ) {
+    const referenced = withLatestAttachmentsReferenced(source);
+    if (referenced !== source) {
+      source = referenced;
+      layout = freshContextLayout(source, budgetTokens, opts);
+      budget = freshContextBudget({ targetBudget, budgetTokens, ...layout, opts });
+    }
+  }
+  const { handoffText, summaryMessage, tail, stableHead, mandatory, mandatoryCost } = layout;
+  assertMandatoryFits(budget, mandatoryCost, summaryMessage, opts.contextWindow, tail.latestUser);
   const handoff = handoffRoomFor(budget, mandatoryCost, opts);
   const summaryContent = String(summaryMessage?.content || '');
   assertHandoffFits(summaryMessage, handoff.room);

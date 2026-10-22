@@ -9,14 +9,11 @@ export const OPENAI_COMPAT_PRESETS = {
     baseURL: 'https://api.x.ai/v1',
     defaultModel: 'grok-4.5',
   },
-  // OpenCode Go - low-cost coding-model subscription gateway.
-  'opencode-go': {
-    baseURL: 'https://opencode.ai/zen/go/v1',
-    defaultModel: 'glm-5.2',
-  },
   openrouter: {
     baseURL: 'https://openrouter.ai/api/v1',
     defaultModel: 'openrouter/auto',
+    // OpenRouter documents cache_control on Chat content blocks.
+    chatCacheControl: true,
     extraHeaders: {
       'HTTP-Referer': 'https://github.com/tribgames/mixdog',
       'X-OpenRouter-Title': 'mixdog',

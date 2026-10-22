@@ -17,6 +17,9 @@ export const REMOTE_PAIRING_STORAGE_KEYS = {
   // When an approval last succeeded here. A credential rejected right after one
   // is a real failure, not something to paper over by asking again in a loop.
   approvedAt: 'mixdog.remote-approved-at',
+  // Which linked file (path and conversation) each held file-grant token
+  // names, so a token restored after a reload can be granted again.
+  fileGrants: 'mixdog.remote-file-grants',
 } as const;
 
 /** Per-PC pairing state. Everything here belongs to ONE desktop on ONE relay
@@ -30,6 +33,7 @@ const SCOPED_PAIRING_NAMES = [
   'e2eeSecret',
   'claim',
   'approvedAt',
+  'fileGrants',
 ] as const;
 
 export type RemotePairingKeys = Record<keyof typeof REMOTE_PAIRING_STORAGE_KEYS, string>;
@@ -92,6 +96,30 @@ export function canReuseStoredRemoteClientRegistration({
   return everPaired && hasE2eePairing && isRemoteClientCredential(token);
 }
 
+/** What a boot does before it may dial. `lost`: this container booted before
+ *  and kept its id, but its credential is gone (and no durable copy came back)
+ *  with no request pending — it says so and waits for the user to ask, instead
+ *  of filing a new request on the PC behind their back. */
+export type RemoteBootApproval = 'not-installed' | 'lost' | 'no-token' | 'no-key' | 'dial';
+
+export function remoteBootApproval({
+  installed,
+  token,
+  hasE2eePairing,
+  browserIdStored,
+  claimPending,
+}: {
+  installed: boolean;
+  token: string;
+  hasE2eePairing: boolean;
+  browserIdStored: boolean;
+  claimPending: boolean;
+}): RemoteBootApproval {
+  if (!installed) return 'not-installed';
+  if (!token) return browserIdStored && !claimPending ? 'lost' : 'no-token';
+  return hasE2eePairing ? 'dial' : 'no-key';
+}
+
 function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/gu, '');
   return host === 'localhost' || host === '127.0.0.1' || host === '::1';
@@ -139,14 +167,15 @@ export function normalizeRemoteExternalUrl(value: string): string {
 
 export function isInvalidRemotePairingClose(event: Pick<CloseEvent, 'code' | 'reason'>): boolean {
   // 4003: pairing/device revoked. 4005: relay v2 refused a stale or legacy
-  // shared token — only a fresh QR scan recovers either.
+  // shared token — only pairing again recovers either, by a fresh QR scan or
+  // a new six-digit code.
   if (event.code === 4003 || event.code === 4005) return true;
   if (event.code !== 4004) return false;
-  // 4004 is a generic desktop rejection; only permanent E2EE failures drop the
-  // pairing. A handshake TIMEOUT is transient (busy desktop) and reconnects.
-  return /relay encryption (?:handshake required|authentication failed)|invalid encrypted relay frame/iu.test(
-    event.reason
-  );
+  // 4004 is a generic desktop rejection; only real authentication failures
+  // drop the pairing. A handshake TIMEOUT is transient (busy desktop), and so
+  // is "handshake required": an older PC sends it for ciphertext a phone had
+  // in flight while that PC redialed.
+  return /relay encryption authentication failed|invalid encrypted relay frame/iu.test(event.reason);
 }
 
 export function clearStoredRemotePairing(

@@ -4,6 +4,7 @@ import { mergeStoredProviders } from './config-providers-merge.mjs';
 import { normalizeExtensionScopes } from '../../shared/extension-scopes.mjs';
 import { applyConfigPatch, diffConfig } from '../../shared/config-patch.mjs';
 import { normalizeWorkflowSelection } from '../../shared/orchestration.mjs';
+import { AUTO_EFFORT_BASE, autoEffortBase } from './providers/auto-effort.mjs';
 import { DEFAULT_INSTRUCTION_FILES_MODE, normalizeInstructionFilesMode } from '../../shared/instruction-files-mode.mjs';
 import {
   DEFAULT_DISABLED_AGENT_ROSTER,
@@ -114,6 +115,8 @@ export function buildDefaultConfig(options = {}) {
   providers['muse-code-oauth'] = oauthEntry('muse-code-oauth');
   // Command Code Provider API, enabled from its stored Studio API key.
   providers['command-code-oauth'] = oauthEntry('command-code-oauth');
+  // OpenCode Go through an OpenCode Console login, enabled from its stored tokens.
+  providers['opencode-go-oauth'] = oauthEntry('opencode-go-oauth');
   // Dev-only providers (Settings → Developer → Providers, one option each):
   // omitted entirely from the default config while their option is off so
   // they never surface in settings.
@@ -203,6 +206,13 @@ function storedInstructionFiles(agent) {
   return mode === DEFAULT_INSTRUCTION_FILES_MODE ? {} : { instructionFiles: mode };
 }
 
+// `autoEffortBase` (providers/auto-effort.mjs): only a valid non-default level
+// is kept; absent means medium.
+function storedAutoEffortBase(agent) {
+  const base = autoEffortBase(agent?.autoEffortBase);
+  return base === AUTO_EFFORT_BASE ? {} : { autoEffortBase: base };
+}
+
 export function loadConfig(options = {}) {
   const includeSecrets = options.secrets !== false;
   // `secrets: 'presence'`: credentials are detected (env, OAuth files, which
@@ -267,6 +277,7 @@ export function loadConfig(options = {}) {
         disabledAgents: legacyDisabledAgents ? disabledAgentIds(raw) : effectiveDisabledAgents(raw),
         ...(raw.memoryTools && typeof raw.memoryTools === 'object' ? { memoryTools: { ...raw.memoryTools } } : {}),
         ...storedInstructionFiles(raw),
+        ...storedAutoEffortBase(raw),
         ...normalizeWorkflowSelection(raw),
         profile: normalizeProfileConfig(raw.profile),
         skills: normalizeSkillsConfig(raw.skills),
@@ -307,6 +318,10 @@ export function loadConfig(options = {}) {
   const defaults = buildDefaultConfig({ detectCredentials: includeSecrets });
   return {
     ...defaults,
+    // A stored keychain key enables its provider with or without a stored
+    // config section: Settings lists such a provider as connected, so a
+    // profile that carries only credentials (a copied auth) must load it too.
+    providers: mergeStoredProviders({ raw: {}, defaults, includeSecrets, presenceOnly }),
     mcpServers: {},
     pluginMcp: {},
     presets: DEFAULT_PRESETS.map((p) => ({ ...p })),
@@ -457,6 +472,8 @@ function buildAgentSaveBuilder(config) {
     else delete next.aiSessionTitles;
     delete next.instructionFiles;
     Object.assign(next, storedInstructionFiles(config));
+    delete next.autoEffortBase;
+    Object.assign(next, storedAutoEffortBase(config));
     delete next.workflowRoutes;
     // Defaults live in code: values equal to the current default are not stored.
     return storedAgentForm(removeRetiredAgentFields(next));

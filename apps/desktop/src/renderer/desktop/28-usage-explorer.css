@@ -304,6 +304,23 @@
   justify-self: end;
   height: 30px;
 }
+/* Phone: the finger-sized calendar is wider than the room left of the
+   "custom" chip, so the editor hangs off the whole range row instead and
+   spans it edge to edge. */
+html[data-mixdog-mobile-tabs] .stats-ranges {
+  position: relative;
+}
+html[data-mixdog-mobile-tabs] .stats-custom {
+  position: static;
+}
+html[data-mixdog-mobile-tabs] .stats-custom-range {
+  inset-inline: 0;
+  width: auto;
+  justify-items: center;
+}
+html[data-mixdog-mobile-tabs] .stats-custom-range > button {
+  height: var(--mx-touch-min);
+}
 .stats-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
@@ -718,6 +735,10 @@
   background: transparent;
   cursor: pointer;
 }
+html[data-mixdog-mobile-tabs] .stats-trend-detail-heading button {
+  width: var(--mx-touch, 44px);
+  height: var(--mx-touch, 44px);
+}
 .stats-trend-detail-heading svg {
   width: 14px;
   height: 14px;
@@ -814,7 +835,7 @@
 .stats-surface :is([data-usage-provider="xai"], [data-usage-provider="grok-oauth"]) {
   --stats-provider-color: var(--mx-chart-gold);
 }
-.stats-surface [data-usage-provider="opencode-go"] {
+.stats-surface :is([data-usage-provider="opencode-go"], [data-usage-provider="opencode-go-oauth"]) {
   --stats-provider-color: var(--mx-chart-green);
 }
 .stats-surface [data-usage-provider="mixdog-local"] {
@@ -1487,10 +1508,14 @@ button.quota-chart-slot[aria-expanded="true"] {
   vertical-align: -2px;
   accent-color: var(--mx-accent-bg);
 }
+/* KaTeX's own 1.21em ran visibly larger than the 15px prose around it. */
+.markdown .katex {
+  font-size: 1.05em;
+}
 .markdown .katex-display {
-  /* Display math is a CARD block like tables and code (20px), not a flow
-     block: at 16px it sat between the two rhythms and matched neither. */
-  margin: 20px 0;
+  /* Display math is a CARD block like tables and code (18px), not a flow
+     block: at 14px it sat between the two rhythms and matched neither. */
+  margin: 18px 0;
   padding: 2px 0;
   overflow-x: auto;
   overflow-y: hidden;
@@ -1498,33 +1523,31 @@ button.quota-chart-slot[aria-expanded="true"] {
 }
 
 /* highlight.js ink over the shared code card, Dark+/Light+ class.
-   Explicit-language fences only; token hues live as theme tokens so the
-   light sheet swaps the whole ramp in one place. */
+   Explicit-language fences only; the ramps are named per appearance
+   (--mx-tone-dark-syntax-* / --mx-tone-light-syntax-*, 01-tokens.css): each
+   theme block picks its own, and a skin whose plate is the other tone picks
+   the plate's (33-skin.css). */
 :root {
-  --mx-syntax-comment: #78aa68;
-  --mx-syntax-keyword: #5aa9ff;
-  --mx-syntax-control: #d096f5;
-  --mx-syntax-string: #f0a070;
-  --mx-syntax-number: #8fd18a;
-  --mx-syntax-type: #3fd0b4;
-  --mx-syntax-function: #e8cf70;
-  --mx-syntax-variable: #8fd0ff;
-  --mx-syntax-meta: #f58585;
+  --mx-syntax-comment: var(--mx-tone-dark-syntax-comment);
+  --mx-syntax-keyword: var(--mx-tone-dark-syntax-keyword);
+  --mx-syntax-control: var(--mx-tone-dark-syntax-control);
+  --mx-syntax-string: var(--mx-tone-dark-syntax-string);
+  --mx-syntax-number: var(--mx-tone-dark-syntax-number);
+  --mx-syntax-type: var(--mx-tone-dark-syntax-type);
+  --mx-syntax-function: var(--mx-tone-dark-syntax-function);
+  --mx-syntax-variable: var(--mx-tone-dark-syntax-variable);
+  --mx-syntax-meta: var(--mx-tone-dark-syntax-meta);
 }
 :root[data-mixdog-theme="light"] {
-  /* A calm light ramp. The stock Light+ primaries (#0000ff, #a31515, #008000)
-     were built for a white editor; on the tinted code plates they read as
-     harsh, dated ink. Every hue keeps >= 4.5:1 on
-     the layer-1 plate. */
-  --mx-syntax-comment: #646b78;
-  --mx-syntax-keyword: #0a58ca;
-  --mx-syntax-control: #8a2fc9;
-  --mx-syntax-string: #b8420a;
-  --mx-syntax-number: #06756a;
-  --mx-syntax-type: #0b6f8a;
-  --mx-syntax-function: #7a5700;
-  --mx-syntax-variable: #1f4fa6;
-  --mx-syntax-meta: #c42b2b;
+  --mx-syntax-comment: var(--mx-tone-light-syntax-comment);
+  --mx-syntax-keyword: var(--mx-tone-light-syntax-keyword);
+  --mx-syntax-control: var(--mx-tone-light-syntax-control);
+  --mx-syntax-string: var(--mx-tone-light-syntax-string);
+  --mx-syntax-number: var(--mx-tone-light-syntax-number);
+  --mx-syntax-type: var(--mx-tone-light-syntax-type);
+  --mx-syntax-function: var(--mx-tone-light-syntax-function);
+  --mx-syntax-variable: var(--mx-tone-light-syntax-variable);
+  --mx-syntax-meta: var(--mx-tone-light-syntax-meta);
 }
 .markdown-code .hljs-comment,
 .markdown-code .hljs-quote {
@@ -1542,8 +1565,7 @@ button.quota-chart-slot[aria-expanded="true"] {
   color: var(--mx-syntax-control);
 }
 .markdown-code .hljs-string,
-.markdown-code .hljs-regexp,
-.markdown-code .hljs-addition {
+.markdown-code .hljs-regexp {
   color: var(--mx-syntax-string);
 }
 .markdown-code .hljs-number,
@@ -1569,9 +1591,24 @@ button.quota-chart-slot[aria-expanded="true"] {
 .markdown-code .hljs-params {
   color: var(--mx-syntax-variable);
 }
-.markdown-code .hljs-meta,
-.markdown-code .hljs-deletion {
+.markdown-code .hljs-meta {
   color: var(--mx-syntax-meta);
+}
+/* Diff lines read as review colours: green added, red removed, each a tinted
+   full-width line (orange and pink looked alike). */
+.markdown-code .hljs-addition,
+.markdown-code .hljs-deletion {
+  display: block;
+  margin: 0 -12px;
+  padding: 0 12px;
+}
+.markdown-code .hljs-addition {
+  color: var(--mx-success);
+  background: color-mix(in srgb, var(--mx-success) 13%, transparent);
+}
+.markdown-code .hljs-deletion {
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 13%, transparent);
 }
 .markdown-code .hljs-emphasis {
   font-style: italic;
@@ -1716,15 +1753,7 @@ button.quota-chart-slot[aria-expanded="true"] {
   background: var(--mx-warning);
   color: var(--mx-bg-deep);
 }
-/* Seti icon font — bundled file icon theme; attribution and license in
-   LICENSES/editor-assets-NOTICE.txt and THIRD-PARTY-NOTICES.txt. */
-@font-face {
-  font-family: "seti";
-  src: url("../seti.woff") format("woff");
-  font-weight: normal;
-  font-style: normal;
-  font-display: block;
-}
+/* Seti icon font (its @font-face lives in font-faces.css). */
 .seti-icon {
   /* biome-ignore lint/a11y/useGenericFontNames: icon font; a generic fallback would render glyph codes as text. */
   font-family: "seti";

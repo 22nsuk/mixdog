@@ -6,6 +6,7 @@
 import type { WebContents } from 'electron';
 
 import type { BrowserActionServices } from './actions';
+import { createBrowserAutoSignIn } from './auto-sign-in';
 import { createBrowserAgentBridge } from './agent-bridge';
 import { COMMAND_TIMEOUT_MS, READ_ONLY_ACTIONS } from './command';
 import { createBrowserCommandQueue } from './command-queue';
@@ -18,6 +19,8 @@ import { browserSessionId } from './session-registry';
 import type { createBrowserTabs } from './tabs';
 import { createBrowserTargetResolver } from './target-resolve';
 import type { createBrowserTaskLifecycle } from './task-lifecycle';
+import { takeoverGate } from '../takeover-gate';
+import { secretInputs, type SecretInputs } from '../secret-input';
 
 type Toolkit = ReturnType<typeof createBrowserCommandToolkit>;
 
@@ -43,6 +46,51 @@ function storedCredentialFill(
       signal
     );
   };
+}
+
+/** One secret the user typed into the card, filled into the page's focused
+ *  password field through the isolated-world credential fill (which keeps it
+ *  registered for redaction, and visual-privacy.ts withholds captures while a
+ *  password field holds focus). Taken from the slot exactly once. */
+export async function fillSecretInput(
+  host: {
+    currentGuest(sessionId: string): WebContents | null | undefined;
+    fill: Toolkit['credentialFill']['fillCredentialInGuest'];
+    assertFree?: () => void;
+  },
+  sessionId: string,
+  requestId: string,
+  signal?: AbortSignal,
+  registry: SecretInputs = secretInputs
+): Promise<{ text: 'provided' | 'skipped' }> {
+  const value = registry.take(requestId);
+  const guest = host.currentGuest(sessionId);
+  if (!value || !guest || guest.isDestroyed()) return { text: 'skipped' };
+  (host.assertFree || takeoverGate.assertFree)();
+  try {
+    const result = await host.fill(guest, { username: '', password: value }, signal);
+    return { text: result.passwordFilled ? 'provided' : 'skipped' };
+  } catch {
+    return { text: 'skipped' };
+  }
+}
+
+/** A turn's end: its temporary pages close, and the implicit blank page the
+ *  agent has since left behind goes with them. */
+export function finishBrowserTurn(
+  host: {
+    taskLifecycle: Pick<ReturnType<typeof createBrowserTaskLifecycle<WebContents>>, 'finish'>;
+    sessions: Pick<BrowserHostFoundation['sessions'], 'agentPage'>;
+    lifecycle: Pick<ReturnType<typeof createBrowserGuestLifecycle>, 'discardUntouchedBlank'>;
+  },
+  sessionId: string,
+  turnId: number,
+  options: { aborted: boolean }
+): number {
+  const closed = host.taskLifecycle.finish(sessionId, turnId, options);
+  const page = host.sessions.agentPage(sessionId);
+  if (page) host.lifecycle.discardUntouchedBlank(sessionId, page.guest);
+  return closed;
 }
 
 function createBrowserActionServices(
@@ -92,8 +140,19 @@ export function createBrowserHostAgent(options: {
   taskLifecycle: ReturnType<typeof createBrowserTaskLifecycle<WebContents>>;
   retainGuest: (guest: WebContents) => void;
   onDiagnostic?: (event: string, data: Record<string, unknown>) => void;
+  /** The `browserAutoSignIn` setting (default on). */
+  autoSignInEnabled?: () => boolean;
 }) {
   const { base, tools, lifecycle, taskLifecycle } = options;
+  const autoSignIn = createBrowserAutoSignIn({
+    enabled: options.autoSignInEnabled || (() => true),
+    suggestions: (url) => base.profileImporter.credentialSuggestions(url),
+    withCredential: (url, id, use, signal) => base.profileImporter.useCredential(url, id, use, signal),
+    fill: (guest, credential, signal) => tools.credentialFill.fillCredentialInGuest(guest, credential, signal),
+    submit: (guest, signal) => tools.input.pressKey(guest, 'enter', signal),
+    collect: (guest, expression, signal) => base.documents.collect(guest, expression, signal),
+    invalidate: (guest) => base.state.invalidateInteraction(guest),
+  });
   const { state, cdp, sessions, leave, commandChains, pendingReads } = base;
   const services = createBrowserActionServices(
     {
@@ -129,11 +188,19 @@ export function createBrowserHostAgent(options: {
     downloads: tools.downloads,
     taskLifecycle,
     retainGuest: options.retainGuest,
+    autoSignIn,
     // Every agent command reaches its page here, before acting on it: from
     // now on a veto answers the agent, not a person's earlier click or key.
     drivePage: (guest) => {
       leave.agentActs(guest);
-      return base.display.power.drive(guest);
+      // A window the page opens from here on is the agent's (popup-focus).
+      state.for(guest).actor = 'agent';
+      const releaseDomains = cdp.drive(guest);
+      const releasePower = base.display.power.drive(guest);
+      return () => {
+        releasePower();
+        releaseDomains();
+      };
     },
     services,
   });
@@ -155,7 +222,15 @@ export function createBrowserHostAgent(options: {
     chains: commandChains,
     pendingReads,
     execute: (command, signal) => queue.executeSerialized(command, signal),
-    finishTurn: (sessionId, turnId, finish) => taskLifecycle.finish(sessionId, turnId, finish),
+    finishTurn: (sessionId, turnId, finish) =>
+      finishBrowserTurn({ taskLifecycle, sessions, lifecycle }, sessionId, turnId, finish),
+    secretInput: (sessionId, requestId, signal) =>
+      fillSecretInput(
+        { currentGuest: (id) => sessions.currentGuest(id), fill: tools.credentialFill.fillCredentialInGuest },
+        sessionId,
+        requestId,
+        signal
+      ),
     visibleGuests: () => sessions.visibleGuests(),
     lifecycle,
     onDiagnostic: options.onDiagnostic,

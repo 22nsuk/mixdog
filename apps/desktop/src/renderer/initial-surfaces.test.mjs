@@ -86,11 +86,11 @@ test('cold lists expose a neutral pending state on their very first render', asy
     import('./sidebar-reference-cache.ts'),
   ]);
   const cases = [
-    [ProjectsPane, { projects: [], projectsReady: false, selectedProjectPath: '' }, /No projects yet/],
-    [SchedulesPane, {}, /No scheduled tasks yet/],
+    [ProjectsPane, { projects: [], projectsReady: false, selectedProjectPath: '' }, /No projects\./],
+    [SchedulesPane, {}, /No schedules\./],
     [WebhooksPane, {}, /No webhooks/],
     [WorkflowsPane, {}, /No workflows/],
-    [AgentActivityPane, { sessions: [], sessionsReady: false }, /Loading activity|No agents are running/],
+    [AgentActivityPane, { sessions: [], sessionsReady: false }, /Loading activity|No bots\./],
     [SessionDiffPane, { sessionId: 'cold-diff' }, /No changes from this session|0 files changed|Loading session diff/],
     [
       SessionSidebar,
@@ -102,7 +102,7 @@ test('cold lists expose a neutral pending state on their very first render', asy
         onNewTask() {},
         onResumeSession() {},
       },
-      /Loading sessions|No sessions/,
+      /Loading sessions|No sessions\./,
     ],
     [
       SourceControlDock,
@@ -147,7 +147,7 @@ test('cold lists expose a neutral pending state on their very first render', asy
 });
 
 for (const navigation of ['close', 'tab', 'project', 'remount']) {
-  test(`Source Control validates cached rows before first paint and after ${navigation}`, async (t) => {
+  test(`Source Control paints cached rows at once and replaces them with fresh status after ${navigation}`, async (t) => {
     const view = harness(t, { globalTimers: true });
     const { UtilityDock, prewarmUtilityDockGitState } = await import('./UtilityDock.tsx');
     const requests = [];
@@ -177,7 +177,12 @@ for (const navigation of ['close', 'tab', 'project', 'remount']) {
     let firstPaint;
     function FirstPaint({ children }) {
       useLayoutEffect(() => {
-        firstPaint ||= view.host.cloneNode(true);
+        // The row window measures its viewport in a layout effect and
+        // re-renders synchronously, still before paint: snapshot after that
+        // flush, which is what the browser's first painted frame shows.
+        queueMicrotask(() => {
+          firstPaint ||= view.host.cloneNode(true);
+        });
       });
       return children;
     }
@@ -185,17 +190,20 @@ for (const navigation of ['close', 'tab', 'project', 'remount']) {
       firstPaint = null;
       await view.render(React.createElement(FirstPaint, null, React.createElement(UtilityDock, next)));
     };
-    const assertPending = () => {
+    // The last known status paints in the very first commit, with no loading
+    // cover, while the entry revalidation runs in the background.
+    const assertCached = (name) => {
       for (const element of [firstPaint, view.host]) {
-        assert.ok(element.querySelector('[role="status"][aria-busy="true"]'));
-        assert.doesNotMatch(element.textContent, /cached-old\.ts|current\.ts/);
+        assert.equal(element.querySelector('.utility-dock-pane[data-tab="source-control"] [aria-busy="true"]'), null);
+        assert.match(element.querySelector('.utility-dock-pane[data-tab="source-control"]').textContent, name);
       }
     };
     await render();
-    assertPending();
+    assertCached(/cached-old\.ts/);
     assert.equal(requests.length, 2);
     await view.settle(() => requests[1].resolve(status('current.ts')));
     assert.match(view.host.textContent, /current\.ts/);
+    assert.doesNotMatch(view.host.textContent, /cached-old\.ts/);
 
     // Live refresh keeps the established list rather than replaying entry loading.
     await view.advance(3_000);
@@ -217,7 +225,7 @@ for (const navigation of ['close', 'tab', 'project', 'remount']) {
     }
     const before = requests.length;
     await render(next);
-    assertPending();
+    assertCached(navigation === 'project' ? /cached-old\.ts/ : /current\.ts/);
     assert.equal(requests.length, before + 1);
     await view.settle(() => requests.at(-1).resolve(status('latest.ts')));
     assert.match(view.host.textContent, /latest\.ts/);
@@ -245,7 +253,7 @@ test('Projects distinguishes an unknown catalog from a confirmed empty result an
   await view.render(React.createElement(ProjectsPane, props));
   assert.ok(view.host.querySelector('[aria-busy="true"]'));
   await view.render(React.createElement(ProjectsPane, { ...props, projectsReady: true }));
-  assert.match(view.host.textContent, /No projects yet/);
+  assert.match(view.host.textContent, /No projects\./);
   await view.render(
     React.createElement(ProjectsPane, {
       ...props,
@@ -296,7 +304,10 @@ test('agent data arriving before the session catalog cannot announce no running 
   assert.ok(view.host.querySelector('[aria-busy="true"]'));
   assert.doesNotMatch(view.host.textContent, /No agents/);
   await view.render(React.createElement(AgentActivityPane, { ...props, sessionsReady: true }));
-  assert.match(view.host.textContent, /No agents are running/);
+  // Ready and idle: Mixy is listed and the work section shows nothing.
+  assert.equal(view.host.querySelector('[aria-busy="true"]'), null);
+  assert.match(view.host.textContent, /Mixy/);
+  assert.doesNotMatch(view.host.textContent, /No agents/);
 });
 
 test('orchestration selector inherits its mode and stages all four choices without changing workflow', async (t) => {
@@ -383,8 +394,10 @@ test('remote boot cannot bypass connection or hydration and offers a working ret
   window.addEventListener(REMOTE_WAKE_EVENT, () => {
     retries++;
   });
-  const retry = view.host.querySelector('.desktop-boot-cover .remote-connection-overlay');
+  // The cold boot's failure is the unreachable state, never an endless mark (#134).
+  const retry = view.host.querySelector('.desktop-boot-cover .remote-unreachable button');
   assert.ok(retry, 'initial connection failure must offer retry outside the inert workspace');
+  assert.equal(retry.textContent, 'Try again');
   await view.settle(() => retry.click());
   assert.equal(retries, 1);
   await view.settle(() => setRemoteConnectionState('syncing'));
@@ -502,14 +515,101 @@ test('startup emits no settled signal while persisted panes are still being vali
   assert.equal(settled, 1);
 });
 
+test('usage pin paints cached rows in its first render, before the settings read lands', async (t) => {
+  const view = harness(t);
+  window.mixdogDesktop.readSettings = () => new Promise(() => {});
+  const { useUsageRailPin } = await import('./use-usage-rail-pin.ts');
+  Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get: () => 800,
+  });
+  function Probe({ snapshot }) {
+    const rail = useRef(null);
+    const nav = useRef(null);
+    const button = useRef(null);
+    const state = useUsageRailPin(snapshot, { rail, nav, settings: button }, true);
+    return React.createElement(
+      'aside',
+      { ref: rail },
+      React.createElement('nav', { ref: nav }),
+      // biome-ignore lint/a11y/useButtonType: DOM fixture element, never submitted.
+      React.createElement('button', { ref: button }),
+      React.createElement('output', null, `${state.loading ? 'pending' : 'ready'}:${state.usagePinRows.length}`)
+    );
+  }
+  const snapshot = {
+    status: 'idle',
+    loading: false,
+    refreshedAt: 0,
+    dashboard: { rows: [{ id: 'openai', group: 'oauth', windows: [{ label: 'W', usedPct: 25 }] }] },
+  };
+  await view.render(React.createElement(Probe, { snapshot }));
+  assert.equal(view.host.querySelector('output').textContent, 'ready:1');
+});
+
+test('usage pin reserves neutral rows from the connected accounts before any quota arrives', async (t) => {
+  const view = harness(t);
+  window.localStorage.clear();
+  window.mixdogDesktop.readSettings = () => new Promise(() => {});
+  window.mixdogDesktop.readCapabilities = async () => [
+    {
+      ok: true,
+      value: {
+        oauth: [
+          { id: 'openai-oauth', authenticated: true },
+          { id: 'anthropic-oauth', authenticated: true },
+          { id: 'grok-oauth', authenticated: false },
+          { id: 'opencode-go-oauth', authenticated: true },
+        ],
+        api: [],
+      },
+    },
+  ];
+  const { useUsageRailPin } = await import('./use-usage-rail-pin.ts');
+  Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get: () => 800,
+  });
+  function Probe({ snapshot }) {
+    const rail = useRef(null);
+    const nav = useRef(null);
+    const button = useRef(null);
+    const state = useUsageRailPin(snapshot, { rail, nav, settings: button }, true);
+    const rows = state.usagePinRows.map((row) => `${row.key}${row.pending ? '~' : ''}:${row.bars.length}`).join();
+    return React.createElement(
+      'aside',
+      { ref: rail },
+      React.createElement('nav', { ref: nav }),
+      // biome-ignore lint/a11y/useButtonType: DOM fixture element, never submitted.
+      React.createElement('button', { ref: button }),
+      React.createElement('output', null, `${state.loading ? 'pending' : 'ready'} ${rows}`)
+    );
+  }
+  const snapshot = { status: 'loading', loading: true, refreshedAt: 0, dashboard: {} };
+  await view.render(React.createElement(Probe, { snapshot }));
+  await view.settle(() => {});
+  assert.equal(view.host.querySelector('output').textContent, 'ready codex~:1,claude~:1,opencode-go-oauth~:1');
+  await view.render(
+    React.createElement(Probe, {
+      snapshot: {
+        status: 'ready',
+        loading: false,
+        refreshedAt: 1,
+        dashboard: {
+          rows: [{ id: 'openai-oauth', group: 'oauth', windows: [{ label: 'W', usedPct: 25 }] }],
+        },
+      },
+    })
+  );
+  // The live result is authoritative: providers without quota drop their rows.
+  assert.equal(view.host.querySelector('output').textContent, 'ready codex:1');
+});
+
 test('usage pin waits for its initial setting and data, without letting a late read undo a user toggle', async (t) => {
   const view = harness(t);
   const settings = Promise.withResolvers();
   window.mixdogDesktop.readSettings = () => settings.promise;
-  const { loadSidebarUsageModule, useUsageRailPin } = await import('./use-usage-rail-pin.ts');
-  // The pin reader is a lazy chunk; with it cached, only the setting and the
-  // usage data remain to wait for.
-  await loadSidebarUsageModule();
+  const { useUsageRailPin } = await import('./use-usage-rail-pin.ts');
   Object.defineProperty(window.HTMLElement.prototype, 'clientHeight', {
     configurable: true,
     get: () => 800,

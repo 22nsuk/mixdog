@@ -8,6 +8,7 @@ import { DESKTOP_IPC } from '../shared/contract.ts';
 import { registerProjectFileIpc } from './ipc-project-files.ts';
 import { createRemoteMethods, executeRemoteFrame } from './remote-methods.ts';
 import { createDesktopOperations } from './desktop-operations.ts';
+import { hookProjectSwap } from './project-swap-hook.mjs';
 
 for (const transport of ['ipc', 'remote']) {
   test(`${transport} recovery resolves the registry root and uses only host-owned storage`, async (t) => {
@@ -21,9 +22,17 @@ for (const transport of ['ipc', 'remote']) {
     await fs.mkdir(injected);
     await fs.writeFile(join(root, 'a.txt'), 'A0');
     await fs.writeFile(join(root, 'b.txt'), 'B0');
-    const scopes = [], events = [];
-    const operations = createDesktopOperations({ userDataPath: data, emit(event) { events.push(event); },
-      withRecoveryStore: async (root, action, run) => { scopes.push([root, action]); return run(); },
+    const scopes = [],
+      events = [];
+    const operations = createDesktopOperations({
+      userDataPath: data,
+      emit(event) {
+        events.push(event);
+      },
+      withRecoveryStore: async (root, action, run) => {
+        scopes.push([root, action]);
+        return run();
+      },
     });
     t.after(() => operations.dispose());
     const host = {
@@ -60,11 +69,29 @@ for (const transport of ['ipc', 'remote']) {
       invoke('projectRecovery', 'registered-project', { action: 'inspect', id: '../escape' }),
       /Invalid recovery ID/
     );
-    const rename = fs.rename;
-    const mock = t.mock.method(fs, 'rename', (from, to) => {
-      if (to === join(root, 'b.txt')) throw new Error('second save denied');
-      return rename(from, to);
-    });
+    // Both routes rewrite files in place: the desktop through a handle it
+    // opens itself, a paired device's edit through its authorized handle. Fail
+    // the second file on whichever route this transport takes.
+    let mock;
+    if (transport === 'ipc') {
+      const restoreSwap = hookProjectSwap(t, {
+        before(path) {
+          if (path === join(root, 'b.txt')) throw new Error('second save denied');
+        },
+      });
+      mock = { mock: { restore: restoreSwap } };
+    } else {
+      const probe = await fs.open(join(root, 'a.txt'));
+      const handleProto = Object.getPrototypeOf(probe);
+      await probe.close();
+      const write = handleProto.write;
+      let writes = 0;
+      mock = t.mock.method(handleProto, 'write', function (...args) {
+        writes += 1;
+        if (writes === 2) return Promise.reject(new Error('second save denied'));
+        return write.apply(this, args);
+      });
+    }
     syncBuiltinESMExports();
     try {
       await assert.rejects(
@@ -86,7 +113,9 @@ for (const transport of ['ipc', 'remote']) {
     const { detail } = await invoke('projectRecovery', 'registered-project', { action: 'inspect', id: records[0].id });
     assert.deepEqual(
       detail.files.map((f) => f.status),
-      ['restored', 'original']
+      // An in-place write that fails may already have changed the file, so
+      // the file that was being written is restored too.
+      transport === 'ipc' ? ['restored', 'original'] : ['restored', 'restored']
     );
     await invoke('projectRecovery', 'registered-project', {
       action: 'discard',
@@ -96,11 +125,15 @@ for (const transport of ['ipc', 'remote']) {
     assert.deepEqual((await invoke('projectRecovery', 'registered-project', { action: 'list' })).records, []);
     assert.equal(await fs.readFile(join(root, 'a.txt'), 'utf8'), 'A0');
     // The other production batch entry point uses the same host-owned journal.
-    const searchMock = t.mock.method(fs, 'rename', (from, to) => {
-      if (to === join(root, 'b.txt')) throw new Error('search batch denied');
-      return rename(from, to);
-    });
-    syncBuiltinESMExports();
+    const searchMock = {
+      mock: {
+        restore: hookProjectSwap(t, {
+          before(path) {
+            if (path === join(root, 'b.txt')) throw new Error('search batch denied');
+          },
+        }),
+      },
+    };
     try {
       await assert.rejects(
         operations.invoke('replaceWorkspaceTextIn', [

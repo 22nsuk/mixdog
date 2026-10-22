@@ -101,7 +101,11 @@ async function setDesktopSettingsAction({ args, api, mutate, saved }: SetupActio
         'turnNotifications',
         'usagePinned',
         'usageRailShortLong',
+        'usageAccountsExpanded',
+        'usageRailSlotsThree',
+        'usageRailSlotsAll',
         'computerObserveOnly',
+        'browserAutoSignIn',
       ].includes(key) ||
       typeof value !== 'boolean'
     ) {

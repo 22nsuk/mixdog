@@ -19,12 +19,18 @@ public class MainActivity extends BridgeActivity {
   // history.back() traversal is still in flight, history.state still shows
   // the popped sentinel, so a quick second press is swallowed instead of
   // traversing past the last sentinel. The timer only unsticks a lost echo.
+  // The bundled host picker keeps one entry of its own whose `mixdogBack` is
+  // false while it has nothing to cancel ('disarmed'): that press drops the
+  // entry and does the normal Back at once, so it is never spent on the entry.
+  // The web app's own sentinels are numbers from 1, never false.
   private static final String BACK_SCRIPT =
       "(function(){var w=window;if(w.__mixdogBackBusy)return 'web';"
-          + "if(history.state&&history.state.mixdogBack){w.__mixdogBackBusy=true;"
+          + "var s=history.state,armed=!!(s&&s.mixdogBack),disarmed=!!s&&s.mixdogBack===false;"
+          + "if(armed||disarmed){w.__mixdogBackBusy=true;"
           + "var done=function(){w.__mixdogBackBusy=false};"
-          + "w.addEventListener('popstate',done,{once:true});setTimeout(done,1000);"
-          + "history.back();return 'web'}"
+          + "w.addEventListener('popstate',done,{once:true});setTimeout(done,1000)}"
+          + "if(armed){history.back();return 'web'}"
+          + "if(disarmed)return 'disarmed';"
           + "return location.origin==='https://localhost'?'local':'none'})()";
 
   private MixdogNativeHost nativeHost;
@@ -51,6 +57,17 @@ public class MainActivity extends BridgeActivity {
                 }
                 webView.evaluateJavascript(BACK_SCRIPT, (result) -> {
                   if ("\"web\"".equals(result)) return;
+                  if ("\"disarmed\"".equals(result)) {
+                    // Past the picker's entry and its load entry in one step
+                    // (back to the PC page that opened the picker), else drop
+                    // the entry and leave like a plain picker would.
+                    if (webView.canGoBackOrForward(-2)) webView.goBackOrForward(-2);
+                    else {
+                      if (webView.canGoBack()) webView.goBack();
+                      moveTaskToBack(true);
+                    }
+                    return;
+                  }
                   if ("\"local\"".equals(result) && webView.canGoBack()) webView.goBack();
                   else moveTaskToBack(true);
                 });
@@ -68,6 +85,8 @@ public class MainActivity extends BridgeActivity {
     super.load();
     // Top-level navigation: bundled screen + saved relay origins only.
     getBridge().setWebViewClient(new MixdogWebViewClient(getBridge()));
+    // Downloads the page did not route through the fileSave bridge (UNBUILT).
+    getBridge().getWebView().setDownloadListener(new MixdogDownloads(this));
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) fitWebViewToInsets(getBridge().getWebView());
   }
 
@@ -110,6 +129,12 @@ public class MainActivity extends BridgeActivity {
   public void onResume() {
     super.onResume();
     if (nativeHost != null) nativeHost.onResume();
+  }
+
+  @Override
+  public void onPause() {
+    if (nativeHost != null) nativeHost.onPause();
+    super.onPause();
   }
 
   @Override

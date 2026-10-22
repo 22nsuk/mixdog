@@ -1,5 +1,6 @@
 import { open, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { isGitTimeout } from './git-runner';
 
 export const GIT_METADATA_TTL_MS = 60_000;
 export const DISPLAY_DIFF_ARGS = ['--no-ext-diff', '--no-textconv', '--no-color'] as const;
@@ -30,6 +31,46 @@ export async function mapWithConcurrency<T, R>(
   });
   await Promise.all(workers);
   return results;
+}
+
+/**
+ * Identical concurrent reads (several desktop windows and a phone polling one
+ * repository) share their git processes, yet no caller is answered by a scan
+ * that began before it asked: a caller arriving while a read runs waits for it
+ * and joins the ONE follow-up read every such caller shares. N concurrent
+ * callers cost at most two reads instead of N.
+ */
+export function sharedRead<A extends unknown[], R>(
+  keyOf: (...args: A) => string,
+  read: (...args: A) => Promise<R>
+): (...args: A) => Promise<R> {
+  const lanes = new Map<string, { current: Promise<R>; next?: Promise<R> }>();
+  const start = (key: string, args: A): Promise<R> => {
+    const lane: { current: Promise<R>; next?: Promise<R> } = { current: read(...args) };
+    lanes.set(key, lane);
+    const settle = (): void => {
+      if (lanes.get(key) === lane && !lane.next) lanes.delete(key);
+    };
+    lane.current.then(settle, settle);
+    return lane.current;
+  };
+  return (...args: A): Promise<R> => {
+    const key = keyOf(...args);
+    const lane = lanes.get(key);
+    if (!lane) return start(key, args);
+    lane.next ??= lane.current.then(
+      () => start(key, args),
+      (error: unknown) => {
+        // A read cut off at its deadline means the repository is wedged: a
+        // follow-up would wait the whole deadline again and leave one more hung
+        // git behind, so joined callers share the timeout. Later callers start fresh.
+        if (!isGitTimeout(error)) return start(key, args);
+        if (lanes.get(key) === lane) lanes.delete(key);
+        throw error;
+      }
+    );
+    return lane.next;
+  };
 }
 
 export function parseNumstat(raw: string): Map<string, { additions: number; deletions: number }> {

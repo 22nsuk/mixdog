@@ -14,6 +14,7 @@ import {
 } from './AgentActivityPane.tsx';
 import { createDesktopCancellationLedger, desktopAgentActivityState } from '../shared/agent-activity.ts';
 import { backgroundJobRows } from './background-jobs-model.ts';
+import { agentElapsedText } from './agent-row-meta.ts';
 import {
   formatGoalDuration,
   goalCompletedTimeLabel,
@@ -27,9 +28,29 @@ import { agentActivitySessionIds } from './desktop-types.ts';
 import { defaultSessionLaneStore } from './session-lane-store.ts';
 import { desktopHeaderSnapshotsEqual } from './desktop-snapshot-store.ts';
 import { shellJobsStatusEqual } from '../shared/shell-jobs-status.ts';
-import { DESKTOP_TOAST_EVENT } from './desktop-toasts.tsx';
 import { AGENT_GROUP_EXPANSION_EVENT, AgentGroupsMenu } from './agent-group-visibility.tsx';
 import i18n from './i18n.ts';
+import { publishAgentModeSessions } from './agent-chat-mode.ts';
+
+// The pane lists agent-mode sessions' work only; these owners are agent chats
+// (`internal-control` stays an ordinary session on purpose).
+publishAgentModeSessions(
+  [
+    'lead-a',
+    'lead-b',
+    'lead-w',
+    'lead-o',
+    'lead-shell',
+    'lead-empty',
+    'child-a',
+    'ghost-a',
+    'unrelated',
+    'older-idle',
+    'newest-idle',
+    'first',
+    'second',
+  ].map((id) => ({ id, sessionMode: 'agent' }))
+);
 
 function installDom() {
   const { restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' }, expose: ['navigator'] });
@@ -38,6 +59,23 @@ function installDom() {
     close: restore,
   };
 }
+
+test('a running row whose start stamp is ahead of the clock reads 0s and never wraps to a day', () => {
+  const clock = Date.UTC(2026, 9, 18, 12, 0, 0);
+  for (const ahead of [1, 500, 1_500, 60_000, 86_399_500, 86_400_000]) {
+    const future = clock + ahead;
+    for (const stamp of [future, new Date(future).toISOString(), String(future)]) {
+      assert.equal(agentElapsedText('running', { turnStartedAt: stamp, startedAt: 0 }, clock), '0s');
+    }
+  }
+  assert.equal(agentElapsedText('running', { turnStartedAt: clock - 1_500, startedAt: 0 }, clock), '1s');
+  // A missing turn start shows nothing: startedAt is the session's creation
+  // time (a Lead row would read days), never a run origin.
+  assert.equal(agentElapsedText('running', { turnStartedAt: 0, startedAt: 0 }, clock), '');
+  assert.equal(agentElapsedText('running', { turnStartedAt: null, startedAt: clock - 154_000_000 }, clock), '');
+  // Idle rows still carry no duration.
+  assert.equal(agentElapsedText('idle', { turnStartedAt: clock + 500, startedAt: 0 }, clock), 'Idle');
+});
 
 test('missing liveness is unknown, and execution capacity waits are queued', () => {
   assert.equal(desktopAgentActivityState({ status: 'unknown', stage: 'unknown' }), 'unknown');
@@ -50,12 +88,26 @@ test('a working agent keeps its lifecycle while the runtime phase reads idle, do
   }
   // The status still ends the work: a settled agent is idle whatever stale phase it carries.
   assert.equal(desktopAgentActivityState({ status: 'idle', stage: 'streaming' }), 'idle');
-  assert.equal(desktopAgentActivityState({ status: 'error', stage: 'running' }), 'idle');
+  // A turn that ended in an error failed: never a rest, whatever stage it carries.
+  assert.equal(desktopAgentActivityState({ status: 'error', stage: 'running' }), 'failed');
   // A cancel in either field is never work.
   assert.equal(desktopAgentActivityState({ status: 'running', stage: 'cancelled' }), 'cancelled');
   // A row with only a stage is judged by it.
   assert.equal(desktopAgentActivityState({ stage: 'streaming' }), 'running');
   assert.equal(desktopAgentActivityState({ stage: 'idle' }), 'idle');
+});
+
+test('a completed pool row reads done until seen, a cancel or failure outranks it, and new work reads working', () => {
+  assert.equal(desktopAgentActivityState({ status: 'completed', stage: 'completed' }, { unread: true }), 'done');
+  assert.equal(desktopAgentActivityState({ status: 'completed', stage: 'completed' }), 'idle');
+  assert.equal(
+    desktopAgentActivityState({ status: 'completed', stage: 'completed' }, { waitingForTasks: true }),
+    'waiting'
+  );
+  assert.equal(desktopAgentActivityState({ status: 'cancelled', stage: 'completed' }), 'cancelled');
+  assert.equal(desktopAgentActivityState({ status: 'failed', stage: 'failed' }), 'failed');
+  assert.equal(desktopAgentActivityState({ status: 'running', stage: 'running' }), 'running');
+  assert.equal(desktopAgentActivityState({ status: 'idle', stage: 'idle' }), 'idle');
 });
 
 test('background shell jobs never change an agent state or count as waiting', () => {
@@ -70,6 +122,124 @@ test('background shell jobs never change an agent state or count as waiting', ()
   }
   assert.equal(desktopAgentActivityState({ status: 'idle', shellJobCount: 1 }, { unread: true }), 'done');
   assert.equal(desktopAgentActivityState({ status: 'idle', shellJobCount: 1 }), 'idle');
+});
+
+test('an agent parked on its own background work reads waiting, and running again once it resumes', () => {
+  // In `task wait`: the turn is in flight but the agent waits.
+  assert.equal(
+    desktopAgentActivityState({ status: 'running', stage: 'tool_running', awaitingTask: 'wait' }),
+    'waiting'
+  );
+  // Idle with a handed-off background task still running.
+  assert.equal(desktopAgentActivityState({ status: 'idle', stage: 'idle', awaitingTask: 'background' }), 'waiting');
+  assert.equal(
+    desktopAgentActivityState({ status: 'idle', stage: 'idle', awaitingTask: 'background' }, { unread: true }),
+    'waiting'
+  );
+  // Resumed: the mark is gone and the row works again.
+  assert.equal(desktopAgentActivityState({ status: 'running', stage: 'requesting' }), 'running');
+  // Approval, cancellation and failure still outrank it.
+  assert.equal(
+    desktopAgentActivityState({ status: 'running', stage: 'running', awaitingTask: 'wait', awaitingUser: 'approval' }),
+    'needs-user'
+  );
+  assert.equal(desktopAgentActivityState({ status: 'cancelled', awaitingTask: 'background' }), 'cancelled');
+  assert.equal(desktopAgentActivityState({ status: 'failed', awaitingTask: 'background' }), 'failed');
+});
+
+test('the Agents row switches to data-state=waiting on a pool push and back to running', async () => {
+  const dom = installDom();
+  let push;
+  const row = (extra = {}) => ({
+    agent: 'lead',
+    sessionId: 'lead-w',
+    ownerSessionId: 'lead-w',
+    status: 'running',
+    stage: 'tool_running',
+    ...extra,
+  });
+  window.mixdogDesktop = {
+    async listAgentPool() {
+      return [row()];
+    },
+    subscribeAgentPool(listener) {
+      push = listener;
+      return () => {};
+    },
+  };
+  const sessions = [{ id: 'lead-w', title: 'lead-w', preview: '', updatedAt: 1, messageCount: 1 }];
+  const state = () =>
+    document.querySelector('[data-agent-session-id="lead-w"] .agent-activity-elapsed')?.getAttribute('data-state');
+  try {
+    await act(async () => dom.root.render(React.createElement(AgentActivityPane, { active: false, sessions })));
+    await expandAllAgentGroups();
+    assert.equal(state(), 'running');
+    await act(async () => push([row({ awaitingTask: 'wait' })]));
+    assert.equal(state(), 'waiting');
+    assert.equal(
+      document.querySelector('[data-agent-session-id="lead-w"] .agent-activity-elapsed').textContent,
+      'Waiting for tasks'
+    );
+    await act(async () => push([row()]));
+    assert.equal(state(), 'running');
+    await act(async () => push([row({ status: 'idle', stage: 'idle', awaitingTask: 'background' })]));
+    assert.equal(state(), 'waiting');
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('a Lead row never shows an old origin through running → waiting → woken running and a reconnect resync', async () => {
+  const dom = installDom();
+  let push;
+  const created = Date.now() - 154_000_000;
+  const turn1 = Date.now() - 600_000;
+  const turn2 = Date.now() - 4_000;
+  const row = (extra = {}) => ({
+    agent: 'lead',
+    sessionId: 'lead-o',
+    ownerSessionId: 'lead-o',
+    status: 'running',
+    stage: 'tool_running',
+    startedAt: created,
+    createdAt: created,
+    ...extra,
+  });
+  window.mixdogDesktop = {
+    async listAgentPool() {
+      return [row({ turnStartedAt: turn1 })];
+    },
+    subscribeAgentPool(listener) {
+      push = listener;
+      return () => {};
+    },
+  };
+  const sessions = [{ id: 'lead-o', title: 'lead-o', preview: '', updatedAt: 1, messageCount: 1 }];
+  const text = () => document.querySelector('[data-agent-session-id="lead-o"] .agent-activity-elapsed')?.textContent;
+  try {
+    await act(async () => dom.root.render(React.createElement(AgentActivityPane, { active: false, sessions })));
+    await expandAllAgentGroups();
+    assert.match(text(), /^10m/);
+    // Waiting on its own task keeps the same turn clock running.
+    await act(async () => push([row({ turnStartedAt: turn1, awaitingTask: 'wait' })]));
+    assert.match(text(), /^10m/);
+    await act(async () => push([row({ status: 'idle', stage: 'idle', turnStartedAt: null })]));
+    assert.equal(text(), 'Idle');
+    // Woken by the completion: the first running snapshot has no turn stamp.
+    await act(async () => push([row({ turnStartedAt: null })]));
+    assert.equal(text(), '');
+    await act(async () => push([row({ turnStartedAt: turn2 })]));
+    assert.match(text(), /^[0-9]s$/);
+    // Reconnect resync: a snapshot without the stamp, then a stale one.
+    await act(async () => push([row({ turnStartedAt: null })]));
+    assert.match(text(), /^[0-9]s$/);
+    await act(async () => push([row({ turnStartedAt: turn1 })]));
+    assert.match(text(), /^[0-9]s$/);
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
 });
 
 async function expandAllAgentGroups() {
@@ -135,12 +305,16 @@ test('Agent groups can be hidden, stay hidden through pool pushes and remounts, 
     assert.equal(document.querySelector('[data-agent-owner-session-id="lead-a"]'), null);
     await click('[data-agent-owner-session-id="lead-b"] .row-overflow-trigger');
     await click('[data-action-id="hide-agent-group"]');
-    assert.match(document.body.textContent, /All agent groups are hidden/);
+    // Mixy is always a contact, so hidden work leaves no empty-state line.
+    assert.equal(document.querySelectorAll('[data-agent-owner-session-id]').length, 0);
+    assert.doesNotMatch(document.body.textContent, /All agent groups are hidden/);
     await click('.agent-group-toolbar .row-overflow-trigger');
     await click('[data-action-id="restore-agent-groups"]');
     assert.equal(document.querySelectorAll('[data-agent-owner-session-id]').length, 2);
     assert.deepEqual(JSON.parse(window.localStorage.getItem('mixdog.agent-hidden-groups')), []);
+    // The contacts read the agent catalog (a read capability); nothing else.
     assert.deepEqual([...new Set(touched)].filter((key) => key !== 'perfLog').sort(), [
+      'invokeCapability',
       'listAgentPool',
       'subscribeAgentPool',
     ]);
@@ -323,19 +497,17 @@ test('Goal island keeps its summary compact and toggles from the capsule', async
         })
       );
     });
-    assert.equal(document.querySelector('.session-goal-objective')?.textContent, 'Short Goal Title');
     const trigger = document.querySelector('.session-goal-trigger');
-    assert.equal(trigger.firstElementChild?.dataset.state, 'active', 'the state icon leads the segment');
-    const pips = [...trigger.querySelectorAll('.session-goal-pips > i')].map((pip) => pip.dataset.status);
-    assert.deepEqual(pips, ['completed', 'in_progress', 'pending', 'pending', 'pending'], 'five fixed cells');
+    assert.equal(trigger.firstElementChild?.dataset.state, 'active', 'the ring leads the segment');
+    // Numbers only: no title, no pips; the drawer carries the title.
+    assert.equal(trigger.querySelector('.session-goal-objective'), null);
+    assert.equal(trigger.querySelector('.session-goal-pips'), null);
+    assert.equal(document.querySelector('.session-goal-title')?.textContent, 'Short Goal Title');
     // The segment reads n/m plus elapsed time, as the island mockup does.
     assert.equal(trigger.querySelector('.session-goal-meta')?.textContent, '1/35m');
     assert.equal(trigger.querySelector('.session-goal-trigger-time')?.textContent, '5m');
-    assert.match(document.querySelector('.session-goal-panel .session-goal-time')?.textContent || '', /^\d+:\d{2}$/);
-    assert.match(
-      document.querySelector('.session-goal-panel .session-goal-meta')?.textContent || '',
-      /^1\/3·\d+:\d{2}$/
-    );
+    assert.match(document.querySelector('.session-goal-panel .session-goal-time')?.textContent || '', /^\d+m$/);
+    assert.match(document.querySelector('.session-goal-panel .session-goal-meta')?.textContent || '', /^1\/3·\d+m$/);
     assert.equal(document.querySelector('.session-goal-toggle'), null);
     assert.equal(trigger?.getAttribute('aria-expanded'), 'false');
     assert.equal(document.querySelector('.session-goal-drawer')?.getAttribute('aria-hidden'), 'true');
@@ -345,6 +517,10 @@ test('Goal island keeps its summary compact and toggles from the capsule', async
     });
     assert.equal(trigger?.getAttribute('aria-expanded'), 'true');
     assert.equal(document.querySelector('.session-goal-drawer')?.getAttribute('aria-hidden'), 'false');
+    assert.match(
+      document.querySelector('.session-goal-statusline')?.textContent || '',
+      /^In progress·\d+m \/ 1h 0m · \d+m remaining$/
+    );
     assert.equal(document.querySelectorAll('.session-goal-task-list > li').length, 3);
     assert.equal(document.querySelectorAll('.session-goal-task-list > li .mx-icon').length, 3);
     assert.equal(
@@ -389,7 +565,339 @@ test('blocked Goal island renders the specific blocker', async () => {
     await act(async () => {
       document.querySelector('.session-goal-trigger')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
     });
-    assert.equal(document.querySelector('.session-goal-blocker')?.textContent, 'Waiting for deployment credentials');
+    const note = document.querySelector('.session-goal-note');
+    assert.equal(note?.textContent, 'Waiting for deployment credentials', 'text only, no heading label');
+    assert.equal(note?.getAttribute('data-tone'), 'blocked');
+    assert.equal(note?.querySelector('b'), null);
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('Goal drawer lists remaining tasks first and folds done and dropped ones', async () => {
+  const dom = installDom();
+  try {
+    await act(async () => {
+      dom.root.render(
+        React.createElement(SessionGoalIsland, {
+          snapshot: {
+            sessionId: 'goal-session',
+            goal: {
+              id: 'goal-fold',
+              objective: 'Fold the finished work',
+              status: 'active',
+              tasks: [
+                { id: 'a', text: 'Finished', status: 'completed' },
+                { id: 'b', text: 'Running', status: 'in_progress' },
+                { id: 'c', text: 'Scoped out', status: 'dropped' },
+              ],
+            },
+          },
+        })
+      );
+    });
+    await act(async () => {
+      document.querySelector('.session-goal-trigger')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.equal(document.querySelector('.session-goal-group-label')?.textContent, 'Remaining 1');
+    const fold = document.querySelector('.session-goal-fold');
+    assert.equal(fold?.textContent, 'Done 1 · 1 dropped');
+    assert.equal(fold?.getAttribute('aria-expanded'), 'false');
+    const lists = document.querySelectorAll('.session-goal-task-list');
+    assert.equal(lists[0].textContent, 'Running');
+    assert.equal(lists[1].hasAttribute('hidden'), true);
+    await act(async () => {
+      fold?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.equal(fold?.getAttribute('aria-expanded'), 'true');
+    assert.equal(lists[1].hasAttribute('hidden'), false);
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('a blocker on a Goal that is not blocked reads neutrally', async () => {
+  const dom = installDom();
+  try {
+    await act(async () => {
+      dom.root.render(
+        React.createElement(SessionGoalIsland, {
+          snapshot: {
+            sessionId: 'goal-session',
+            goal: { id: 'goal-paused', objective: 'Pause me', status: 'paused', blocker: 'Earlier note' },
+          },
+        })
+      );
+    });
+    const block = document.querySelector('.session-goal-note');
+    assert.equal(block?.textContent, 'Earlier note');
+    assert.equal(block?.getAttribute('data-tone'), null);
+    assert.equal(document.querySelector('.session-goal-statusline')?.textContent, 'Paused·0m elapsed');
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+const ringOf = (root) => {
+  const svg = root.querySelector('.session-goal-ring');
+  const arc = svg.querySelector('.session-goal-ring-arc');
+  return {
+    size: [svg.getAttribute('width'), svg.getAttribute('height')],
+    glyph: svg.querySelector('[data-glyph]')?.getAttribute('data-glyph'),
+    arc: arc && {
+      r: arc.getAttribute('r'),
+      width: arc.getAttribute('stroke-width'),
+      cap: arc.getAttribute('stroke-linecap'),
+      rotate: arc.getAttribute('transform'),
+      dash: arc.getAttribute('stroke-dasharray').split(' ').map(Number),
+    },
+  };
+};
+
+test('the progress ring fills by completed/total and shows one glyph per state', async () => {
+  const dom = installDom();
+  const tasks = [
+    { id: 'a', text: 'One', status: 'completed' },
+    { id: 'b', text: 'Two', status: 'completed' },
+    { id: 'c', text: 'Three', status: 'pending' },
+    { id: 'd', text: 'Four', status: 'pending' },
+  ];
+  const cases = [
+    [{ status: 'active' }, 'active'],
+    [{ status: 'paused' }, 'paused'],
+    [{ status: 'blocked', blocker: 'No token' }, 'blocked'],
+    [{ status: 'paused', pauseReason: 'waiting' }, 'waiting'],
+    [{ status: 'stopped' }, 'stopped'],
+    [{ status: 'complete' }, 'complete'],
+  ];
+  try {
+    for (const [extra, glyph] of cases) {
+      await act(async () => {
+        dom.root.render(
+          React.createElement(SessionGoalIsland, {
+            snapshot: { sessionId: 'ring', goal: { id: `ring-${glyph}`, objective: 'Ring', tasks, ...extra } },
+          })
+        );
+      });
+      const trigger = document.querySelector('.session-goal-trigger');
+      const ring = ringOf(trigger);
+      assert.deepEqual(ring.size, ['16', '16'], glyph);
+      assert.equal(ring.glyph, glyph);
+      assert.equal(trigger.firstElementChild.dataset.state, glyph);
+      assert.deepEqual(
+        [ring.arc.r, ring.arc.width, ring.arc.cap, ring.arc.rotate],
+        ['6.2', '1.8', 'round', 'rotate(-90 8 8)'],
+        "starts at 12 o'clock with a round cap"
+      );
+      const [filled, length] = ring.arc.dash;
+      assert.ok(Math.abs(length - 2 * Math.PI * 6.2) < 0.01);
+      const expected = glyph === 'complete' ? 1 : 0.5;
+      assert.ok(Math.abs(filled / length - expected) < 0.01, `${glyph}: arc covers ${expected}`);
+      assert.equal(trigger.querySelector('.session-goal-meta .session-goal-progress').textContent, '2/4');
+      assert.equal(
+        ringOf(document.querySelector('.composer-island-tab, .session-goal-panel')).glyph,
+        glyph,
+        'the tab ring matches'
+      );
+    }
+    await act(async () => {
+      dom.root.render(
+        React.createElement(SessionGoalIsland, {
+          snapshot: { sessionId: 'ring', goal: { id: 'empty', objective: 'Ring', status: 'active' } },
+        })
+      );
+    });
+    assert.equal(ringOf(document.querySelector('.session-goal-trigger')).arc, null, 'no tasks, no arc');
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('task rows carry no badges; five remaining rows show and the rest folds', async () => {
+  const dom = installDom();
+  try {
+    const tasks = [
+      { id: 'run', text: 'Running', status: 'in_progress' },
+      { id: 'ask', text: 'Asking', status: 'awaiting_approval' },
+      ...Array.from({ length: 6 }, (_, i) => ({ id: `p${i}`, text: `Pending ${i}`, status: 'pending' })),
+    ];
+    await act(async () => {
+      dom.root.render(
+        React.createElement(SessionGoalIsland, {
+          snapshot: {
+            sessionId: 'rest',
+            goal: { id: 'rest', objective: 'Many', status: 'blocked', blocker: 'Stuck', tasks },
+          },
+        })
+      );
+    });
+    await act(async () => {
+      document.querySelector('.session-goal-trigger')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.equal(document.querySelector('.session-goal-badge'), null);
+    assert.doesNotMatch(document.body.textContent, /Needs your answer/);
+    const rows = [...document.querySelectorAll('.session-goal-task-list')];
+    assert.equal(rows[0].children.length, 5, 'first five remaining rows');
+    assert.equal(rows[0].querySelector('li[data-stalled="true"] svg')?.getAttribute('data-glyph'), 'stalled');
+    assert.equal(
+      rows[0].querySelector('li[data-status="awaiting_approval"] svg')?.getAttribute('data-glyph'),
+      'awaiting'
+    );
+    assert.equal(document.querySelector('.session-goal-group-label')?.textContent, 'Remaining 8');
+    const rest = document.querySelector('.session-goal-fold[data-fold="rest"]');
+    assert.equal(rest?.textContent, 'Rest 3');
+    assert.equal(rest?.getAttribute('aria-expanded'), 'false');
+    assert.equal(rows[1].hasAttribute('hidden'), true);
+    assert.equal(rows[1].children.length, 3);
+    await act(async () => {
+      rest?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.equal(rows[1].hasAttribute('hidden'), false);
+    assert.equal(rest?.getAttribute('aria-expanded'), 'true');
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('running and awaiting rows always make the five-row cut', async () => {
+  const dom = installDom();
+  const pending = (n) =>
+    Array.from({ length: n }, (_, i) => ({ id: `p${i}`, text: `Pending ${i}`, status: 'pending' }));
+  const shown = async (tasks) => {
+    await act(async () => {
+      dom.root.render(
+        React.createElement(SessionGoalIsland, {
+          snapshot: {
+            sessionId: 'cut',
+            goal: { id: `cut-${tasks.length}-${Math.random()}`, objective: 'Cut', status: 'active', tasks },
+          },
+        })
+      );
+    });
+    // The task text only; an awaiting row also carries spoken (sr-only) status text.
+    return [...document.querySelector('.session-goal-task-list').children].map((li) => li.querySelector('div').textContent);
+  };
+  try {
+    // Running first, awaiting beyond the cutoff: both stay, order kept.
+    let rows = await shown([
+      { id: 'run', text: 'Running', status: 'in_progress' },
+      ...pending(6),
+      { id: 'ask', text: 'Asking', status: 'awaiting_approval' },
+    ]);
+    assert.equal(rows.length, 5);
+    assert.ok(rows.includes('Running') && rows.includes('Asking'));
+    assert.deepEqual(rows, ['Running', 'Pending 0', 'Pending 1', 'Pending 2', 'Asking']);
+    // One protected row inside the cutoff, one across it.
+    rows = await shown([
+      ...pending(3),
+      { id: 'run', text: 'Running', status: 'in_progress' },
+      { id: 'ask', text: 'Asking', status: 'awaiting_approval' },
+      ...pending(2).map((t, i) => ({ ...t, id: `q${i}`, text: `Late ${i}` })),
+    ]);
+    assert.deepEqual(rows, ['Pending 0', 'Pending 1', 'Pending 2', 'Running', 'Asking']);
+    // Both beyond the cutoff.
+    rows = await shown([
+      ...pending(7),
+      { id: 'run', text: 'Running', status: 'in_progress' },
+      { id: 'ask', text: 'Asking', status: 'awaiting_approval' },
+    ]);
+    assert.deepEqual(rows, ['Pending 0', 'Pending 1', 'Pending 2', 'Running', 'Asking']);
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('stop confirmation moves focus to Cancel and back to Stop', async () => {
+  const dom = installDom();
+  try {
+    await act(async () => {
+      dom.root.render(
+        React.createElement(SessionGoalIsland, {
+          snapshot: { sessionId: 'focus', goal: { id: 'focus', objective: 'Focus', status: 'active' } },
+        })
+      );
+    });
+    await act(async () => {
+      document.querySelector('.session-goal-trigger')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    const click = (element) =>
+      act(async () => {
+        element.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      });
+    await click(document.querySelector('[aria-label="Stop goal"]'));
+    const cancel = document.querySelector('.session-goal-actions button:first-child');
+    assert.equal(cancel.textContent, 'Cancel');
+    assert.equal(document.activeElement, cancel, 'Cancel takes focus when the confirmation opens');
+    await click(cancel);
+    assert.equal(document.querySelector('.session-goal-confirm'), null);
+    assert.equal(
+      document.activeElement,
+      document.querySelector('[aria-label="Stop goal"]'),
+      'Stop regains focus when cancelled'
+    );
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('a failed action on a blocked Goal shows one note, the error first', async () => {
+  const dom = installDom();
+  window.mixdogDesktop = { invokeCapability: async () => ({ value: { ok: false } }) };
+  try {
+    await act(async () => {
+      dom.root.render(
+        React.createElement(SessionGoalIsland, {
+          snapshot: { sessionId: 'note', goal: { id: 'note', objective: 'Note', status: 'blocked', blocker: 'Stuck' } },
+        })
+      );
+    });
+    assert.equal(document.querySelectorAll('.session-goal-note').length, 1);
+    await act(async () => {
+      document.querySelector('.session-goal-trigger')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    await act(async () => {
+      document.querySelector('[aria-label="Resume"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    });
+    const notes = document.querySelectorAll('.session-goal-note');
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0].getAttribute('role'), 'alert');
+    assert.equal(notes[0].getAttribute('data-tone'), 'error');
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('each state has exactly one filled primary control', async () => {
+  const dom = installDom();
+  const labels = (selector) => [...document.querySelectorAll(selector)].map((b) => b.textContent);
+  try {
+    for (const [status, extra, quiet, primary] of [
+      ['active', {}, ['Stop', 'Edit'], ['Pause']],
+      ['paused', {}, ['Stop', 'Edit'], ['Resume']],
+      ['blocked', { blocker: 'x' }, ['Stop', 'Edit'], ['Resume']],
+      ['paused', { pauseReason: 'waiting' }, ['Stop', 'Edit'], ['Resume']],
+      ['complete', {}, [], ['Dismiss goal']],
+      ['stopped', {}, [], ['Dismiss goal']],
+    ]) {
+      await act(async () => {
+        dom.root.render(
+          React.createElement(SessionGoalIsland, {
+            snapshot: { sessionId: 'prim', goal: { id: `prim-${status}`, objective: 'Go', status, ...extra } },
+          })
+        );
+      });
+      const name = `${status}/${extra.pauseReason || ''}`;
+      assert.deepEqual(labels('.session-goal-controls [data-primary="true"]'), primary, name);
+      assert.deepEqual(labels('.session-goal-controls [data-quiet="true"]'), quiet, name);
+    }
   } finally {
     await act(async () => dom.root.unmount());
     dom.close();
@@ -417,7 +925,7 @@ test('completed Goal island keeps the compact elapsed clock and no extra action'
       );
     });
     const time = document.querySelector('.session-goal-time')?.textContent || '';
-    assert.equal(time, '1:00');
+    assert.equal(time, '1m');
     assert.doesNotMatch(time, /in progress/);
     await act(async () => {
       document.querySelector('.session-goal-trigger')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
@@ -696,6 +1204,7 @@ test("Agents groups every active session and renders each session's live agents"
           stage: 'running',
           sessionId: 'lead-a',
           ownerSessionId: 'lead-a',
+          turnStartedAt: Date.now() - 5_000,
           model: 'grok-4.6',
           provider: 'xai',
         },
@@ -1203,15 +1712,15 @@ test('Agents order by creation, then move on turn start and completion only', as
     model: 'gpt-5.6',
     provider: 'openai',
   });
-  // A working row has NO idle stamp and a live heartbeat in updatedAt — the
+  // A working row has NO idle stamp and an advancing updatedAt — the
   // exact shape that used to shove a session to the top on every tick.
-  const workingRow = (owner, createdAt, turnStartedAt, heartbeatAt) => ({
+  const workingRow = (owner, createdAt, turnStartedAt, updatedAt) => ({
     ...idleRow(owner, createdAt, createdAt),
     status: 'streaming',
     stage: 'streaming',
     idleSince: null,
     turnStartedAt: new Date(turnStartedAt).toISOString(),
-    updatedAt: new Date(heartbeatAt).toISOString(),
+    updatedAt: new Date(updatedAt).toISOString(),
   });
   let push = () => {};
   window.mixdogDesktop = {
@@ -1254,7 +1763,7 @@ test('Agents order by creation, then move on turn start and completion only', as
     await act(async () => push([idleRow('first', 2_000, 50_000), workingRow('second', 1_000, 9_000, 30_000)]));
     assert.deepEqual(owners(), ['first', 'second']);
 
-    // The heartbeat runs far past the leader's stamp and still moves nothing.
+    // updatedAt runs far past the leader's stamp and still moves nothing.
     await act(async () => push([idleRow('first', 2_000, 50_000), workingRow('second', 1_000, 9_000, 90_000)]));
     assert.deepEqual(owners(), ['first', 'second']);
 
@@ -1378,8 +1887,8 @@ test('the cancellation ledger holds a stopped row against a later running snapsh
     turnStartedAt,
   });
   assert.equal(ledger.apply([row('cancelled', 1_000)])[0].status, 'cancelled');
-  // The pool's heartbeat sidecar re-declares the session running once the
-  // durable index drops the cancelled row: a stale lease, not new work.
+  // The daemon still reports the session running once the durable index
+  // drops the cancelled row: a stale report, not new work.
   const resurrected = ledger.apply([{ ...row('running', 1_000), updatedAt: 9_000_000 }])[0];
   assert.equal(resurrected.status, 'cancelled');
   assert.equal(resurrected.stage, 'cancelled');
@@ -1389,7 +1898,7 @@ test('the cancellation ledger holds a stopped row against a later running snapsh
   assert.equal(ledger.size(), 0);
 });
 
-test('an unstamped cancellation survives a heartbeat that invents a start stamp', () => {
+test('an unstamped cancellation survives a running report that invents a start stamp', () => {
   const ledger = createDesktopCancellationLedger();
   // An agent cancelled WHILE QUEUED never ran, so it carries no frozen stamp:
   // its ledger baseline is 0 and any later stamp would outrank it.
@@ -1404,8 +1913,8 @@ test('an unstamped cancellation survives a heartbeat that invents a start stamp'
     ])[0].status,
     'cancelled'
   );
-  // The pool promotion publishes `running` with a SYNTHESIZED startedAt
-  // (session createdAt / heartbeat mtime) and never a turn start.
+  // A running report publishes `running` with a SYNTHESIZED startedAt
+  // (the session createdAt) and never a turn start.
   const promoted = ledger.apply([
     {
       tag: 'plan',
@@ -1420,7 +1929,7 @@ test('an unstamped cancellation survives a heartbeat that invents a start stamp'
   assert.equal(promoted.status, 'cancelled');
   assert.equal(promoted.stage, 'cancelled');
   assert.equal(desktopAgentActivityState(promoted), 'cancelled');
-  // ISO heartbeat stamps take the same path.
+  // ISO stamps take the same path.
   assert.equal(
     ledger.apply([
       {
@@ -1599,10 +2108,10 @@ test('the Agents pane paints a cancelled agent as cancelled, never completed or 
     assert.match(document.body.textContent, /Cancel unconfirmed/);
     assert.doesNotMatch(document.body.textContent, /Completed|Idle|Queued/);
 
-    // A later snapshot promoting the same sessions back to running (the pool's
-    // 2-minute heartbeat lease) must not resurrect either of them — including
-    // the queued cancellation, which has NO frozen stamp of its own while the
-    // promotion invents startedAt from the session record / heartbeat mtime.
+    // A later snapshot reporting the same sessions as running again (the
+    // daemon has not unwound their turns yet) must not resurrect either of
+    // them — including the queued cancellation, which has NO frozen stamp of
+    // its own while the report invents startedAt from the session record.
     await act(async () =>
       push([
         {
@@ -1632,7 +2141,7 @@ test('the Agents pane paints a cancelled agent as cancelled, never completed or 
     assert.equal(stateOf('worker-running'), 'cancelled');
 
     // Real new work under the same identity carries a newer turn stamp — the
-    // one signal the heartbeat promotion never publishes.
+    // one signal a stale running report never publishes.
     await act(async () =>
       push([
         {
@@ -2172,7 +2681,8 @@ test('a nested Agent row opens its exact child session without touching session 
       touched.filter((name) => /session/i.test(name)),
       []
     );
-    assert.deepEqual([...new Set(touched)].sort(), ['listAgentPool', 'subscribeAgentPool']);
+    // The contacts read the agent catalog (a read capability); nothing else.
+    assert.deepEqual([...new Set(touched)].sort(), ['invokeCapability', 'listAgentPool', 'subscribeAgentPool']);
     assert.deepEqual(prefetched, ['grand-a', 'great-a', 'lead-a']);
   } finally {
     await act(async () => dom.root.unmount());

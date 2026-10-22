@@ -4,11 +4,17 @@ Read this when choosing a `setup` mutation.
 
 ## Read and navigate
 
-- `status` reads one domain: summary, model, agents, workflow, websearch,
-  output-style, profile, autoclear, compaction, memory, features, local-provider, shell,
-  providers, mcp, skills, plugins, update, onboarding, worktree, capabilities, developer,
-  desktop, appearance, projects, connection, schedules, webhooks, hooks, or
-  media.
+- `status` reads one domain from the schema enum; pick the narrowest.
+- Results are compact JSON. `status providers` lists configured providers
+  only (`id`, `kind`, `authenticated`, `status`, `accounts` count); add
+  `detail: true` for every provider with key URLs, expiry and account ids.
+- `list_models` narrows in steps: no `catalog` returns the provider index
+  (`provider`, `count`, `defaultModel?`); `catalog.provider` returns compact
+  rows (`id`, `display`, `context`, `efforts`, `fast?`, `vision?`) with
+  `total`/`page`/`pages`/`nextPage` (`page`, `limit` ≤ 100, default 25);
+  `catalog.model` (plus `provider` if several offer the id) returns that
+  model's full options. `webSearch` limits to native-search models; `refresh`
+  reloads the catalog.
 - `open` navigates to a supported UI surface. Read `surfaces.md` for targets and
   UI-only settings.
 
@@ -22,13 +28,14 @@ Read this when choosing a `setup` mutation.
 | Active workflow pack | `set_workflow` |
 | Output style | `set_output_style` |
 | User title, language, or experience level | `set_profile` |
-| Idle session clearing | `set_autoclear` |
+| Idle session clearing, per provider, including `unlimited` | `set_autoclear` |
 | Automatic context compaction | `set_compaction` |
 | Memory capability | `set_memory_enabled` |
 | Background memory cycles | `set_recap_enabled` |
 | Web Search tool exposure | `set_web_search_enabled` |
 | Which user instruction files (AGENTS.md / CLAUDE.md) new sessions load: all, agents, claude, or off | `set_instruction_files` |
-| Git, Office, Code Tidy, Local Provider, Auto Effort, Browser, Computer, or voice enabled state | `set_builtin_enabled` |
+| The reasoning effort Auto works around: low, medium (default), or high | `set_auto_effort_base` |
+| Git, Office, Code Tidy, Local Provider, Auto Effort, Browser, Computer, voice, or Visualize enabled state | `set_builtin_enabled` |
 | Git, Memory, Office, Code Tidy, Local Provider, Auto Effort, Browser, Computer, or voice preparation | `install_builtin` |
 | Managed local model installation | `install_local_model` |
 | Start or resume a background runtime/model download | `start_local_installation` |
@@ -44,8 +51,9 @@ Read this when choosing a `setup` mutation.
 | Automatic updates | `set_auto_update` |
 | Worktree defaults: new tasks on the current branch or a new worktree, branch prefix, large-repository warning size, automatic cleanup | `set_worktree_settings` |
 | Remove stored provider authentication (one OAuth account at a time) | `forget_provider_auth` |
-| Select, rename, reorder, or auto-switch OAuth accounts, or allow paid credits | `set_provider_account` |
+| Select, rename, or reorder OAuth accounts, set the switching policy, or allow paid credits | `set_provider_account` |
 | Developer options such as risk-gated OAuth providers | `set_developer_option` |
+| Connect a catalog service (Notion, Linear, Gmail, …; not GitHub, which is the GitHub CLI) for the user: shows a one-click connect card | `connect_connector` |
 | Add an MCP server | `add_mcp_server` |
 | Edit or rename an MCP server | `save_mcp_server` |
 | Remove an MCP server | `remove_mcp_server` |
@@ -58,19 +66,20 @@ Read this when choosing a `setup` mutation.
 | Enable or disable a plugin | `set_plugin_enabled` |
 | Remove a plugin | `remove_plugin` |
 | Turn back on and reconnect every MCP server a plugin declares | `enable_plugin_mcp` |
-| Available hosted models and their options; optionally one provider, native-search capable only, or a refreshed catalog | `list_models` |
+| Hosted model catalog: provider index, one provider's paged model rows, or one model's full options | `list_models` |
 | Agent orchestration, independent of workflow instructions | `set_orchestration_mode` |
 | Safe MCP edit metadata, excluding raw connection/credential values | `get_mcp_server` |
 | Read a workflow, agent, or skill definition | `read_definition` |
 | Create a workflow, agent, or machine-global user skill | `create_definition` |
 | Partially edit a workflow, agent, or machine-global user skill | `save_definition` |
 | Delete a user workflow/agent definition or override | `delete_definition` |
-| Save a schedule/webhook; explicitly overwrite to edit | `save_automation` |
+| Save a schedule/webhook; explicitly overwrite to edit. A new one belongs to the calling thread's agent (Mixy = `lead`); `entry.owner` moves it to another agent | `save_automation` |
 | Delete an existing schedule/webhook | `delete_automation` |
-| Enable/disable a schedule/webhook | `set_automation_enabled` |
+| Enable/disable (pause/resume) a schedule/webhook | `set_automation_enabled` |
+| Run a schedule once now, or re-run a webhook on its latest received payload; the result posts into the owning agent's thread | `run_automation` |
 | Webhook listener enabled state, port, or domain | `set_webhook_config` |
-| Desktop keep-awake, run in background after window close, turn-completion notifications, notification volume (Windows), usage pin, or Computer observe-only state | `set_desktop_settings` |
-| Desktop theme, display language, side panels, markdown default view, link previews, or tool activity expansion | `set_appearance` |
+| Desktop keep-awake, run in background after window close, turn-completion notifications, notification volume (Windows), usage pin, usage rail short + long bars, or Computer observe-only state | `set_desktop_settings` |
+| Desktop theme, imported color theme, UI/code font, skin transparency (outer or main panels), display language, side panels, markdown default view, link previews, or tool activity expansion | `set_appearance` |
 | Add a before-tool hook rule | `add_hook_rule` |
 | Enable or disable a hook rule by its `status hooks` index | `set_hook_rule_enabled` |
 | Delete a hook rule by its `status hooks` index | `delete_hook_rule` |
@@ -88,26 +97,51 @@ workflow` before changing the corresponding domain.
 
 - Main and agent routes also accept `modelParameters`, `contextPercent`, and
   `contextTokens` (an exact window in tokens that overrides `contextPercent`);
-  agent routes accept `disabled`.
-  Use the model catalog for actual available options, not remembered model ids.
+  agent routes accept `disabled`. Route `autoEffort` (Main and agent only)
+  turns Auto reasoning on/off for that route; the Auto Effort built-in toggle
+  is the machine-wide switch and must also be on and `ready`.
+  Before `set_route`, read `list_models` with `catalog.model` (and `provider`)
+  for the model's `effortOptions`, `defaultEffort`, `fastCapable`,
+  `serviceTiers`, `modelParameterOptions` and `parameterVariants`; take
+  `effort`, `fast` and `modelParameters` values only from it, never from
+  remembered model ids.
 - A Web Search route must support native web search; tool exposure is changed
   separately.
 - Definition actions use `definitionKind` (workflow, agent, skill).
   Workflow/agent ids cannot be renamed through
   a save; change their display name instead. User skills may be renamed with
-  `originalName` and `name`. Skill deletion is not exposed; disable it instead.
+  `originalName` and `name`. A user skill's trigger line (`when_to_use`) is
+  `definition.whenToUse` on create and save. Skill deletion is not exposed;
+  disable it instead.
   Built-in and plugin skills accept only `toolDependencies` edits (`null`
   restores their declared dependencies).
+- A created agent is a bot (`definition.kind: "bot"`) or a workflow agent
+  (`"agent"`); omitted, the representative bot's chat creates a bot and any other chat a
+  workflow agent. The kind is fixed after creation.
 - Changing orchestration does not rewrite workflow instructions or agents.
+- `set_route` is the Lead default for new sessions. A model chosen in New Task
+  changes that default only when the user actually picks one there.
+  `route.fallbacks` (ordered models on other providers; `[]` clears) works the
+  same on `set_route` (Lead), `set_agent_route` (agents and bots, Mixy included).
+- A workflow switch reaches a running conversation as a reminder on its next
+  turn (the cached prompt is not swapped). A bot definition's instruction,
+  persona or name applies when the user presses 적용, with one cache break.
+  Connector and built-in feature changes reach a bot's open chat at once for
+  availability: opened tools join the deferred catalog, removed ones are
+  refused at call time, and the next turn's notice names both. Only the prompt
+  text describing them waits until the cache next expires.
 
 ## Providers and authentication
 
-Use `status providers` for authenticated state and source.
+Use `status providers` for authenticated state; `detail: true` adds each API
+key's source.
 
 - API-key and OAuth providers: `open providers`, then the user completes
   authentication in the visible UI.
 - Custom providers are registered, tested, and removed in the Providers UI;
-  `status providers` lists them as API rows with `custom: true`.
+  `status providers` with `detail: true` lists them as API rows with `custom: true`.
+  Their model list (Nano-GPT included) loads there with up to a 60 s wait; the
+  user can skip it and type model ids by hand.
 - Local Provider is installed and enabled as a Built-in. Its endpoint is
   Mixdog-managed and is never configured by the user.
   Use the `local-provider` skill for hardware checks, model selection, downloads,
@@ -115,10 +149,14 @@ Use `status providers` for authenticated state and source.
   the detail dialog lists installed models rather than the download catalog.
 - Forgetting authentication is destructive and requires explicit approval.
   It removes one OAuth account; a provider with several accounts requires
-  `accountId` from the account list in `status providers`.
-- `set_provider_account` changes the selected account, automatic switching,
-  paid-credit use after plan limits (`useCredits`), account order (every account id exactly once), or an account label. Sign-in
-  for a new account still happens in the Providers UI.
+  `accountId` from the account list in `status providers` with `detail: true`.
+- `set_provider_account` changes the selected account, paid-credit use after
+  plan limits (`useCredits`), account order (every account id exactly once),
+  an account label, or the switching `policy`: `manual` stays on the selected
+  account, `limit` switches when it hits a limit, `headroom` starts each new
+  session on the account with the most headroom. `status providers` with
+  `detail: true` returns the current `policy` when one is set. Sign-in for a new account still
+  happens in the Providers UI.
 - `status developer` lists developer options. An option with a `warning` is
   enabled only after the user explicitly accepts that warning, passed as
   `riskAccepted:true`; never assume acceptance.
@@ -133,6 +171,18 @@ Use `status providers` for authenticated state and source.
   duration; `provider: "default"` sets the fallback for providers without a
   built-in window. A reset and a duration are mutually exclusive; provider
   reset requires a provider.
+- `duration: "unlimited"` (or `"never"`) stops idle clearing for a provider;
+  without `provider` it applies to the current route's provider. `status
+  autoclear` reports `unlimited`, `label` and per-provider `providerDefaults`
+  (`builtInUnlimited` marks a built-in unlimited window); a provider reset
+  restores its built-in window. Built-ins follow each provider's cache: Codex/
+  ChatGPT login unlimited, OpenAI API 30 min, Anthropic and Gemini 1h. The
+  OpenAI API caches a Lead-class session's stable prefix for 12h and its
+  moving tail for 30 min (Lead, bot chats, bot task sessions, routine and
+  webhook runs), so the 30 min window clears only a cold tail. Finished
+  sub-agent sessions are always released on a finite timer (the provider's
+  window, e.g. DeepSeek 24h; 1h for Codex/ChatGPT logins); unlimited does not
+  disable it.
 - Compaction supports `enabled` and a `compaction` object with either
   `mainBufferTokens` or `mainBufferPercent`. Changing representation replaces the previous budget.
 - If no supported action exposes a requested Memory interval, report it as
@@ -159,7 +209,12 @@ markers are read with `status desktop`.
   reasoning effort with a local judge model downloaded in the background.
   Enabling or installing it fails on unsupported machines; `status features`
   reports `supported`, `installing` (judge download running) and `ready`.
+- Visualize is toggle-only through `set_builtin_enabled` (on by default);
+  `install_builtin` does not accept it.
 - Terminal follows the live Desktop terminal bridge and has no toggle.
+- Environment feature overrides (`MIXDOG_FEATURE_*`) win over these toggles;
+  they are diagnostics for headless or benchmark environments, not user
+  settings.
 - Browser Use and Computer Use installation/toggles use the same
   `install_builtin` and `set_builtin_enabled` actions through a live Desktop
   receipt. Computer Use runs on Windows, macOS, and Linux desktops. These
@@ -177,16 +232,14 @@ markers are read with `status desktop`.
   only as `hasArgumentEdit`; their contents are never returned. Indexes shift
   after a delete;
   re-read status before addressing another rule.
-- `add_hook_rule` takes `action` (allow, deny, block, modify, rewrite, ask)
-  and optional `tool`, `match`, `cwd`, `reason`. modify/rewrite need exactly
-  one of `patch` (merged into the arguments) or `args` (replaces them).
+- `add_hook_rule` with modify/rewrite needs exactly one of `patch` or `args`.
 - `delete_hook_rule` is destructive and requires explicit approval for the
   named rule; disabling with `set_hook_rule_enabled` preserves it.
+- Hook rule changes apply to open sessions and their sub-agents on the next
+  tool call; no new session or restart is needed.
 - `status media` shows the remembered lane/model per kind. `set_media_default`
   accepts only a signed-in lane that offers the kind (and the model, when
   given) in the live media catalog; the media tool's `list` reads that catalog.
-- Environment feature overrides are diagnostics for headless or benchmark
-  environments, not ordinary user settings.
 
 ## Skills, MCP, and plugins
 
@@ -201,6 +254,10 @@ markers are read with `status desktop`.
   transport. Raw credential fields are not accepted; `env_vars`,
   `bearer_token_env_var`, and `env_http_headers` reference existing environment
   variables without exposing their values.
+- `startupTimeoutSec` (connect/handshake, default 30) and `toolTimeoutSec`
+  (per tool call, default 120) are positive seconds. Raise them for slow
+  servers instead of reconnecting repeatedly; a timed-out call is never
+  replayed.
 - Environment/header maps are partial patches. Omitted keys are preserved;
   `null` explicitly removes one key, including a stored credential.
 - Plugin enablement moves its contributed skills and MCP integrations together.
@@ -213,6 +270,12 @@ markers are read with `status desktop`.
   `add_mcp_server`, `save_mcp_server`, and `remove_mcp_server` refuse plugin
   servers. Declaration problems and naming conflicts are reported as
   `declarationErrors` and `warnings`.
+- `connect_connector` is how to connect a catalog service the user asks for
+  ("Slack 연결해 줘"): it leaves a connect card in the conversation whose
+  press runs the browser sign-in (or the key sheet) in Desktop; nothing
+  connects until the user presses it, so tell them to press the card and read
+  `status mcp` afterwards. `add_mcp_server` with the service URL is not the
+  sign-in flow; never use it for a catalog service.
 - `enable_plugin_mcp` turns every server the plugin declares back on and
   reconnects them; a disabled plugin stays disabled, and it fails for a plugin
   that declares no MCP servers.
@@ -223,15 +286,31 @@ markers are read with `status desktop`.
 - Desktop-only operations require the owning conversation visible in the local
   Desktop app. Never claim a persisted change from merely delivering a request.
 - A display-language change returns `requiresReload`.
+- `set_appearance` also takes `uiFont` / `codeFont` (a family name, `""` =
+  built-in; text it lacks falls back to the built-in fonts), skin transparency
+  (0–100, defaults outer 20 / main 40; higher shows more of the skin picture):
+  `skinOuterTransparency` (window frame, titlebar, rail, sidebar, side dock),
+  `skinMainTransparency` (conversation area and its cards), or `skinTransparency`
+  to set both; and `colorTheme`
+  (an imported theme id from `status appearance` `colorThemes`, or `"builtin"`).
+  All are stored on that Desktop device only. Importing a theme file and
+  choosing a skin or custom picture stay in the UI.
 - A Project removal unregisters it only.
 - Inspect schedules/webhooks before editing. `overwrite:true` updates an
   existing named entry and preserves omitted fields; a new schedule needs
-  instructions, a `model` (no default-model fallback), and exactly one of cron
-  `time` or one-shot `at`.
+  instructions and exactly one of cron `time` or one-shot `at`.
 - Attachment contents and webhook signing secrets are not returned by setup.
   Omitted attachments and existing webhook secrets are preserved. A saved
   secret is never shown again: tell the user to open the Webhooks panel, edit
   the webhook, press Regenerate secret, copy the new value, and save.
+- A routine run (schedule or webhook) is a turn in the owning bot's chat with
+  nobody to approve: it never prompts, refuses payment and permanent-delete
+  connectors (trash moves are allowed), and still honors bot permission
+  "block". It can change only its own bot's automations and route. A webhook
+  answers "accepted" at once and a delivery that arrives while its run is
+  active is skipped. In an attended bot conversation (chat, room, or work a
+  bot started) the same payment and permanent-delete connectors ask first,
+  allow once or deny only; a coding session is not asked.
 - Enabling or creating automation may start its background worker. This is a
   persisted automation change, not permission to run an unrelated task now.
 

@@ -18,7 +18,14 @@ import {
   registerApprovalWaitWriter,
 } from './worker-index/approval-wait.mjs';
 import { createMutationBatch } from './worker-index/mutation-batch.mjs';
-import { createRowLiveness, isActiveWorkerRow, isStaleApprovalWait } from './worker-index/row-liveness.mjs';
+import {
+  createRowLiveness,
+  isActiveWorkerRow,
+  isStaleApprovalWait,
+  isUnnotifiedRestartFailure,
+  PROCESS_RESTART_FAILURE,
+  runtimeDied,
+} from './worker-index/row-liveness.mjs';
 import { normalizeWorkerRows, workerRowFromSession } from './worker-index/row-shape.mjs';
 import { acquireWorkerRowStore } from './worker-index/row-store.mjs';
 import { findTagTombstone, tagTombstoneKey, tombstoneBlocksWork } from '../../../runtime/shared/agent-reap-state.mjs';
@@ -35,9 +42,13 @@ export function createWorkerIndex({ dataDir, cfgMod, mgr, tags, tagAgents, tagCw
     unreconciled.clear();
     for (const id of ids) reconcileAwaitingUser(id);
   });
-  const liveness = createRowLiveness({ dataDir, cfgMod });
-  // Rows this process marked active; settled to idle on exit so a crash of
-  // the host never leaves them "running" forever.
+  const liveness = createRowLiveness({
+    cfgMod,
+    isSessionRunning: (sessionId) => mgr.isSessionTurnInFlight?.(sessionId) === true,
+  });
+  // Rows this process marked active; settled as failed on exit (their turn
+  // dies with the process) so a crash of the host never leaves them
+  // "running" forever.
   const activeWorkerKeys = new Set();
 
   function readWorkerRows(context = {}) {
@@ -91,12 +102,15 @@ export function createWorkerIndex({ dataDir, cfgMod, mgr, tags, tagAgents, tagCw
   const rowFromSession = (session, fallbackTag = '', extra = {}) =>
     workerRowFromSession(session, fallbackTag, extra, (sessionId) => mgr.getSessionRuntime?.(sessionId));
 
+  // A row whose owner is still owed its restart failure stays: closing the
+  // worker (a process exit closes every one) must not lose that result.
   function removeWorkerRow({ tag = '', sessionId = '' } = {}) {
     const targetTag = clean(tag);
     const targetSessionId = clean(sessionId);
     batch.flush();
     store.write((byKey) => {
       for (const [key, row] of [...byKey.entries()]) {
+        if (isUnnotifiedRestartFailure(row)) continue;
         if ((targetSessionId && row.sessionId === targetSessionId) || (targetTag && row.tag === targetTag)) {
           byKey.delete(key);
         }
@@ -144,17 +158,26 @@ export function createWorkerIndex({ dataDir, cfgMod, mgr, tags, tagAgents, tagCw
       for (const key of keys) {
         const current = byKey.get(key);
         if (!current || positiveInt(current.runtimePid) !== process.pid) continue;
-        if (isActiveWorkerRow(current)) byKey.set(key, liveness.idleRow(current, now, true));
+        if (isActiveWorkerRow(current)) {
+          byKey.set(key, liveness.failedRow(current, now, PROCESS_RESTART_FAILURE, true));
+        }
       }
     });
   }
 
-  // Startup recovery: stale active rows settle to idle, and an approval wait
-  // left behind by a runtime that is gone (daemon restart) is cleared.
-  function recoverStaleWorkerRows() {
+  // Startup recovery: stale active rows settle — as failed when another
+  // process ran their turn (it is gone, or is the predecessor still shutting
+  // down: either way the turn never finished), otherwise to idle — and an
+  // approval wait left behind by a runtime that is gone (daemon restart) is
+  // cleared. `deadOnly` (later sweeps) settles only rows whose runtime is
+  // provably dead, never a live process's quiet turn.
+  function recoverStaleWorkerRows({ deadOnly = false } = {}) {
     const now = Date.now();
     const rows = store.readAll();
-    const staleActive = rows.filter((row) => liveness.isStaleActive(row, now));
+    const isStale = deadOnly
+      ? (row) => isActiveWorkerRow(row) && runtimeDied(row)
+      : (row) => liveness.isStaleActive(row, now);
+    const staleActive = rows.filter(isStale);
     const staleWaits = rows.some(isStaleApprovalWait);
     if (!staleActive.length && !staleWaits) return false;
     if (staleActive.length) {
@@ -162,7 +185,12 @@ export function createWorkerIndex({ dataDir, cfgMod, mgr, tags, tagAgents, tagCw
         for (const row of staleActive) {
           const key = workerRowKey(row);
           const current = byKey.get(key);
-          if (current && liveness.isStaleActive(current, now)) byKey.set(key, liveness.idleRow(current, now));
+          if (!current || !isStale(current)) continue;
+          const ranElsewhere = positiveInt(current.runtimePid) && positiveInt(current.runtimePid) !== process.pid;
+          byKey.set(
+            key,
+            ranElsewhere ? liveness.failedRow(current, now, PROCESS_RESTART_FAILURE) : liveness.idleRow(current, now)
+          );
         }
       });
     }
@@ -170,10 +198,34 @@ export function createWorkerIndex({ dataDir, cfgMod, mgr, tags, tagAgents, tagCw
     return true;
   }
 
+  /** Rows whose turn a process restart ended and whose owner has not been told
+   *  yet — whoever settled the row (this process at startup, or the
+   *  predecessor's exit flush). Read-only: the caller enqueues the owner's
+   *  notification durably, THEN calls `markRestartNotified`, so a crash in
+   *  between retries (the notification's stable id makes the retry exactly-once). */
+  function pendingRestartFailures() {
+    return store.readAll().filter(isUnnotifiedRestartFailure);
+  }
+
+  /** Stamp these rows as told, once their notification is durably queued. */
+  function markRestartNotified(rows) {
+    const stamp = new Date().toISOString();
+    store.write((byKey) => {
+      for (const row of rows) {
+        const key = workerRowKey(row);
+        const current = byKey.get(key);
+        if (!current || !isUnnotifiedRestartFailure(current)) continue;
+        byKey.set(key, { ...current, restartNotified: stamp });
+      }
+    });
+  }
+
   function flushWorkerIndexOnExit() {
     batch.flush();
     flushActiveWorkerRows();
-    // Writes are persisted by an async queue; the loop is gone at exit.
+    // Writes are persisted by an async queue; the loop is gone at exit. This
+    // is the best-effort last resort: a persist still running is left alone
+    // (the graceful shutdown path drains before exit).
     store.flushSync();
   }
 
@@ -181,25 +233,62 @@ export function createWorkerIndex({ dataDir, cfgMod, mgr, tags, tagAgents, tagCw
   const unregisterExitFlush = registerExitFlush(flushWorkerIndexOnExit);
   const unregisterApprovalWaits = registerApprovalWaitWriter(file, setAwaitingUser);
   let disposed = false;
+  let disposePromise = null;
+
+  function teardown() {
+    unregisterExitFlush();
+    unregisterApprovalWaits();
+    releaseStore();
+  }
+
+  async function drainThenTeardown() {
+    batch.flush();
+    await store.flush();
+    teardown();
+  }
 
   /** Persist queued rows, then release the exit registration. Active rows are
    *  NOT settled: they are keyed by process pid, which every inline runtime in
-   *  the daemon shares, so settling here would idle other runtimes' workers. */
+   *  the daemon shares, so settling here would idle other runtimes' workers.
+   *  When the sync flush cannot run (this process's async writer holds the
+   *  lock) the exit hook and store ref stay until the async drain settles. */
   function dispose() {
     if (disposed) return;
     disposed = true;
+    let flushed = false;
     try {
       batch.flush();
-      store.flushSync();
-    } finally {
-      unregisterExitFlush();
-      unregisterApprovalWaits();
-      releaseStore();
+      flushed = store.flushSync();
+    } catch {}
+    if (flushed) {
+      teardown();
+      return;
     }
+    disposePromise = drainThenTeardown().catch(reopenAfterFailedDrain);
+  }
+
+  /** A failed drain tears nothing down; allow a later dispose to retry it. */
+  function reopenAfterFailedDrain() {
+    disposed = false;
+    disposePromise = null;
+  }
+
+  /** Awaitable dispose: drain everything, then tear down. A failed drain
+   *  rejects and leaves the registrations in place. */
+  function disposeAsync() {
+    if (!disposePromise) {
+      disposed = true;
+      disposePromise = drainThenTeardown().catch((error) => {
+        reopenAfterFailedDrain();
+        throw error;
+      });
+    }
+    return disposePromise;
   }
 
   return {
     dispose,
+    disposeAsync,
     workerIndexPath: () => file,
     invalidateWorkerRowsCache: store.invalidate,
     readAllWorkerRows: store.readAll,
@@ -226,5 +315,7 @@ export function createWorkerIndex({ dataDir, cfgMod, mgr, tags, tagAgents, tagCw
     flushActiveWorkerRows,
     flushWorkerIndexOnExit,
     recoverStaleWorkerRows,
+    pendingRestartFailures,
+    markRestartNotified,
   };
 }

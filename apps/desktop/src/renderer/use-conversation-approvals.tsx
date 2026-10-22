@@ -1,9 +1,13 @@
-import { useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { isAgentHomeSessionId } from '../../../../src/runtime/agent/orchestrator/session/agent-home.mjs';
 import { isOtherDevice, sessionUsesMultipleDevices } from '../shared/session-devices';
 import type { ToolApprovalDecision } from '../shared/contract';
-import { ApprovalCard } from './ApprovalCard';
+import { ApprovalCard, approvalRecordLabel, publishHeldSettlements } from './ApprovalCard';
+import { BrowserApprovalCard, useBrowserApprovals } from './BrowserApprovalHost';
+import { publishDockedApproval } from './approval-prompt';
 import { QuestionCard } from './QuestionCard';
-import { approvalQuestions } from './question-card-logic';
+import { useAgentChatSession } from './agent-chat-mode';
+import { approvalQuestions, buildAnswers, type QuestionDraft } from './question-card-logic';
 import type { ComposerIslandFlash } from './ComposerIsland';
 import type { Snapshot } from './desktop-types';
 import { t } from './i18n';
@@ -16,7 +20,13 @@ type AnsweredElsewhere = { id: string; device: string };
 /** Tool approvals for the session this pane renders: the pending card, the
  *  approvals this device answered itself, and whether the conversation was
  *  used from several devices (only then is a device named). */
-export function useConversationApprovals(snapshot: Snapshot, routeSessionIdRef: RefObject<string>) {
+export function useConversationApprovals(
+  snapshot: Snapshot,
+  routeSessionIdRef: RefObject<string>,
+  /** `docked`: this view renders the composer dock (a read-only view does
+   *  not, so it claims no browser approval and those float instead). */
+  { docked = true }: { docked?: boolean } = {}
+) {
   // Bounded to this session, and to the ids the retired-approval check can
   // still consult: the pending approval and the last published result.
   const decidedLocally = useRef<{ sessionId: string; ids: Set<string> }>({ sessionId: '', ids: new Set() });
@@ -32,14 +42,26 @@ export function useConversationApprovals(snapshot: Snapshot, routeSessionIdRef: 
   const [answeredElsewhere, setAnsweredElsewhere] = useState<AnsweredElsewhere | null>(null);
   const multiDevice = useMemo(() => sessionUsesMultipleDevices(snapshot.items), [snapshot.items]);
   const viewerDevice = useViewerDevice();
+  // Agent mode (agent-chat-mode.ts) narrows both cards to the bubble column together.
+  const agentMode = useAgentChatSession(decidedSessionId);
+  // Held requests in an agent's home thread fold away once their settling row arrives.
+  useLayoutEffect(() => {
+    if (isAgentHomeSessionId(decidedSessionId)) publishHeldSettlements(decidedSessionId, snapshot.items ?? []);
+  }, [decidedSessionId, snapshot.items]);
 
-  // A pending approval grows the island into its card. An answer from another
-  // device leaves no card: the island flashes it instead.
-  // A pending ask_user question renders in the transcript instead.
-  let approvalCard: ReactNode = null;
+  // A pending ask_user question renders in the transcript, where the turn
+  // waits on it; a pending approval (the session's own, then its browser
+  // approvals) docks above the composer. An approval answered on another
+  // device leaves the dock and stays in the transcript as one line saying who
+  // answered; a question's answer flashes in the island.
+  const browserPrompts = useBrowserApprovals(docked ? decidedSessionId : '');
+  let approvalDock: ReactNode = null;
   let questionCard: ReactNode = null;
   // Sending a message while a question waits closes the question first.
   let dismissQuestion: (() => Promise<unknown>) | null = null;
+  let answerQuestion: ((reply: string) => Promise<unknown>) | null = null;
+  // The pending question card's current drafts, kept by the card.
+  const questionDrafts = useRef<QuestionDraft[]>([]);
   const pendingApproval = snapshot.toolApproval;
   if (pendingApproval && String(pendingApproval.id ?? '') !== answeredElsewhere?.id) {
     const resolveDecision = async (decision: ToolApprovalDecision) => {
@@ -56,9 +78,7 @@ export function useConversationApprovals(snapshot: Snapshot, routeSessionIdRef: 
         setAnsweredElsewhere({
           id: approvalId,
           device:
-            multiDevice && result?.id === approvalId && isOtherDevice(result.device, viewerDevice)
-              ? result.device
-              : '',
+            multiDevice && result?.id === approvalId && isOtherDevice(result.device, viewerDevice) ? result.device : '',
         });
       }
       return accepted;
@@ -66,20 +86,64 @@ export function useConversationApprovals(snapshot: Snapshot, routeSessionIdRef: 
     const questions = pendingApproval.kind === 'question' ? approvalQuestions(pendingApproval.args) : null;
     if (questions) {
       questionCard = (
-        <QuestionCard key={approvalInstanceKey(pendingApproval.id)} questions={questions} resolve={resolveDecision} />
+        <QuestionCard
+          key={approvalInstanceKey(pendingApproval.id)}
+          questions={questions}
+          resolve={resolveDecision}
+          draftsRef={questionDrafts}
+          agentMode={agentMode}
+        />
       );
       dismissQuestion = () => resolveDecision({ approved: false, reason: 'dismissed by user' });
+      // A composer message answers the question together with the card's picks.
+      answerQuestion = (reply) =>
+        resolveDecision({
+          approved: true,
+          answers: buildAnswers(questions, questionDrafts.current),
+          reply,
+        });
     } else {
-      approvalCard = (
+      const waiting = 1 + browserPrompts.length;
+      approvalDock = (
         <ApprovalCard
           key={approvalInstanceKey(pendingApproval.id)}
           approval={pendingApproval}
-          resolve={(approved) => resolveDecision({ approved })}
+          resolve={resolveDecision}
+          agentMode={agentMode}
+          queue={waiting > 1 ? `1/${waiting}` : undefined}
+          hostSessionId={decidedSessionId}
         />
       );
     }
   }
-  return { approvalCard, questionCard, dismissQuestion, retiredApproval, answeredElsewhere, multiDevice, viewerDevice };
+  if (!approvalDock && browserPrompts.length > 0) {
+    approvalDock = (
+      <BrowserApprovalCard
+        key={browserPrompts[0].id}
+        prompt={browserPrompts[0]}
+        queueLabel={browserPrompts.length > 1 ? `1/${browserPrompts.length}` : undefined}
+      />
+    );
+  }
+  // A copied request names the session that asks; its waiting line yields to the card.
+  const dockedAsking =
+    (pendingApproval && pendingApproval.kind !== 'question' ? String(pendingApproval.sessionId || '') : '') ||
+    (browserPrompts[0]?.sessionId ?? '');
+  useLayoutEffect(() => {
+    if (!decidedSessionId) return;
+    publishDockedApproval(decidedSessionId, dockedAsking === decidedSessionId ? '' : dockedAsking);
+    return () => publishDockedApproval(decidedSessionId, '');
+  }, [decidedSessionId, dockedAsking]);
+  return {
+    approvalDock,
+    questionCard,
+    dismissQuestion,
+    answerQuestion,
+    retiredApproval,
+    answeredElsewhere,
+    multiDevice,
+    viewerDevice,
+  };
 }
 
 /** The island's one-shot notice: an approval settled on another device wins
@@ -89,13 +153,16 @@ export function conversationIslandFlash(
   answeredElsewhere: AnsweredElsewhere | null,
   viewerDevice: string | null
 ): ComposerIslandFlash | null {
+  // Answered on another device: the docked card leaves and this one line
+  // says what was decided and where ("Send an email · Allowed from DESKTOP-7").
   if (retiredApproval && isOtherDevice(retiredApproval.outcome.device, viewerDevice)) {
     const { approval, outcome } = retiredApproval;
+    const result = outcome.approved
+      ? t('Allowed from {{device}}', { device: outcome.device })
+      : t('Denied from {{device}}', { device: outcome.device });
     return {
       key: `retired:${approvalInstanceKey(approval.id)}`,
-      text: outcome.approved
-        ? t('Allowed from {{device}}', { device: outcome.device })
-        : t('Denied from {{device}}', { device: outcome.device }),
+      text: approval.kind === 'question' ? result : `${approvalRecordLabel(approval)} · ${result}`,
     };
   }
   if (answeredElsewhere) {

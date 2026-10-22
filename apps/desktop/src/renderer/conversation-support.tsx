@@ -1,4 +1,5 @@
 import {
+  startTransition,
   useCallback,
   type Dispatch,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -19,14 +20,15 @@ import type { CommandSurface as CommandSurfaceName, SettingsSection } from './sl
 import type { Snapshot, TranscriptItem } from './desktop-types';
 import { TranscriptAssistantRow, type TranscriptAssistantRowProps } from './TranscriptAssistantRow';
 import { submissionIdentity, transcriptRowArchived, turnPromptText, type TranscriptRowModel } from './transcript-rows';
-import { TranscriptRow } from './transcript-row';
+import { showsResponseFooter, TranscriptResponseFooter, TranscriptRow } from './transcript-row';
 import { backgroundWorkCounts, completionActivityKey, hadLiveActivity, LiveActivity } from './transcript-status';
 import { dropTranscriptScrollDeviation } from './transcript-follow-rules';
 import { ToolActivityGroup } from './transcript-tool-ui';
 import { AskUserRecord, splitAskUser } from './ask-user-record';
-import { TurnChangesCard } from './TurnChangesCard';
+import { PreviewedTurnChangesCard } from './transcript-visualize-card';
 import { desktopPromptDisplayText, pendingPromptImages, type PendingPromptItem } from './conversation-prompt-items';
 import { nextComposerSubmissionId } from './composer-draft';
+import { isMobileRemoteSurface } from './mobile-surface';
 
 /** The pane-local actions the composer is handed. They are wired once and
  *  address the pane's own route through refs, so a prop change never
@@ -77,7 +79,7 @@ export function JumpToLatestButton({ visible, onJump }: { visible: boolean; onJu
       }}
       aria-label={t('Jump to latest message')}
     >
-      <ArrowDown size={14} />
+      <ArrowDown size={16} />
     </button>
   );
 }
@@ -132,10 +134,30 @@ export function useConversationComposerActions({
     if (!queuedBehindTurnAtSubmit.current) {
       goalSubmission.current = { id: submissionId, scope: goalSubmitScopeRef.current };
     }
-    setOptimisticPrompts((current) => [...current.filter((item) => item.id !== submissionId), optimistic]);
+    const showPendingRow = () => {
+      setOptimisticPrompts((current) => [...current.filter((item) => item.id !== submissionId), optimistic]);
+      armFollowOnSubmitRef.current();
+    };
+    // Phone: the composer clears on the tap's own commit (a small render) and
+    // the pending row — a transcript-wide render — follows as a transition, so
+    // it never gates the tap's first frame. A host refusal below removes the
+    // row on the urgent lane, which the update queue's order still honours.
+    if (isMobileRemoteSurface()) startTransition(showPendingRow);
+    else showPendingRow();
     window.mixdogDesktop?.perfLog?.(`prompt-submit phase=renderer-queued id=${submissionId}`);
-    armFollowOnSubmitRef.current();
     const acceptedStartedAt = performance.now();
+    // The bubble owns the failed message (and its retry); the composer treats
+    // it as sent.
+    const keepFailedSteer = () => {
+      setOptimisticPrompts((current) =>
+        current.map((item) =>
+          String(item.id) === submissionId
+            ? { ...item, steer: 'failed' as const, retry: { content, options: { ...options, id: submissionId } } }
+            : item
+        )
+      );
+      return true;
+    };
     let accepted: unknown;
     try {
       accepted = await composerActions.current.invokeResult(() =>
@@ -148,9 +170,14 @@ export function useConversationComposerActions({
     } catch (error) {
       if (materializingDraft) suppressDraftSubmitPaintHandoff.current = false;
       if (goalSubmission.current?.id === submissionId) goalSubmission.current = null;
+      if (optimistic.queuedBehindTurn) return keepFailedSteer();
       setOptimisticPrompts((current) => current.filter((item) => String(item.id) !== submissionId));
       throw error;
     }
+    // A message sent behind a running turn already stands in the transcript:
+    // a failed send stays there as "Not sent · Send again" (with the composer
+    // cleared) instead of moving back into the editor.
+    if (accepted !== true && optimistic.queuedBehindTurn) return keepFailedSteer();
     if (accepted !== true && materializingDraft) {
       suppressDraftSubmitPaintHandoff.current = false;
     }
@@ -309,6 +336,14 @@ export function conversationKeyDownCapture(
     ?.focus({ preventScroll: true });
 }
 
+/** A turn's visualize cards and whether a row already seated them. */
+export type TurnCardsSeat = {
+  cards: ReactNode;
+  placed: boolean;
+  /** The files the turn showed as visualize cards: its changes card lists none of them. */
+  visualized?: readonly string[];
+};
+
 function errorRowNode(
   row: Extract<TranscriptRowModel, { _tag: 'Error' }>,
   {
@@ -318,7 +353,9 @@ function errorRowNode(
     settledTurnKeys,
     onRetryTurn,
     onOpenSettings,
+    turnCards,
   }: {
+    turnCards?: TurnCardsSeat;
     readOnly: boolean;
     retryDisabled: boolean;
     settledItems: readonly TranscriptItem[];
@@ -361,7 +398,8 @@ function errorRowNode(
   return row.turnChanges ? (
     <>
       {notice}
-      <TurnChangesCard turnChanges={row.turnChanges} />
+      {seatTurnCards(turnCards)}
+      <PreviewedTurnChangesCard turnChanges={row.turnChanges} visualized={turnCards?.visualized} />
     </>
   ) : (
     notice
@@ -385,7 +423,13 @@ export function transcriptRowNode(
     onRetryTurn,
     onOpenSettings,
     questionCard,
+    quietTools = false,
+    turnCards,
   }: {
+    /** Coding mode: the turn's visualize cards, seated above its changed-files card. */
+    turnCards?: TurnCardsSeat;
+    /** Agent mode: no tool rows; only a question that needs the user shows. */
+    quietTools?: boolean;
     disclosureScope: string;
     optimisticActivityStartedAt: number;
     readOnly: boolean;
@@ -406,7 +450,15 @@ export function transcriptRowNode(
     return <div className="transcript-turn-gap" aria-hidden="true" />;
   }
   if (row._tag === 'Error') {
-    return errorRowNode(row, { readOnly, retryDisabled, settledItems, settledTurnKeys, onRetryTurn, onOpenSettings });
+    return errorRowNode(row, {
+      readOnly,
+      retryDisabled,
+      settledItems,
+      settledTurnKeys,
+      onRetryTurn,
+      onOpenSettings,
+      turnCards,
+    });
   }
   if (row._tag === 'Thinking') {
     return (
@@ -427,11 +479,15 @@ export function transcriptRowNode(
     // answered one stays as its summary.
     const { rest, asked, waiting } = splitAskUser(row.items, Boolean(questionCard));
     if (!asked.length && !waiting) {
-      return <ToolActivityGroup items={row.items} disclosureScope={disclosureScope} turnKey={row.turnKey} />;
+      return quietTools ? null : (
+        <ToolActivityGroup items={row.items} disclosureScope={disclosureScope} turnKey={row.turnKey} />
+      );
     }
     return (
       <>
-        {rest.length > 0 && <ToolActivityGroup items={rest} disclosureScope={disclosureScope} turnKey={row.turnKey} />}
+        {rest.length > 0 && !quietTools && (
+          <ToolActivityGroup items={rest} disclosureScope={disclosureScope} turnKey={row.turnKey} />
+        )}
         {asked.map((item, index) => (
           <AskUserRecord key={String(item.id ?? index)} item={item} />
         ))}
@@ -450,12 +506,24 @@ export function transcriptRowNode(
   const assistantProps: TranscriptAssistantRowProps = {
     item: row.item,
     live: Boolean(row.live),
+    revealKey: row.key,
+    // The coding transcript paces its live text; agent chat shows it whole.
+    paced: !quietTools,
     completion: row.completion,
     backgroundWork: isLatestCompletion ? backgroundWorkCounts(snapshot) : undefined,
     animateComplete: hadLiveActivity(sessionId, turnIdentity),
     completionActivityKey: completionActivityKey(sessionId, turnIdentity),
     disclosureScope,
   };
+  // Coding mode: a turn's status line is the last thing of the turn, so with
+  // cards the footer follows them instead of sitting inside the message.
+  const footerAfterCards =
+    !quietTools &&
+    Boolean(row.turnChanges) &&
+    Boolean(row.completion) &&
+    row.item?.kind === 'assistant' &&
+    showsResponseFooter(row.item, row.completion);
+  if (footerAfterCards) assistantProps.footerAfterCards = true;
   const assistant = renderAssistantRow ? (
     renderAssistantRow(assistantProps)
   ) : (
@@ -464,9 +532,27 @@ export function transcriptRowNode(
   return row.turnChanges ? (
     <>
       {assistant}
-      <TurnChangesCard turnChanges={row.turnChanges} />
+      {seatTurnCards(turnCards)}
+      <PreviewedTurnChangesCard turnChanges={row.turnChanges} visualized={turnCards?.visualized} />
+      {footerAfterCards && row.item && row.completion ? (
+        <TranscriptResponseFooter
+          trailing
+          item={row.item}
+          completion={row.completion}
+          animateComplete={assistantProps.animateComplete}
+          completionActivityKey={assistantProps.completionActivityKey}
+          backgroundWork={assistantProps.backgroundWork}
+        />
+      ) : null}
     </>
   ) : (
     assistant
   );
+}
+
+/** The turn's visualize cards, seated once above its changed-files card. */
+function seatTurnCards(turnCards?: TurnCardsSeat): ReactNode {
+  if (!turnCards) return null;
+  turnCards.placed = true;
+  return turnCards.cards;
 }

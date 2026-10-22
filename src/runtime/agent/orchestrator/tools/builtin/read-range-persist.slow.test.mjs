@@ -71,15 +71,17 @@ async function readAnchorLines(file) {
 }
 
 // Holds cache-dir temp-file writes until release(); counts how many started.
+// The atomic writer opens its temp file and writes through that handle, so the
+// write is held where the temp file is opened.
 function holdWrites(t) {
-  const original = fs.writeFile;
+  const original = fs.open;
   const gate = { entered: 0, open: false, waiters: [] };
   gate.release = () => {
     gate.open = true;
     for (const w of gate.waiters.splice(0)) w();
   };
-  t.mock.method(fs, 'writeFile', async (path, ...rest) => {
-    if (String(path).startsWith(cacheDir) && /\.json\.[0-9a-f]+\.tmp$/.test(String(path))) {
+  t.mock.method(fs, 'open', async (path, ...rest) => {
+    if (String(path).startsWith(cacheDir) && /\.json\.mixdog-tmp-[0-9a-f]+$/.test(String(path))) {
       gate.entered += 1;
       if (!gate.open) await new Promise((resolve) => gate.waiters.push(resolve));
     }
@@ -110,8 +112,13 @@ test('schedules during an in-flight write coalesce into one follow-up with the l
 
 test('unchanged serialized content is not rewritten', async () => {
   const file = await fixture('unchanged.txt');
+  const base = stats.writes;
   await publish(file, 5);
-  await until(() => readAnchorLines(file));
+  // stats.writes ticks only after the atomic write (rename + lock release)
+  // returns, so the cache file can be visible a few turns before the counter
+  // moves. Wait on the counter itself, not on the file appearing.
+  await until(() => stats.writes === base + 1);
+  assert.ok((await readAnchorLines(file))?.includes(5));
   const before = stats.writes;
   await publish(file, 5);
   await sleep(1200);

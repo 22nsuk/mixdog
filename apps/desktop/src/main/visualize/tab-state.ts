@@ -13,8 +13,10 @@ import type {
   VisualizePaneView,
   VisualizeProblem,
   VisualizeTabView,
+  VisualizeVersionTurn,
   VisualizeVersionView,
 } from '../../shared/visualize';
+import type { VisualizeAnnotation } from '../../shared/visualize-annotations';
 import type { HistoryEntry } from './history';
 import { formatProblemsSection, localizeProblemText } from './page-problems';
 import type { VisualizeTarget } from './targets';
@@ -69,12 +71,17 @@ export interface TabState {
   panes: VisualizePaneView[];
   unwatch: Array<() => void>;
   reloadTimer: NodeJS.Timeout | null;
+  /** The live files are gone (deleted, or their folder removed): the tab shows
+   *  a "file was removed" notice and retries until they are back. */
+  missing?: boolean;
+  /** Retries a failed reload (see reloads.ts); not a pending reload. */
+  retryTimer?: NodeJS.Timeout | null;
   /** Distinct runtime problems since the last reload (replaced, never mutated). */
   problems: VisualizeProblem[];
   /** Bumps on every report, repeats included: a page still erroring is not settled. */
   problemSeq: number;
-  /** The user lifted the outside-network block for this tab's pages (for the
-   *  tab's lifetime; off by default). */
+  /** Outside network for this tab's pages; on for every opened tab (like the
+   *  browser panel). The guard still reports refused requests if it is cleared. */
   allowNetwork?: boolean;
   /** Kept versions (file tabs, with history on). */
   versions?: VisualizeVersionView[];
@@ -86,17 +93,33 @@ export interface TabState {
   pendingReload?: boolean;
   /** The last snapshot was skipped: the session's version history is full. */
   historyFull?: boolean;
-  /** The chat card's picture (a PNG data URL). */
+  /** The chat card's picture (a PNG data URL)… */
   thumbnail?: string;
+  /** …of this version (0 for a tab without versions). */
+  thumbnailVersion?: number;
   /** Direct-renderer tabs: the live content (no files, `targets` is empty). */
   inline?: VisualizeInlineContent;
-  /** Kept contents of an inline tab, oldest first (held in memory). */
-  inlineHistory?: Array<{ n: number; at: number; content: VisualizeInlineContent }>;
+  /** Kept contents of an inline tab, oldest first (held in memory), with the
+   *  card picture each version's turn ended on. */
+  inlineHistory?: Array<{
+    n: number;
+    at: number;
+    content: VisualizeInlineContent;
+    thumbnail?: string;
+    turns?: VisualizeVersionTurn[];
+  }>;
   /** Displayed pane indices whose inline render finished since the last open. */
   rendered?: Set<number>;
   /** Render ids already spent, with the tab revision they were issued for. */
   rendersSpent?: Map<string, number>;
+  /** The agent's annotation marks and the revision they were made on: any
+   *  remount (reload, version, network switch) leaves them behind. */
+  annotations?: { revision: number; marks: VisualizeAnnotation[] };
 }
+
+/** The tab's marks for what it shows now (none once its revision moved on). */
+export const currentAnnotations = (tab: TabState): VisualizeAnnotation[] =>
+  tab.annotations && tab.annotations.revision === tab.revision ? tab.annotations.marks : [];
 
 export interface SessionState {
   tabs: TabState[];
@@ -241,10 +264,12 @@ export function view(tab: TabState): VisualizeTabView {
     label: tab.label,
     revision: tab.revision,
     panes: displayedPanes(tab),
+    ...(tab.missing && !tab.shown ? { missing: true as const } : {}),
     ...(tab.problems.length ? { problems: tab.problems } : {}),
     ...(tab.allowNetwork ? { networkAllowed: true as const } : {}),
     ...versionFields(tab),
-    ...(tab.thumbnail ? { thumbnail: tab.thumbnail } : {}),
+    ...(tab.thumbnail ? { thumbnail: tab.thumbnail, thumbnailVersion: tab.thumbnailVersion ?? 0 } : {}),
+    ...(currentAnnotations(tab).length ? { annotations: currentAnnotations(tab) } : {}),
   };
 }
 

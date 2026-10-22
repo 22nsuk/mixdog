@@ -29,6 +29,8 @@ const SURFACE_KEYBOARD_OWNER_SELECTOR = [
   '.xterm',
   '.monaco-editor',
   "[role='dialog']",
+  // An approval card: Space and Enter on its focused button are the card's.
+  "[role='alertdialog']",
   "[role='listbox']",
   "[role='menu']",
   "[role='menuitem']",
@@ -86,6 +88,8 @@ export function surfaceOwnsKeyboard(target: EventTarget | null): boolean {
 export function shouldFocusComposerFromWindowKey(event: KeyboardEvent): boolean {
   if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return false;
   if (event.key.length !== 1 && event.key !== 'Process' && event.key !== 'Dead') return false;
-  if (modalDialogPresented()) return false;
-  return !surfaceOwnsKeyboard(event.target);
+  // The cheap target test first: typing into the composer itself (every
+  // keystroke) must not scan the whole document for modal dialogs.
+  if (surfaceOwnsKeyboard(event.target)) return false;
+  return !modalDialogPresented();
 }

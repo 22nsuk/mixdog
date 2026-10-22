@@ -10,6 +10,12 @@
 // no disk. A reload starts cold on purpose.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { isSshConnectionWindow } from './desktop-connection';
+import {
+  isDesktopProvidersUnavailableError,
+  requireDesktopProviders,
+  useDesktopProvidersRetry,
+} from './desktop-provider-retry';
 import { fetchProviderModels, invalidateSharedModelCatalogRequest } from './model-catalog-cache';
 import { invalidateWorkflowOptions } from './workflow-options-cache';
 
@@ -50,6 +56,17 @@ const SIDEBAR_REFERENCE_KEYS: readonly SidebarReferenceKey[] = [
   'webSearchRoute',
   'webSearchModels',
 ];
+
+/** The Workflows panel's reference set; boot prewarm and rail hover warm the
+ *  same keys the panel reads so its first open paints rows at once. */
+export const WORKFLOW_REFERENCE_KEYS = [
+  'workflows',
+  'agents',
+  'webSearchRoute',
+  'webSearchModels',
+  'providerSetup',
+  'quickProviderModels',
+] as const satisfies readonly SidebarReferenceKey[];
 
 // TTLs reflect how fast each resource actually moves. Channel setup carries
 // the schedule/webhook rows a user edits inside the app, so it revalidates
@@ -95,6 +112,7 @@ const DEFAULTS: SidebarReferenceValues = {
 // together. The stored web-search route is a user choice and only its own
 // mutation invalidates it.
 const PROVIDER_KEYS: readonly SidebarReferenceKey[] = ['providerSetup', 'quickProviderModels', 'webSearchModels'];
+const forcedKeys = new Set<SidebarReferenceKey>();
 
 // Which cached keys a mutation makes untrue. Anything not listed falls back to
 // the caller's own panel keys, so an unmapped capability still refreshes.
@@ -103,6 +121,8 @@ const MUTATION_KEYS: Partial<Record<string, readonly SidebarReferenceKey[]>> = {
   deleteSchedule: ['channelSetup'],
   setScheduleEnabled: ['channelSetup'],
   runScheduleNow: ['channelSetup'],
+  runWebhookNow: ['channelSetup'],
+  retryRoutineDelivery: ['channelSetup'],
   saveWebhook: ['channelSetup'],
   deleteWebhook: ['channelSetup'],
   setWebhookEnabled: ['channelSetup'],
@@ -110,7 +130,9 @@ const MUTATION_KEYS: Partial<Record<string, readonly SidebarReferenceKey[]>> = {
   saveWorkflowPack: ['workflows'],
   deleteWorkflow: ['workflows', 'agents'],
   saveAgentDefinition: ['agents'],
+  saveLeadIdentity: ['agents'],
   deleteAgentDefinition: ['agents'],
+  restoreAgentDefinition: ['agents'],
   setAgentRoute: ['agents'],
   setWebSearchRoute: ['webSearchRoute'],
   addProject: ['projects'],
@@ -121,6 +143,7 @@ const MUTATION_KEYS: Partial<Record<string, readonly SidebarReferenceKey[]>> = {
   saveCustomProvider: PROVIDER_KEYS,
   removeCustomProvider: PROVIDER_KEYS,
   updateCustomProviderModel: PROVIDER_KEYS,
+  setModelPreferences: PROVIDER_KEYS,
   updateProviderAccounts: PROVIDER_KEYS,
   completeOAuthProviderLogin: PROVIDER_KEYS,
   installBuiltinFeature: PROVIDER_KEYS,
@@ -163,9 +186,11 @@ const LOADERS: { [K in SidebarReferenceKey]: Loader<K> } = {
   },
   workflows: async (api) => rows(await capability(api, 'listWorkflows')),
   agents: async (api) => rows(await capability(api, 'listAgents')),
-  providerSetup: async (api) => await capability(api, 'getProviderSetup'),
+  providerSetup: async (api, force) =>
+    requireDesktopProviders(await capability(api, 'getProviderSetup', force ? [{ force: true }] : [])),
   webSearchRoute: async (api) => record(await capability(api, 'getWebSearchRoute')),
-  webSearchModels: async (api) => rows(await capability(api, 'listWebSearchModels', [{ quick: false }])),
+  webSearchModels: async (api, force) =>
+    rows(await capability(api, 'listWebSearchModels', [{ quick: false, ...(force ? { force: true } : {}) }])),
 };
 
 interface CacheEntry {
@@ -259,6 +284,7 @@ export function adoptSidebarReferenceHost(api: SidebarReferenceApi | undefined):
   if (!rebind) return false;
   const affected = [...new Set([...entries.keys(), ...failures.keys(), ...inflight.keys()])];
   entries.clear();
+  forcedKeys.clear();
   failures.clear();
   for (const key of SIDEBAR_REFERENCE_KEYS) bumpGeneration(key);
   if (affected.length)
@@ -327,7 +353,16 @@ function invalidateProviderReferencesFromPeer(change: ProviderModelsChange): voi
 export function subscribeProviderModelsSync(
   api: Partial<Pick<DesktopApi, 'subscribeProviderModelsChanged'>> | undefined
 ): () => void {
-  return api?.subscribeProviderModelsChanged?.(invalidateProviderReferencesFromPeer) ?? (() => {});
+  const unsubscribe = api?.subscribeProviderModelsChanged?.(invalidateProviderReferencesFromPeer) ?? (() => {});
+  const events = typeof window === 'undefined' ? null : window;
+  const reconnect = () => invalidateKeys(PROVIDER_KEYS, false);
+  events?.addEventListener?.('mixdog:remote-reconnected', reconnect);
+  events?.addEventListener?.('mixdog:remote-state-gap', reconnect);
+  return () => {
+    unsubscribe();
+    events?.removeEventListener?.('mixdog:remote-reconnected', reconnect);
+    events?.removeEventListener?.('mixdog:remote-state-gap', reconnect);
+  };
 }
 
 export function useProviderModelsSync(api: Parameters<typeof subscribeProviderModelsSync>[0]): void {
@@ -335,7 +370,10 @@ export function useProviderModelsSync(api: Parameters<typeof subscribeProviderMo
 }
 
 function invalidateKeys(keys: readonly SidebarReferenceKey[], notifyMain: boolean): void {
+  // Only a server window must bypass the daemon's proxied provider cache.
+  const forced = isSshConnectionWindow();
   for (const key of keys) {
+    if (forced) forcedKeys.add(key);
     bumpGeneration(key);
     const entry = entries.get(key);
     if (entry) entry.invalid = true;
@@ -396,9 +434,10 @@ function ensureSidebarReference(api: SidebarReferenceApi, key: SidebarReferenceK
   const request = (async () => {
     try {
       const loader = LOADERS[key] as Loader<SidebarReferenceKey>;
-      const value = await loader(api, force);
+      const value = await loader(api, force || forcedKeys.has(key));
       if ((generations.get(key) ?? 0) !== generation) return;
       entries.set(key, { value, updatedAt: clock(), invalid: false });
+      forcedKeys.delete(key);
       failures.delete(key);
     } catch (reason) {
       if ((generations.get(key) ?? 0) !== generation) return;
@@ -463,6 +502,7 @@ function subscribeSidebarReferences(keys: readonly SidebarReferenceKey[], listen
 /** Test seam only: drops every snapshot and (optionally) installs a clock. */
 export function resetSidebarReferenceCache(options: { now?: () => number } = {}): void {
   entries.clear();
+  forcedKeys.clear();
   inflight.clear();
   failures.clear();
   pendingNotice = null;
@@ -528,9 +568,13 @@ export function sidebarReferencesLoading(
 export function useSidebarReferences<K extends SidebarReferenceKey>(
   api: SidebarReferenceApi | undefined,
   keys: readonly K[],
-  active = true
+  active = true,
+  /** False: an inactive reader loads nothing (it only reads what the cache
+   *  holds) until it turns active. */
+  hydrateHidden = true
 ): SidebarReferenceState<K> {
   const available = Boolean(api?.invokeCapability);
+  const hydrate = hydrateHidden || active;
   const [revision, setRevision] = useState(0);
   // Read-through status is HOST-SCOPED: settled and error both belong to the
   // host they came from, so host B's first paint shows neither A's rows nor
@@ -598,19 +642,24 @@ export function useSidebarReferences<K extends SidebarReferenceKey>(
   useEffect(() => {
     // Hidden panels hydrate too: App pre-mounts rail destinations so the first
     // click is a warm, atomic reveal.
-    void refresh();
-  }, [refresh]);
+    if (hydrate) void refresh();
+  }, [refresh, hydrate]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the cache-invalidation trigger that re-checks staleness
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision (cache invalidation) and active (re-entry) are the triggers that re-check staleness
   useEffect(() => {
     // Re-entry AND external invalidation (settings/onboarding mutating shared
-    // reference data from an overlay) revalidate silently while the mounted
-    // rows stay on screen. Only stale keys trigger work, so a fresh cache and
-    // a failure inside its backoff both settle immediately instead of looping.
-    if (!active || !available) return;
+    // reference data from an overlay, a setup-tool push) revalidate silently
+    // while the mounted rows stay on screen. A hidden pre-mounted panel follows
+    // those pushes too, so its next opening is already fresh instead of
+    // swapping rows in front of the user. Event-driven only (no polling): only
+    // stale keys trigger work, so a fresh cache and a failure inside its
+    // backoff both settle immediately instead of looping.
+    if (!hydrate || !available) return;
     if (!keys.some((key) => isSidebarReferenceStale(key))) return;
     void refresh();
-  }, [active, available, keys, refresh, revision]);
+  }, [active, available, hydrate, keys, refresh, revision]);
+
+  useDesktopProvidersRetry(active && isDesktopProvidersUnavailableError(error), () => void refresh({ force: true }));
 
   return {
     values,

@@ -1,8 +1,11 @@
 import { renderBackgroundTask, startBackgroundTask } from '../../../../../shared/background-tasks.mjs';
 import { killShellDescendants, waitForShellDescendants } from '../../lib/shell-descendants.mjs';
-import { consumeFilterTeeCapture } from '../shell-analysis.mjs';
+import { releaseShellJobWorkspace } from '../lib/shell-job-records.mjs';
+import { readFilterTeeCapture } from '../shell-analysis.mjs';
 import { compactShellOutputLosslessly, renderShellOutputBody } from '../shell-lossless-compact.mjs';
-import { removeTransportFileNow } from './transport-artifacts.mjs';
+import { cleanupArtifactAfter, removeTransportFileNow } from './transport-artifacts.mjs';
+import { DELIVERY_FULL_CHARS, EMPTY_PIECE, fitPieces, shellTextPiece } from '../lib/shell-delivery.mjs';
+import { shellLogPiece } from '../lib/shell-task-output.mjs';
 import { shellTaskIdentity } from './backgrounded-result.mjs';
 import { _isBenignSearchExitOne } from './benign-exit.mjs';
 import {
@@ -23,7 +26,7 @@ import {
 function trackSurvivingDescendants(handle, { command, cwd, options, startedAtMs } = {}) {
   if (!handle?.taskId) return null;
   try {
-    return startBackgroundTask({
+    const task = startBackgroundTask({
       taskId: handle.taskId,
       startedAtMs: startedAtMs || Date.now(),
       surface: 'shell',
@@ -33,17 +36,25 @@ function trackSurvivingDescendants(handle, { command, cwd, options, startedAtMs 
       meta: { task_id: handle.taskId, stdout: null, stderr: null, cwd, timeoutMs: 0 },
       resultType: 'shell_task_result',
       run: async () => {
-        await waitForShellDescendants(handle, { pollMs: 1_000 });
+        await waitForShellDescendants(handle);
+        // The folder reservation the finished command handed to its
+        // survivors ends with the last of them.
+        releaseShellJobWorkspace(handle.taskId);
         return {
           task_id: handle.taskId,
           status: 'completed',
           detail: 'every process the command left running has exited',
         };
       },
+      // The kill's own re-observation is what `task cancel` reports.
       cancel: () => {
-        void killShellDescendants(handle);
+        task.cancelOutcome = killShellDescendants(handle);
       },
     });
+    // The command already returned its result; these processes are a side
+    // effect it left running, not work the agent is waiting on.
+    task.detached = true;
+    return task;
   } catch {
     return null;
   }
@@ -63,17 +74,16 @@ function survivingDescendantsWarning(result, taskContext) {
   return [heading, renderBackgroundTask(task, { ownerTool: true })].join('\n');
 }
 
-// Filter-swallow rescue: the tee file is ALWAYS consumed (deleted) here; its
-// tail is attached only when the run failed with an empty visible capture —
-// the exact `(no output)` shape that previously cost the model extra
-// diagnostic turns.
-function filterRescueNote(teePlan, { failed, stdout, stderr }) {
-  const rescueTail = consumeFilterTeeCapture(teePlan.teePath);
-  // consumeFilterTeeCapture unlinks best-effort and swallows the failure; on
-  // Windows a process that survived an unconfirmed kill still holds the file.
-  // Route it through the same retry + exit-hook path the settlement branch
-  // uses instead of abandoning it.
-  removeTransportFileNow(teePlan.teePath);
+// Filter-swallow rescue: the tee file is ALWAYS consumed (deleted) — once the
+// run's tree has settled when its result says it may still run; its tail is
+// attached only when the run failed with an empty visible capture — the exact
+// `(no output)` shape that previously cost the model extra diagnostic turns.
+function filterRescueNote(teePlan, { failed, stdout, stderr }, settled) {
+  const rescueTail = readFilterTeeCapture(teePlan.teePath);
+  // Removal goes through the retry + exit-hook path: on Windows a process
+  // that survived an unconfirmed kill still holds the file.
+  if (settled) cleanupArtifactAfter(teePlan.teePath, settled);
+  else removeTransportFileNow(teePlan.teePath);
   if (!failed || !rescueTail || stdout.trim() || stderr.trim()) return '';
   return `\n\n[filter-swallowed output rescue] the command failed but its trailing filter(s) matched nothing, so the visible output was empty. Unfiltered pipeline output (tail):\n${rescueTail}`;
 }
@@ -106,6 +116,20 @@ function classifyCompletion(result, timeout, analysisCommand) {
   };
 }
 
+// A spilled capture is rendered from its log (the in-memory string is already
+// a head+tail cut); an inline one from the captured text.
+function foregroundPiece(text, path, label) {
+  if (!text) return EMPTY_PIECE;
+  if (path) {
+    try {
+      return shellLogPiece(path);
+    } catch {
+      /* unreadable log: deliver the captured text */
+    }
+  }
+  return shellTextPiece(text, { label });
+}
+
 export function renderCompletedResult({
   result,
   command,
@@ -123,7 +147,7 @@ export function renderCompletedResult({
   const { signal, exitCode, completedExit, benignExit, isReallyErrored } = outcome;
   const commandExitedNonzero = completedExit && exitCode !== 0 && !benignExit;
   const rescueNote = teePlan
-    ? filterRescueNote(teePlan, { failed: isReallyErrored || commandExitedNonzero, stdout, stderr })
+    ? filterRescueNote(teePlan, { failed: isReallyErrored || commandExitedNonzero, stdout, stderr }, result.settled)
     : '';
   const descendantWarning = survivingDescendantsWarning(result, { command, cwd, options, startedAtMs });
   // rewriteNote states that the text which RAN is not the text the caller
@@ -147,11 +171,23 @@ export function renderCompletedResult({
   // Without a boundary a stdout tail with no trailing newline glued itself
   // onto the first stderr line and corrupted both. No spill-path block: a
   // truncated stream already carries its own "full output at <path>" marker.
-  const payload = `${renderShellOutputBody(
-    losslessCompaction?.stdout ?? stdout,
-    losslessCompaction?.stderr ?? stderr,
-    losslessCompaction
-  )}${rescueNote}`;
+  // Each stream in the shared delivery shape: whole when short, else head,
+  // marker and tail, the marker naming the spill log (or a saved copy).
+  // A compacted stream goes through the same cap, its marker naming the
+  // stream's preserved full capture.
+  const streamPiece = (stream, text, logPath) => {
+    const compacted = losslessCompaction?.[stream];
+    if (compacted == null) return foregroundPiece(text, logPath, stream);
+    const archived = losslessCompaction.recovery?.find((item) => item.stream === stream)?.path;
+    return compacted ? shellTextPiece(compacted, { path: archived || null, label: stream }) : EMPTY_PIECE;
+  };
+  // Both streams share one delivery budget; the line break between them is
+  // taken off it.
+  const [outBody, errBody] = fitPieces(
+    [streamPiece('stdout', stdout, result.stdoutPath), streamPiece('stderr', stderr, result.stderrPath)],
+    DELIVERY_FULL_CHARS - 1
+  );
+  const payload = `${renderShellOutputBody(outBody, errBody, losslessCompaction)}${rescueNote}`;
   if (outcome.statusMarker) {
     const bashismHint = commandExitedNonzero || isReallyErrored ? _powershellBashismHint(analysisCommand, stderr) : '';
     const failure = _composeShellFailure(

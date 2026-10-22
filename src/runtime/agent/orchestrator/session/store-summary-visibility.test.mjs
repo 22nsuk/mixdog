@@ -13,6 +13,41 @@ import {
   storedSessionExists,
 } from './store-summary-reader.mjs';
 import { listStoredSessions, listStoredSessionSummaries as listInternalSummaries } from './store/listing.mjs';
+import { projectStoredTranscript } from './store-transcript-projection.mjs';
+import { createTurnCheckpointRecorder, settleTurnCheckpointWrites } from './manager/turn-checkpoint.mjs';
+import { agentDescendantIds, agentParentIds } from './store-summary-visibility.mjs';
+
+test('agent descendants follow every owner/parent link to any depth, agent-only rows only', () => {
+  const sub = (id, links) => ({ id, owner: 'agent', agent: 'worker', visibility: 'agent-only', ...links });
+  const rows = [
+    { id: 'sess_lead', owner: 'user', agent: 'lead' },
+    // Catalog rows name the root Lead as owner, nested or not.
+    sub('sess_w1', { ownerSessionId: 'sess_lead' }),
+    sub('sess_w1_child', { ownerSessionId: 'sess_lead' }),
+    // A legacy row names only its parent.
+    sub('sess_w1_grand', { parentSessionId: 'sess_w1_child' }),
+    sub('sess_other', { ownerSessionId: 'sess_lead_other' }),
+    // An ordinary task session linked to the Lead is not a sub-agent.
+    { id: 'sess_task', owner: 'user', agent: 'lead', ownerSessionId: 'sess_lead', taskOrigin: {} },
+    { id: 'sess_lead_self', owner: 'user', agent: 'lead', ownerSessionId: 'sess_lead_self' },
+  ];
+  assert.deepEqual(agentDescendantIds(rows, 'sess_lead').sort(), ['sess_w1', 'sess_w1_child', 'sess_w1_grand']);
+  assert.deepEqual(agentDescendantIds(rows, 'sess_w1_child'), ['sess_w1_grand']);
+  assert.deepEqual(agentDescendantIds(rows, 'sess_lead_self'), []);
+  assert.deepEqual(agentDescendantIds(null, 'sess_lead'), []);
+});
+
+test('agent parent links are the owner and the parent, never the row itself', () => {
+  assert.deepEqual(agentParentIds({ id: 'sess_x', ownerSessionId: 'sess_lead', parentSessionId: 'sess_p' }), [
+    'sess_lead',
+    'sess_p',
+  ]);
+  assert.deepEqual(agentParentIds({ id: 'sess_x', ownerSessionId: 'sess_x', parentSessionId: 'sess_x' }), []);
+  assert.deepEqual(agentParentIds({ id: 'sess_x', ownerSessionId: 'sess_lead', parentSessionId: 'sess_lead' }), [
+    'sess_lead',
+  ]);
+  assert.deepEqual(agentParentIds(null), []);
+});
 
 function session(id, extra = {}) {
   return {
@@ -26,6 +61,50 @@ function session(id, extra = {}) {
     ...extra,
   };
 }
+
+test('closed Lead and agent records apply the same checkpoint-marker policy', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-projection-parity-'));
+  const previous = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = root;
+  mkdirSync(join(root, 'sessions'));
+  try {
+    for (const marked of [false, true]) {
+      for (const owner of ['user', 'agent']) {
+        const id = `projection_${owner}_${marked}`;
+        const doc = session(id, {
+          owner,
+          parentSessionId: 'parent',
+          closed: true,
+          status: 'closed',
+          generation: 1,
+          ...(marked ? { activeTurnCheckpoint: { turnToken: id } } : {}),
+        });
+        writeFileSync(join(root, 'sessions', `${id}.json`), JSON.stringify(doc));
+        const recorder = createTurnCheckpointRecorder({
+          sessionId: id,
+          generation: 1,
+          turnToken: id,
+          startedAt: Date.now(),
+        });
+        recorder.record({
+          currentUserContent: 'checkpoint prompt',
+          turnOutgoing: [{ role: 'user', content: 'checkpoint prompt' }],
+        });
+        await settleTurnCheckpointWrites(id);
+        const projected = await projectStoredTranscript(id, doc, { includeMessages: true, itemLimit: 100 });
+        assert.equal(
+          projected.messages.some((message) => message.content === 'checkpoint prompt'),
+          marked
+        );
+        recorder.stop();
+      }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('summary visibility is durable and classifies legacy Agent-owned children', () => {
   const legacy = session('legacy-child', {
@@ -92,7 +171,7 @@ test('summary visibility is durable and classifies legacy Agent-owned children',
   assert.equal(rootLead.visibility, 'ordinary');
 });
 
-test('ordinary catalogs hide durable and legacy children while Agent and exact-ID discovery remain available', async () => {
+test('catalogs expose agent sessions while preserving their presentation classification', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-agent-only-catalog-'));
   const previous = process.env.MIXDOG_DATA_DIR;
   process.env.MIXDOG_DATA_DIR = root;
@@ -147,12 +226,13 @@ test('ordinary catalogs hide durable and legacy children while Agent and exact-I
             agent: 'reviewer',
             status: 'idle',
             stage: 'idle',
+            finishedAt: new Date().toISOString(),
           },
         },
       })
     );
 
-    const expectedOrdinaryIds = ['ordinary-user', 'root-lead'];
+    const expectedOrdinaryIds = records.map((row) => row.id).sort();
     assert.deepEqual(
       listOrdinarySummaries({ rebuildIfMissing: false })
         .map((row) => row.id)
@@ -202,7 +282,7 @@ test('ordinary catalogs hide durable and legacy children while Agent and exact-I
     assert.equal(Object.hasOwn(metadata || {}, 'items'), false);
     const exact = await readStoredSessionTranscript('legacy-child');
     assert.equal(exact?.sessionId, 'legacy-child');
-    assert.equal(exact?.readOnlyDetachedAgent, true);
+    assert.ok(exact?.items.some((item) => item.kind === 'user'));
   } finally {
     if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;
     else process.env.MIXDOG_DATA_DIR = previous;

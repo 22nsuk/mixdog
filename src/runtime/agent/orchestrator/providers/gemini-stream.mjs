@@ -26,7 +26,11 @@ import { createSdkStreamReader } from './gemini-sdk-stream/reader.mjs';
 import { createRestStreamWatchdogs } from './gemini-rest-stream/watchdogs.mjs';
 import { drainSseDataLines, sseDataPayload } from './gemini-rest-stream/sse-lines.mjs';
 import { noteAbandonedUsage } from '../../../shared/llm/usage-context.mjs';
-import { applyGeminiErrorContract, assertNoGeminiInBandError } from './gemini-error-contract.mjs';
+import {
+  applyGeminiErrorContract,
+  assertNoGeminiInBandError,
+  geminiFinishReasonKind,
+} from './gemini-error-contract.mjs';
 
 export const GEMINI_FIRST_BYTE_TIMEOUT_MS = resolveTimeoutMs(
   'MIXDOG_GEMINI_FIRST_BYTE_TIMEOUT_MS',
@@ -183,8 +187,10 @@ function stampGeminiStreamFailure(
   const visible = visibleText.length > 0;
   // Native functionCall chunks are only dispatched after successful stream
   // completion in gemini.mjs. Until then a reconnect is safe. Text-leaked
-  // calls are dispatched while parsing and remain a hard replay boundary.
-  const pendingTool = leaked;
+  // calls are dispatched while parsing and remain a hard replay boundary,
+  // unless the guard holds them back (`deferToolCalls`): a held call never
+  // runs when the stream fails, so a reconnect cannot double-execute it.
+  const pendingTool = leaked && textLeakGuard?.defersToolCalls !== true;
   try {
     if (visible) {
       err.liveTextEmitted = true;
@@ -237,24 +243,31 @@ function aggregateGeminiStreamChunks(responses, label = 'Gemini stream') {
   // An error envelope anywhere in the stream — including after STOP — fails
   // the turn instead of aggregating into a success.
   for (const response of responses) assertNoGeminiInBandError(response, label);
-  const lastResponse = responses[responses.length - 1];
-  const aggregatedResponse = {
-    promptFeedback: lastResponse?.promptFeedback,
-  };
+  const aggregatedResponse = {};
+  // Candidates are keyed by their own `index`; chunks that omit it fall back
+  // to the position inside that chunk's candidate list.
+  const candidatesByIndex = new Map();
   for (const response of responses) {
+    // Early block info must survive later chunks that carry none.
+    if (response?.promptFeedback) {
+      aggregatedResponse.promptFeedback = { ...aggregatedResponse.promptFeedback, ...response.promptFeedback };
+    }
     if (response?.candidates) {
-      let candidateIndex = 0;
-      for (const candidate of response.candidates) {
-        if (!aggregatedResponse.candidates) aggregatedResponse.candidates = [];
-        if (!aggregatedResponse.candidates[candidateIndex]) {
-          aggregatedResponse.candidates[candidateIndex] = { index: candidateIndex };
+      response.candidates.forEach((candidate, position) => {
+        const candidateIndex = Number.isInteger(candidate?.index) ? candidate.index : position;
+        if (!candidatesByIndex.has(candidateIndex)) candidatesByIndex.set(candidateIndex, { index: candidateIndex });
+        const aggCand = candidatesByIndex.get(candidateIndex);
+        // A later chunk that omits a field never erases an earlier value.
+        if (candidate.citationMetadata !== undefined) {
+          aggCand.citationMetadata = mergeStreamMetadata(aggCand.citationMetadata, candidate.citationMetadata);
         }
-        const aggCand = aggregatedResponse.candidates[candidateIndex];
-        aggCand.citationMetadata = candidate.citationMetadata;
-        aggCand.groundingMetadata = candidate.groundingMetadata;
-        aggCand.finishReason = candidate.finishReason;
-        aggCand.finishMessage = candidate.finishMessage;
-        aggCand.safetyRatings = candidate.safetyRatings;
+        if (candidate.groundingMetadata !== undefined) {
+          aggCand.groundingMetadata = mergeStreamMetadata(aggCand.groundingMetadata, candidate.groundingMetadata);
+        }
+        if (geminiFinishReasonKind(candidate.finishReason) !== 'none') aggCand.finishReason = candidate.finishReason;
+        if (candidate.finishMessage !== undefined) aggCand.finishMessage = candidate.finishMessage;
+        if (candidate.safetyRatings !== undefined) aggCand.safetyRatings = candidate.safetyRatings;
+        if (candidate.continuationToken !== undefined) aggCand.continuationToken = candidate.continuationToken;
         if (candidate.content?.parts) {
           if (!aggCand.content) {
             aggCand.content = {
@@ -273,36 +286,52 @@ function aggregateGeminiStreamChunks(responses, label = 'Gemini stream') {
             aggCand.content.parts.push(newPart);
           }
         }
-        candidateIndex++;
-      }
+      });
     }
     if (response?.usageMetadata) aggregatedResponse.usageMetadata = response.usageMetadata;
+  }
+  if (candidatesByIndex.size) {
+    aggregatedResponse.candidates = [...candidatesByIndex.values()].sort((a, b) => a.index - b.index);
   }
   return aggregatedResponse;
 }
 
-// A response with neither text nor a tool call (thoughts alone are not text).
-function hasNoAnswerContent(aggregated) {
-  const parts = aggregated?.candidates?.[0]?.content?.parts;
-  return !(Array.isArray(parts) ? parts : []).some(
-    (part) => part?.functionCall || (part?.thought !== true && typeof part?.text === 'string' && part.text.trim())
-  );
+// GroundingMetadata / CitationMetadata arrive in pieces while streaming and
+// are merged, not replaced: groundingChunks carry only the chunks not sent
+// before (appended as-is, so groundingSupports indices stay valid); every
+// other list is a de-duplicated union, nested objects merge, scalars take the
+// latest value.
+function mergeStreamMetadata(previous, next) {
+  if (!previous) return next;
+  if (!next || typeof next !== 'object') return previous;
+  const merged = { ...previous };
+  for (const [key, value] of Object.entries(next)) {
+    if (value === undefined || value === null) continue;
+    const before = previous[key];
+    if (Array.isArray(value)) {
+      if (key === 'groundingChunks') {
+        merged[key] = [...(before || []), ...value];
+      } else {
+        const seen = new Set((before || []).map((item) => JSON.stringify(item)));
+        merged[key] = [...(before || []), ...value.filter((item) => !seen.has(JSON.stringify(item)))];
+      }
+    } else if (typeof value === 'object' && before && typeof before === 'object') {
+      merged[key] = { ...before, ...value };
+    } else {
+      merged[key] = value;
+    }
+  }
+  return merged;
 }
 
-function assertGeminiStreamCompleted({
-  sawStreamChunk,
-  finishReason,
-  promptBlockReason,
-  label,
-  acceptEmptyNoFinish = false,
-  aggregated = null,
-}) {
+// A stream that ends with no finishReason is unfinished, whatever it carried
+// (thoughts only, an empty body, even right after a tool result); only a
+// STOP that carries no text is a completed, empty answer.
+function assertGeminiStreamCompleted({ sawStreamChunk, finishReason, promptBlockReason, label }) {
   if (!sawStreamChunk) {
     throw geminiTruncatedStreamError(`${label} truncated: empty stream`);
   }
-  if (!finishReason && !promptBlockReason) {
-    // Right after a tool result the model may end with nothing at all.
-    if (acceptEmptyNoFinish && hasNoAnswerContent(aggregated)) return;
+  if (geminiFinishReasonKind(finishReason) === 'none' && geminiFinishReasonKind(promptBlockReason) === 'none') {
     throw geminiTruncatedStreamError(`${label} truncated: no finishReason`);
   }
 }
@@ -344,13 +373,23 @@ function relayGeminiStreamText(t, { onTextDelta, textLeakGuard }) {
  * `part.text` streams. Mirrors the Anthropic OAuth guard: suppress tags from
  * visible text, synthesize known-tool calls, dispatch via onToolCall.
  */
-export function createGeminiTextLeakGuard({ knownToolNames, onTextDelta, onToolCall, onStreamDelta }) {
+export function createGeminiTextLeakGuard({
+  knownToolNames,
+  onTextDelta,
+  onToolCall,
+  onStreamDelta,
+  deferToolCalls = false,
+}) {
   const _knownTools = knownToolNameSet(knownToolNames);
   const _enabled = _knownTools.size > 0;
   const _isKnownTool = (name) => _knownTools.has(name);
   let leakBuffer = '';
   let relayedText = '';
   const leakedCalls = [];
+  // With `deferToolCalls`, recovered calls wait here until the caller has seen
+  // the response finish cleanly (releaseDeferredToolCalls); a failed response
+  // never runs them.
+  const deferredCalls = [];
   const dispatchedFingerprints = new Set();
 
   const dispatchLeakedCall = (recovered) => {
@@ -372,9 +411,12 @@ export function createGeminiTextLeakGuard({ knownToolNames, onTextDelta, onToolC
       arguments: args,
     };
     leakedCalls.push(call);
-    try {
-      onToolCall?.(call);
-    } catch {}
+    if (deferToolCalls) deferredCalls.push(call);
+    else {
+      try {
+        onToolCall?.(call);
+      } catch {}
+    }
     try {
       onStreamDelta?.('tool');
     } catch {}
@@ -400,6 +442,9 @@ export function createGeminiTextLeakGuard({ knownToolNames, onTextDelta, onToolC
   return {
     get enabled() {
       return _enabled;
+    },
+    get defersToolCalls() {
+      return deferToolCalls === true;
     },
     feedText(text) {
       if (!text) return;
@@ -439,6 +484,13 @@ export function createGeminiTextLeakGuard({ knownToolNames, onTextDelta, onToolC
     getLeakedToolCalls() {
       return [...leakedCalls];
     },
+    releaseDeferredToolCalls() {
+      for (const call of deferredCalls.splice(0)) {
+        try {
+          onToolCall?.(call);
+        } catch {}
+      }
+    },
     getRelayedText() {
       return relayedText;
     },
@@ -461,7 +513,8 @@ function createLeakGuardFinalizer(textLeakGuard) {
 // `unwrapChunk` adapts a transport that nests the Gemini payload one level
 // deeper. Cloud Code Assist (Antigravity) streams `{ response: { candidates … } }`
 // while the public API streams the candidates directly; everything downstream —
-// aggregation, leak guard, watchdogs — stays shared.
+// aggregation, leak guard, watchdogs — stays shared. `firstByteTimeoutMs` is
+// the wait for the first chunk once the response headers arrived.
 export async function consumeGeminiRestStreamResponse(
   response,
   {
@@ -473,7 +526,7 @@ export async function consumeGeminiRestStreamResponse(
     unwrapChunk = null,
     onChunk = null,
     failureUsage = null,
-    acceptEmptyNoFinish = false,
+    firstByteTimeoutMs = GEMINI_FIRST_BYTE_TIMEOUT_MS,
   }
 ) {
   const unwrap =
@@ -497,7 +550,7 @@ export async function consumeGeminiRestStreamResponse(
   const watchdogs = createRestStreamWatchdogs({
     reader,
     label,
-    firstByteTimeoutMs: GEMINI_FIRST_BYTE_TIMEOUT_MS,
+    firstByteTimeoutMs,
     timeoutError: geminiTimeoutError,
   });
   // One decoded chunk: collected for aggregation and relayed to every sink.
@@ -613,8 +666,6 @@ export async function consumeGeminiRestStreamResponse(
       finishReason,
       promptBlockReason,
       label,
-      acceptEmptyNoFinish,
-      aggregated,
     });
   } catch (err) {
     throw stampGeminiStreamFailure(err, { relayedText, textLeakGuard, chunks: allChunks, failureUsage });
@@ -634,7 +685,6 @@ export async function consumeGeminiSdkStream(
     firstByteTimeoutMs = GEMINI_FIRST_BYTE_TIMEOUT_MS,
     cancellationGraceMs = 250,
     failureUsage = null,
-    acceptEmptyNoFinish = false,
   }
 ) {
   let relayedText = '';
@@ -721,8 +771,6 @@ export async function consumeGeminiSdkStream(
       finishReason,
       promptBlockReason,
       label,
-      acceptEmptyNoFinish,
-      aggregated: raw,
     });
     return raw;
   } catch (err) {

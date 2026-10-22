@@ -17,7 +17,11 @@ import {
   suffixUserTurnReminders,
   buildCurrentTimeBlock,
   snapshotPendingWorkspaceNotice,
+  snapshotPendingSetupNotice,
 } from './prompt-utils.mjs';
+import { snapshotPendingWorkflowNotice } from './workflow-switch-notice.mjs';
+import { snapshotPendingOrchestrationModeNotice } from './orchestration-mode-switch-notice.mjs';
+import { buildAgentListingNotice } from './agent-listing-notice.mjs';
 import { codexWireSendOpts } from './session-id.mjs';
 import { _tryBridgeExplicitPrefetch } from './prefetch-bridge.mjs';
 import { filterModelVisibleSessionMessages } from './message-sanitize.mjs';
@@ -147,6 +151,7 @@ export async function buildUserTurn({
   transcriptMeta,
   turnPromptSource,
   effortConfiguration,
+  currentAgents,
 }) {
   const explicitPrefetchResult = await _tryBridgeExplicitPrefetch(session, explicitPrefetch, turnSignal);
   let contextBlock = '';
@@ -177,8 +182,22 @@ export async function buildUserTurn({
   // A mid-conversation working-folder change: the system prompt keeps its
   // old root (cache intact) and the new folder's facts ride this turn.
   const workspaceNotice = snapshotPendingWorkspaceNotice(session);
+  // What preparing a new worktree linked, installed, ran, failed or skipped.
+  const setupNotice = snapshotPendingSetupNotice(session);
+  // A mid-conversation workflow switch: the prompt and tools were rebuilt
+  // for the new workflow; this turn tells the model once.
+  const workflowNotice = snapshotPendingWorkflowNotice(session);
+  // A mid-conversation orchestration mode switch, after the workflow notice
+  // so the mode it names wins over the one a workflow reminder carries.
+  const orchestrationModeNotice = snapshotPendingOrchestrationModeNotice(session);
+  // Agents enabled or switched off since the conversation was last told.
+  const agentListingNotice = buildAgentListingNotice(session, currentAgents);
   const reminderBlock = [
+    workflowNotice?.content || '',
+    orchestrationModeNotice?.content || '',
+    agentListingNotice?.content || '',
     workspaceNotice?.content || '',
+    setupNotice?.content || '',
     currentTimeBlock ? `<system-reminder>\n# Current Time\n${currentTimeBlock}\n</system-reminder>` : '',
     deferredToolDelta?.content || '',
     goalReminder?.content || '',
@@ -191,6 +210,8 @@ export async function buildUserTurn({
     ...(transcriptMeta ? { transcript: transcriptMeta } : {}),
     ...(turnPromptSource || {}),
     ...(effortConfiguration ? { effortConfiguration } : {}),
+    // What its reminder told, read back by later turns (agent-listing-notice.mjs).
+    ...(agentListingNotice ? { agentListing: agentListingNotice.meta } : {}),
   };
   const userTurnMessage = withRuntimeUserContext(
     {
@@ -205,7 +226,11 @@ export async function buildUserTurn({
     historyMessages,
     deferredToolDelta,
     goalReminder,
+    workflowNotice,
+    orchestrationModeNotice,
+    agentListingNotice,
     workspaceNotice,
+    setupNotice,
     userTurnMessage,
     outgoing: [...historyMessages, userTurnMessage],
   };

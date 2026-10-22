@@ -68,11 +68,16 @@ export type ConversationProps = {
   /** Context gauge seated in the composer footer beside the model trigger
    *  on every surface (user: 컨텍스트는 모델 선택기 옆; 모바일도 PC에 맞춰). */
   contextIndicator?: ReactNode;
+  /** The last turn's speed and cache hit, on the line under the composer. */
+  usageReadout?: ReactNode;
   /** Transcript-only child-agent view: no submit, retry, approval, review, or
    *  other session runtime-mutating controls are mounted. */
   readOnly?: boolean;
   /** Only the focused, visible session performs background review refreshes. */
   reviewActive?: boolean;
+  /** The surface is on screen in its pane (focused or not); a parked one
+   *  (behind a file or utility tab) docks no approvals, so they float. */
+  surfaceVisible?: boolean;
   /** A warm New Task → session commit paints the requested transcript under
    *  the prior watermark for one frame so Chromium uploads its raster before
    *  it becomes visible. Route identity and interaction are already current. */
@@ -82,7 +87,14 @@ export type ConversationProps = {
    *  frame): the timeline mounts once, with the real rows, so the entry
    *  offset is resolved exactly once. */
   transcriptPending?: boolean;
-  /** This session's entry settled: rows laid out and every entry-pending
-   *  chrome (the review bar's first read) decided. */
+  /** This session's entry settled: populated rows laid out and every
+   *  entry-pending chrome (the review bar's first read) either decided or
+   *  timed out (ENTRY_CHROME_MAX_MS); late chrome may still land after. */
   onEntryRevealed?: (sessionKey: string) => void;
+  /** The transcript is hidden awaiting its reveal. The pane keeps its loading
+   *  cover up for as long as this holds. */
+  onTranscriptHiddenChange?: (hidden: boolean) => void;
+  /** The pane's loading cover, laid over the transcript viewport only: the
+   *  composer dock below it stays painted and usable while rows load. */
+  transcriptCover?: ReactNode;
 };

@@ -74,7 +74,13 @@ function installLayout(dom, heights) {
   return { viewport, deliver, FakeResizeObserver, writes: () => writes };
 }
 
-async function mountTranscript(heights, sessionKey, gesture = () => false, touch = () => false) {
+async function mountTranscript(
+  heights,
+  sessionKey,
+  gesture = () => false,
+  touch = () => false,
+  touchHolds = () => false
+) {
   const dom = new JSDOM("<div id='viewport'></div>", { url: 'http://localhost/', pretendToBeVisual: true });
   const keys = ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT', 'ResizeObserver', 'HTMLElement', 'Element'];
   const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -92,13 +98,16 @@ async function mountTranscript(heights, sessionKey, gesture = () => false, touch
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const { TranscriptList } = await import('./TranscriptList.tsx');
   const root = createRoot(viewport);
+  // One ref for the mount's life, as the pane passes it: the list's hooks key
+  // on its identity.
+  const viewportRef = { current: viewport };
   const render = (rows) =>
     act(async () => {
       root.render(
         React.createElement(TranscriptList, {
           sessionKey,
           rows,
-          viewport: { current: viewport },
+          viewport: viewportRef,
           content: { current: null },
           shouldAnchorBottom: false,
           scrollToEndRef: { current: () => {} },
@@ -106,6 +115,7 @@ async function mountTranscript(heights, sessionKey, gesture = () => false, touch
           markProgrammaticScroll: () => {},
           hasScrollGesture: gesture,
           hasTouchScroll: touch,
+          touchHoldsCorrections: touchHolds,
           onSelectionAutoScroll: () => {},
         })
       );
@@ -337,7 +347,7 @@ test('a row above the reader that grows into view during a gesture is corrected,
   }
 });
 
-test('a touch fling never has scrollTop written under it: a correction is held as a row offset and lands once', async () => {
+test('a wheel ramp never has scrollTop written under it: a correction is held as a row offset and lands once', async () => {
   const { projectSettledTranscriptRows } = await import('./transcript-rows.ts');
   const { transcriptTurnKeys } = await import('./renderer-logic.mjs');
   const items = turnItems(20).slice(6 * 10);
@@ -395,6 +405,263 @@ test('a touch fling never has scrollTop written under it: a correction is held a
     await mount.cleanup();
   }
 });
+
+test('a page landing under a wheel ramp far from the top is held as a row offset, not written under the ramp', async () => {
+  const { projectSettledTranscriptRows } = await import('./transcript-rows.ts');
+  const { transcriptTurnKeys } = await import('./renderer-logic.mjs');
+  const sessionKey = 'touch-landing';
+  const items = turnItems(20);
+  const heights = new Map();
+  const project = (from) => {
+    const window = items.slice(from);
+    const { rows } = projectSettledTranscriptRows({
+      sessionKey,
+      items: window,
+      turnKeys: transcriptTurnKeys(window),
+      failedTurns: new Set(),
+    });
+    for (const row of rows) heights.set(row.key, rowHeight(row));
+    return rows;
+  };
+  let touching = false;
+  const mount = await mountTranscript(
+    heights,
+    sessionKey,
+    () => touching,
+    () => touching
+  );
+  try {
+    await mount.render(project(6 * 10));
+    await mount.settle();
+    // Pages are asked for viewports ahead: the reader is still far below the top.
+    await mount.scrollTo(8 * VIEWPORT);
+    const paged = project(6 * 6);
+    const survivors = new Set(paged.map((row) => row.key));
+    const before = mount.firstVisible(survivors);
+    assert.ok(before, 'a surviving row is in view');
+    const native = mount.viewport.scrollTop;
+    touching = true;
+    const writesBefore = mount.writes();
+    await mount.render(paged);
+    assert.equal(mount.writes(), writesBefore, 'no scrollTop write lands inside the fling');
+    assert.equal(mount.viewport.scrollTop, native, 'the fling keeps the native offset');
+    assert.ok(mount.deviation() > 0, 'the landing is held as the row offset');
+    const held = mount.firstVisible(new Set([before.key]));
+    assert.equal(held?.key, before.key);
+    assert.ok(Math.abs(held.offset - before.offset) <= 1, `held ${held.offset} vs ${before.offset}`);
+    assert.equal(mount.overlaps(), 0, 'the first painted frame draws no row over another');
+    // scrollend: the hold lands as one write and the reader stays put.
+    touching = false;
+    await mount.settle();
+    assert.equal(mount.deviation(), 0, 'no row offset outlives the touch scroll');
+    const landed = mount.firstVisible(new Set([before.key]));
+    assert.equal(landed?.key, before.key);
+    assert.ok(Math.abs(landed.offset - before.offset) <= 1, `landed ${landed.offset} vs ${before.offset}`);
+    assert.equal(mount.overlaps(), 0);
+  } finally {
+    await mount.cleanup();
+  }
+});
+
+for (const [where, readerTop] of [
+  ['at the very top', 0],
+  ['below the top but within four viewports', 2 * VIEWPORT],
+]) {
+  test(`a page landing under a wheel ramp ${where} writes no scrollTop and settles once`, async () => {
+    const { projectSettledTranscriptRows } = await import('./transcript-rows.ts');
+    const { transcriptTurnKeys } = await import('./renderer-logic.mjs');
+    const sessionKey = `touch-landing-near-top-${readerTop}`;
+    const items = turnItems(20);
+    const heights = new Map();
+    const project = (from) => {
+      const window = items.slice(from);
+      const { rows } = projectSettledTranscriptRows({
+        sessionKey,
+        items: window,
+        turnKeys: transcriptTurnKeys(window),
+        failedTurns: new Set(),
+      });
+      for (const row of rows) heights.set(row.key, rowHeight(row));
+      return rows;
+    };
+    let touching = false;
+    const mount = await mountTranscript(
+      heights,
+      sessionKey,
+      () => touching,
+      () => touching
+    );
+    try {
+      await mount.render(project(6 * 10 + 4));
+      await mount.settle();
+      await mount.scrollTo(readerTop);
+      const paged = project(6 * 6 + 2);
+      const survivors = new Set(paged.map((row) => row.key));
+      const before = mount.firstVisible(survivors);
+      assert.ok(before, 'a surviving row is in view');
+      const native = mount.viewport.scrollTop;
+      touching = true;
+      const writesBefore = mount.writes();
+      await mount.render(paged);
+      assert.equal(mount.writes(), writesBefore, 'no scrollTop write lands while the user scrolls');
+      assert.equal(mount.viewport.scrollTop, native, 'the native offset is untouched');
+      assert.ok(mount.deviation() > 0, 'the content shift is absorbed as a row offset');
+      const held = mount.firstVisible(new Set([before.key]));
+      assert.equal(held?.key, before.key);
+      assert.ok(Math.abs(held.offset - before.offset) <= 1, `held ${held.offset} vs ${before.offset}`);
+      // Late sizes of the landed rows keep being held while the scroll lasts.
+      await mount.measure();
+      assert.equal(mount.writes(), writesBefore, 'still no scrollTop write mid-scroll');
+      // Scrolling stops: one settle correction, no row offset left behind.
+      touching = false;
+      await mount.settle();
+      assert.equal(mount.deviation(), 0, 'no row offset outlives the scroll');
+      assert.equal(mount.writes(), writesBefore + 1, 'the settle lands as exactly one write');
+      const landed = mount.firstVisible(new Set([before.key]));
+      assert.equal(landed?.key, before.key);
+      assert.ok(Math.abs(landed.offset - before.offset) <= 1, `landed ${landed.offset} vs ${before.offset}`);
+    } finally {
+      await mount.cleanup();
+    }
+  });
+}
+
+const IPHONE = {
+  userAgent:
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  platform: 'iPhone',
+  maxTouchPoints: 5,
+};
+
+// iOS WebKit cancels a touch fling on a scrollTop write, so there a page
+// landing under the fling is held as a row offset (with the core's own iOS
+// deferral handed over to that hold) and lands once the fling settles. Native
+// 0 is no exception: the momentum reaches it, and the page sits above it.
+// A finger landing at native 0 with the page still held (inside the quiet
+// window, before scrollend) lands it: the momentum already ran into the edge,
+// and the drag that finger starts has to reach the page above.
+for (const [scenario, readerTop, flingTo, retouch = false] of [
+  ['far from the top is held, late sizes too, and lands as one write once the fling settles', 8 * VIEWPORT, null],
+  ['stays held when the fling reaches native 0, then lands as one write once it settles', 8 * VIEWPORT, 0],
+  ['at native 0 is held too, and lands as one write once the fling settles', 0, null],
+  ['held at native 0 lands at the next touch, and that drag reaches the page', 8 * VIEWPORT, 0, true],
+]) {
+  test(`iOS: a page landing under a touch fling ${scenario}`, async () => {
+    const { projectSettledTranscriptRows } = await import('./transcript-rows.ts');
+    const { transcriptTurnKeys } = await import('./renderer-logic.mjs');
+    const { _resetIOSDetectionForTests } = await import('@tanstack/virtual-core');
+    const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, writable: true, value: IPHONE });
+    _resetIOSDetectionForTests();
+    const sessionKey = `ios-landing-${readerTop}-${flingTo}`;
+    const items = turnItems(20);
+    const heights = new Map();
+    const project = (from) => {
+      const window = items.slice(from);
+      const { rows } = projectSettledTranscriptRows({
+        sessionKey,
+        items: window,
+        turnKeys: transcriptTurnKeys(window),
+        failedTurns: new Set(),
+      });
+      for (const row of rows) heights.set(row.key, rowHeight(row));
+      return rows;
+    };
+    let touching = false;
+    const mount = await mountTranscript(
+      heights,
+      sessionKey,
+      () => touching,
+      () => touching,
+      () => touching
+    );
+    const touch = (type) => act(async () => mount.viewport.dispatchEvent(new window.Event(type)));
+    try {
+      await mount.render(project(6 * 10 + 4));
+      await mount.settle();
+      await mount.scrollTo(readerTop);
+      const paged = project(6 * 6 + 2);
+      const survivors = new Set(paged.map((row) => row.key));
+      const before = mount.firstVisible(survivors);
+      assert.ok(before, 'a surviving row is in view');
+      const native = mount.viewport.scrollTop;
+      touching = true;
+      await touch('touchstart');
+      const writesBefore = mount.writes();
+      await mount.render(paged);
+      const landed = mount.firstVisible(new Set([before.key]));
+      assert.equal(landed?.key, before.key);
+      assert.ok(Math.abs(landed.offset - before.offset) <= 1, `landed ${landed.offset} vs ${before.offset}`);
+      assert.equal(mount.writes(), writesBefore, 'no scrollTop write lands inside the fling');
+      assert.equal(mount.viewport.scrollTop, native, 'the fling keeps the native offset');
+      const held = mount.deviation();
+      assert.ok(held > 0, 'the landing is held as the row offset');
+      if (flingTo !== null || native <= 1) {
+        // The momentum carries the native offset to 0, the old first row:
+        // the hold stands there until the fling settles, then lands as one
+        // write with the logical offset kept.
+        const edge = flingTo ?? native;
+        // The momentum's own frame (the test's write stands in for it).
+        await mount.jump(edge);
+        const momentumWrites = mount.writes();
+        await mount.jump(edge);
+        assert.equal(mount.writes(), momentumWrites + 1, 'nothing lands under the momentum at native 0');
+        assert.equal(mount.deviation(), held, 'the hold stands at native 0');
+        if (retouch) {
+          // The finger lifted, the momentum stopped at native 0, and a new
+          // finger lands before the scroll has been quiet for 150 ms.
+          const keys = new Set(paged.map((row) => row.key));
+          const indexOf = (key) => paged.findIndex((row) => row.key === key);
+          const oldTop = mount.firstVisible(keys);
+          await touch('touchend');
+          await touch('touchstart');
+          assert.equal(mount.deviation(), 0, 'the new touch lands the hold');
+          assert.equal(mount.writes(), momentumWrites + 2, 'as exactly one write');
+          assert.equal(Math.round(mount.viewport.scrollTop), Math.round(edge + held), 'the logical offset is kept');
+          // The drag toward older rows moves into the page above.
+          await mount.jump(mount.viewport.scrollTop - 300);
+          assert.equal(Math.round(mount.viewport.scrollTop), Math.round(edge + held - 300), 'the page is reachable');
+          assert.equal(mount.deviation(), 0, 'no hold returns');
+          const reached = mount.firstVisible(keys);
+          assert.ok(reached && oldTop && indexOf(reached.key) < indexOf(oldTop.key),`${reached?.key} lies above the old top ${oldTop?.key}`);
+          return;
+        }
+        touching = false;
+        await touch('touchend');
+        await mount.idle(200);
+        await mount.settle();
+        assert.equal(mount.deviation(), 0, 'no row offset outlives the fling');
+        assert.equal(Math.round(mount.viewport.scrollTop), Math.round(edge + held), 'one write lands the held amount');
+        return;
+      }
+      // A row above the reader finishes rendering mid-fling: its correction
+      // joins the hold, never a native write under the fling.
+      const anchorIndex = paged.findIndex((row) => row.key === before.key);
+      const above = paged[anchorIndex - 1];
+      heights.set(above.key, heights.get(above.key) + 1500);
+      await mount.measure();
+      assert.equal(mount.writes(), writesBefore, 'still no scrollTop write mid-fling');
+      const grown = mount.firstVisible(new Set([before.key]));
+      assert.equal(grown?.key, before.key);
+      assert.ok(Math.abs(grown.offset - before.offset) <= 1, `grown ${grown.offset} vs ${before.offset}`);
+      // The finger lifts and the momentum goes quiet: one write, no row offset.
+      touching = false;
+      await touch('touchend');
+      await mount.idle(200);
+      await mount.settle();
+      assert.equal(mount.deviation(), 0, 'no row offset outlives the fling');
+      assert.equal(mount.writes(), writesBefore + 1, 'the hold lands as exactly one write');
+      const settled = mount.firstVisible(new Set([before.key]));
+      assert.equal(settled?.key, before.key);
+      assert.ok(Math.abs(settled.offset - before.offset) <= 1, `settled ${settled.offset} vs ${before.offset}`);
+    } finally {
+      await mount.cleanup();
+      if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+      else delete globalThis.navigator;
+      _resetIOSDetectionForTests();
+    }
+  });
+}
 
 test('a row first measured across the viewport top grows upward, not into the rows in view', async () => {
   const { projectSettledTranscriptRows } = await import('./transcript-rows.ts');

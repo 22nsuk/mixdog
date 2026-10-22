@@ -60,6 +60,14 @@ export async function promoteWithRetry(
  */
 export function killAfterFailedPromotion(run, reason, promotionFailure) {
   run.autoBackgrounded = false;
+  // The command finished while it was being promoted (the spawn server
+  // releases a foreground task's record at its exit, so the promotion found
+  // none): report that completion. Killing the exited root would have no
+  // pre-kill snapshot and hold the workspace as unconfirmed for good.
+  if (run.child.exitCode != null || run.child.signalCode != null) {
+    if (run.promotionClose) void run.settle(...run.promotionClose);
+    return;
+  }
   if (reason === 'timeout') {
     run.timedOut = true;
     treeKillForceSettle(run, 'timeout');
@@ -75,8 +83,8 @@ export function killAfterFailedPromotion(run, reason, promotionFailure) {
 }
 
 /**
- * The promoted job leaves foreground admission: its lease is RELEASED, which
- * also restores the parent's high-load share. A long-lived server must never
+ * The promoted job leaves foreground admission: its lease is RELEASED. A
+ * long-lived server must never
  * hold a foreground slot for its whole life; background jobs are not counted
  * against any cap (session/runtime close stops them via shutdownShellJobs).
  */
@@ -84,4 +92,6 @@ export async function handOverLease(run) {
   const lease = run.resourceLease;
   run.resourceLease = null;
   await lease?.release();
+  run.workspaceAdmission?.();
+  run.workspaceAdmission = null;
 }

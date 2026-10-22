@@ -10,8 +10,10 @@
   /* CARD rhythm (20px), same as tables, quotes and display math: at 10px the
      code card sat at half a table's gap and the two never lined up in one
      answer. Flow blocks (p/lists) keep 12, the section rule keeps 32. */
-  margin: 20px 0;
-  overflow: hidden;
+  margin: 18px 0;
+  /* Painted, not clipped: a rounded clip around the code scroller keeps
+     Chromium from hit-testing wheel scrolls on the compositor. The header
+     band and the scroller round or stay clear on their own. */
   border-radius: var(--mx-radius-lg);
   /* Frameless card: the plate step off the sheet
      is the edge; the language row is told apart by its tint band, not a line. */
@@ -25,6 +27,7 @@
   justify-content: space-between;
   padding: 0 6px 0 12px;
   border-bottom: 0;
+  border-radius: var(--mx-radius-lg) var(--mx-radius-lg) 0 0;
   color: var(--mx-text-faint);
   /* Header band: the same
      neutral plate tint as table and diff headers; the code body stays clear. */
@@ -47,8 +50,8 @@
 }
 .markdown-code-copy,
 .markdown-code-run {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   padding: 0;
@@ -57,11 +60,19 @@
   color: var(--mx-icon-muted);
   background: transparent;
   cursor: pointer;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
 }
 .markdown-code-copy:hover,
 .markdown-code-run:hover {
   color: var(--mx-icon);
-  background: transparent;
+  background: var(--mx-hover);
+}
+.markdown-code-copy:active,
+.markdown-code-run:active {
+  color: var(--mx-icon);
+  background: var(--mx-pressed);
 }
 .markdown-code-copy:focus-visible,
 .markdown-code-run:focus-visible {
@@ -73,7 +84,12 @@
 .markdown-code > pre {
   max-width: 100%;
   margin: 0;
-  overflow-x: auto;
+  /* Lines wrap (pre-wrap + overflow-wrap below), so nothing can overflow.
+     A scroll container here was never scrolled, yet it still made every wheel
+     over a code block hit-test on the main thread. */
+  overflow: visible;
+  /* The card paints the corners; a rounded scroller would clip them. */
+  border-radius: 0;
   box-shadow: none;
   /* Wrap long script lines instead of hiding them behind a horizontal
      scroll. */
@@ -83,7 +99,7 @@
 }
 /* The code card is a hairline frame like every other container. */
 :root .markdown-code {
-  background: color-mix(in srgb, var(--mx-text) 4%, transparent);
+  background: var(--mx-code-surface, color-mix(in srgb, var(--mx-text) 4%, transparent));
   box-shadow: 0 0 0 var(--mx-hairline) color-mix(in srgb, var(--mx-text) 12%, transparent);
 }
 :root .markdown-code > pre {
@@ -105,12 +121,14 @@
   position: absolute;
   z-index: 9;
   left: 50%;
-  /* The scroller extends behind the measured dock. */
-  bottom: calc(var(--composer-dock-height, 0px) + var(--pane-chrome-inset));
+  /* Inside the transcript shell, which ends at the dock's top edge. */
+  /* One island-stage rhythm above the dock edge (the island pill's top, or the
+     composer's when no pill is shown). */
+  bottom: var(--island-stage-gap);
   /* Ink-inverse circular chip: ink fill, surface-coloured arrow. Stays
      mounted; showJump toggles aria-hidden, which drives the fade. */
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -126,7 +144,7 @@
     translate 150ms ease;
   transform: translateX(-50%);
 }
-html[data-window-material="mica"] .jump-to-latest {
+html:is([data-window-material="mica"], [data-mixdog-skin]) .jump-to-latest {
   color: var(--mx-mica-layer);
 }
 .jump-to-latest[aria-hidden="true"] {
@@ -439,6 +457,40 @@ html[data-window-material="mica"] .jump-to-latest {
 .markdown.streaming :is(h1, h2, h3, h4, h5, h6):empty {
   display: none;
 }
+/* Words of a streamed reply (markdown-stream-fade.ts). The wrappers are plain
+   inline elements and only opacity animates, so the fade costs no layout.
+   Each fade's duration and its delay on the reply timeline (negative when an
+   element is re-created mid-fade) are set inline when its element is created.
+   A list item fades only its marker (its words fade themselves); table rows,
+   quotes, rules and inline code fade whole with their first word. Backwards
+   fill keeps a word transparent through its delay; once its fade ended the
+   word is unwrapped. */
+[data-stream-fade],
+[data-stream-fade-box="box"] {
+  animation: markdown-stream-fade var(--mx-fade-ms, 200ms) linear backwards;
+  animation-delay: var(--mx-fade-delay, 0ms);
+}
+[data-stream-fade-box="marker"]::marker {
+  animation: markdown-stream-fade-marker var(--mx-fade-ms, 200ms) linear backwards;
+  animation-delay: var(--mx-fade-delay, 0ms);
+}
+@keyframes markdown-stream-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes markdown-stream-fade-marker {
+  from {
+    color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-stream-fade],
+  [data-stream-fade-box="box"],
+  [data-stream-fade-box="marker"]::marker {
+    animation: none;
+  }
+}
 /* Heading ladder — surveyed chat renderers land near 17/15/13px, 1.65/1.35/
    1.15em, or 3xl→sm: every rung must differ from BODY, not just from the
    rung above — size carries h1-h3, ink carries h4-h6. h4 sits at body size, so
@@ -453,23 +505,26 @@ html[data-window-material="mica"] .jump-to-latest {
    literal too — the 22px chrome step gave a 20px heading a 1.1 ratio and a
    two-line title closed up on itself. */
 .markdown h1 {
-  margin: 24px 0 8px;
+  margin: 32px 0 8px;
   font-size: calc(18px * var(--mx-content-scale, 1));
   line-height: calc(26px * var(--mx-content-scale, 1));
 }
 .markdown h2 {
-  margin: 20px 0 8px;
-  font-size: calc(16px * var(--mx-content-scale, 1));
-  line-height: var(--mx-line-body);
+  margin: 28px 0 8px;
+  font-size: calc(18px * var(--mx-content-scale, 1));
+  font-weight: 700;
+  line-height: calc(26px * var(--mx-content-scale, 1));
 }
 .markdown h3 {
-  margin: 16px 0 6px;
-  font-size: var(--mx-font-body);
+  margin: 22px 0 8px;
+  font-size: calc(16px * var(--mx-content-scale, 1));
+  font-weight: var(--mx-weight-strong);
   line-height: var(--mx-line-body);
 }
 /* Body size, so INK is what separates it from an inline bold lead-in. */
 .markdown h4 {
-  margin: 14px 0 6px;
+  margin: 18px 0 6px;
+  color: var(--mx-text-muted);
   font-size: var(--mx-font-body);
   line-height: var(--mx-line-body);
 }
@@ -507,7 +562,7 @@ html[data-window-material="mica"] .jump-to-latest {
    block gap after it. */
 .markdown ul,
 .markdown ol {
-  margin: 8px 0 12px;
+  margin: 8px 0 14px;
   padding-left: var(--mx-md-indent);
 }
 /* A NESTED list lives inside its parent item, so the flow-block margin belongs
@@ -524,10 +579,17 @@ html[data-window-material="mica"] .jump-to-latest {
 /* Tight items read as one list: 6px under a 26px line spread a two-bullet
    list to a 32px pitch, half again Codex's. */
 .markdown li {
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 .markdown li:has(> p) {
-  margin-bottom: 12px;
+  margin-bottom: 7px;
+}
+/* The last item's gap separates nothing: it collapsed through its list and
+   the reply's body, so a reply ending in a list held 2px (12px loose) past
+   its text while streaming — space the completion footer's margin then
+   absorbed, nudging the followed thread up at every such turn end. */
+.markdown li:last-child {
+  margin-bottom: 0;
 }
 /* The marker is structure, not decoration — faint ink lost the ordinal
    numbers against the prose they index. */
@@ -551,7 +613,7 @@ html[data-window-material="mica"] .jump-to-latest {
   margin-bottom: 0;
 }
 .markdown blockquote {
-  margin: 16px 0;
+  margin: 18px 0;
   /* A quote is a muted run behind a soft rule: no plate, no second accent. */
   padding: 0 0 0 14px;
   border-left: 3px solid var(--mx-border);
@@ -565,7 +627,10 @@ html[data-window-material="mica"] .jump-to-latest {
    the table's own. The width/margin/display/overflow that used to live here
    were dead, overridden by `.markdown-table table` further down. */
 .markdown table {
-  border-collapse: collapse;
+  /* Separate with no spacing reads the same as collapse (cells only draw a
+     bottom hairline) and lets the header's outer cells take a corner radius. */
+  border-collapse: separate;
+  border-spacing: 0;
   /* A table is a data block, not prose: one step under the 15/26 reading
      rhythm keeps more of a row on one line, which is what stops a wide table
      from turning into a scroll strip in a split pane. */
@@ -575,20 +640,48 @@ html[data-window-material="mica"] .jump-to-latest {
 .markdown th,
 .markdown td {
   padding: 8px 12px;
-  /* Enough to keep a two-word header off two lines, not enough to inflate a
-     yes/no or count column: at 96px a four-column table forced a horizontal
-     scrollbar it never needed. */
-  min-width: 64px;
+  /* No width floor: a table must always fit the column and wrap, never scroll
+     sideways. A per-cell floor times many columns was the only thing that
+     could push it wider than the pane. */
+  min-width: 0;
   border-bottom: var(--mx-hairline) solid var(--mx-border);
   text-align: left;
   vertical-align: top;
-  /* Same Hangul rule as prose — cells wrap between words, and only a token
-     with no break opportunity (a path, a URL) is cut mid-way. */
-  overflow-wrap: anywhere;
+  /* Cells wrap between words (keep-all holds Hangul words together). Not
+     `anywhere`: auto layout sizes a column's floor by its min-content, and
+     `anywhere` shrinks that to ONE character, so a long prose column starved
+     short ones ("진행 중", "작업") into a letter per line. `break-word` keeps
+     each word as the floor and still cuts a token only when it overflows. */
+  overflow-wrap: break-word;
   word-break: keep-all;
   /* Fixed-width digits: a table is where numbers stack, and proportional
      figures made the columns of counts and sizes wobble row to row. */
   font-variant-numeric: tabular-nums;
+}
+/* Per-cell padding is the one width a cell cannot shed (text breaks anywhere),
+   so a many-column table spends less of a narrow column on it. */
+@container (max-width: 639px) {
+  .markdown th,
+  .markdown td {
+    padding: 8px 6px;
+  }
+}
+@container (max-width: 419px) {
+  .markdown th,
+  .markdown td {
+    padding: 6px 3px;
+  }
+}
+/* A path or URL is one unbreakable word: as a column floor it would push the
+   table past the pane, so only these tokens may break anywhere. */
+.markdown :is(th, td) a {
+  overflow-wrap: anywhere;
+}
+/* A word-wide floor times many columns outgrows a narrow pane (12 columns of
+   8-letter words are ~800px at 375px), so a table of six or more columns goes
+   back to cutting anywhere: it must fit the pane before its words stay whole. */
+.markdown table:has(tr > :nth-child(6)) :is(th, td) {
+  overflow-wrap: anywhere;
 }
 .markdown th {
   color: var(--mx-text);
@@ -625,6 +718,13 @@ html[data-window-material="mica"] .jump-to-latest {
   overflow-wrap: anywhere;
   word-break: keep-all;
   text-wrap: pretty;
+}
+/* A reply streaming in breaks its lines greedily: `pretty` re-balances a
+   paragraph's last lines on every word that arrives, so words already shown
+   jumped a line down and back up while the reply grew (phone CLS 0.16–0.21).
+   It stays greedy once settled, so finishing reflows nothing. */
+.markdown.streamed :is(p, li, blockquote) {
+  text-wrap: wrap;
 }
 /* Plain-text stand-in while the lazy markdown chunk streams in. */
 .markdown-plain {
@@ -694,17 +794,18 @@ html[data-window-material="mica"] .jump-to-latest {
 /* Links wear the inline-code ink:
    the underline and, for files, the type glyph carry the affordance, and a
    medium weight lifts it a step off the 400 prose.
-   Pending mentions share ink and weight so resolving one never recolours or
-   reflows the line. Ink and underline live in ONE rule; they used to sit ~6k
-   lines apart, so a later edit could retune half a link. */
+   A healed explicit link still streaming shares that ink. Ink and underline
+   live in ONE rule; they used to sit ~6k lines apart, so a later edit could
+   retune half a link. */
 .markdown a,
 .markdown .markdown-link-pending {
   color: var(--mx-md-code);
   font-weight: inherit;
 }
-/* A file mention that was not found (or not yet) stays plain text: an
-   underline would promise a click that does nothing. The underline never
-   changes geometry, so verifying a mention still cannot reflow the line. */
+/* A file mention that was not found (or not yet) is a span, so it stays
+   plain text: an underline would promise a click that does nothing. Neither
+   ink nor underline changes geometry, so verifying a mention cannot reflow
+   the line. */
 .markdown a {
   text-decoration: underline;
   /* 75%, not 45%: the underline is what separates a link from same-ink
@@ -715,12 +816,17 @@ html[data-window-material="mica"] .jump-to-latest {
 .markdown a:hover {
   text-decoration-color: currentColor;
 }
-/* Pending file mentions have the exact same icon, caption and wrapping as
-   verified links. Resolving a file must never reflow a finished line. Chat
-   file links share the link ink above; the icon marks them as files. */
+/* Explicit file links keep their icon and caption on one line. */
 .markdown .markdown-path-link,
 .tool-path-link {
   white-space: nowrap;
+}
+/* An automatic file mention is the reply's own text in every state (pending,
+   missing, verified): it wraps as that text does, and a verified one only
+   gains the link ink and underline above, which change no glyph width or
+   line height. */
+.markdown .markdown-path-mention {
+  white-space: inherit;
 }
 .markdown a > .seti-icon,
 .markdown .markdown-path-link .seti-icon,
@@ -740,6 +846,10 @@ html[data-window-material="mica"] .jump-to-latest {
   width: 1em;
   height: 1em;
   justify-content: center;
+}
+/* A plain web link carries no globe: the underline already marks it. */
+.markdown a > .seti-icon[data-icon-kind="external"] {
+  display: none;
 }
 /* Inline SVG glyphs (folder, globe, slides, archive) fill the same box. */
 .seti-icon.link-glyph > svg {
@@ -775,32 +885,49 @@ html[data-window-material="mica"] .jump-to-latest {
   outline: 2px solid var(--mx-focus);
   outline-offset: 2px;
 }
-.markdown a:focus-visible,
-.markdown-table:focus-visible {
+.markdown a:focus-visible {
   border-radius: var(--mx-radius-sm);
+  outline: 2px solid var(--mx-focus);
+  outline-offset: 2px;
+}
+/* The frame paints the rounded card; the scroller inside stays square. A
+   radius on the scroller (or any rounded clip around it) keeps Chromium from
+   hit-testing wheel scrolls on the compositor, so every wheel over a table
+   waited on the main thread. */
+.markdown-table-frame {
+  max-width: 100%;
+  margin: 18px 0;
+  /* Grok-web table container: rounded card with a hairline ring and a tinted
+     header band instead of a naked full-bleed grid. */
+  border-radius: var(--mx-radius-lg);
+  box-shadow: 0 0 0 var(--mx-hairline) var(--mx-border-muted);
+}
+.markdown-table-frame:has(> .markdown-table:focus-visible) {
   outline: 2px solid var(--mx-focus);
   outline-offset: 2px;
 }
 .markdown-table {
   width: 100%;
   max-width: 100%;
-  margin: 20px 0;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  /* Grok-web table container: rounded card with a hairline ring and a tinted
-     header band instead of a naked full-bleed grid. */
-  border-radius: var(--mx-radius-lg);
-  box-shadow: 0 0 0 var(--mx-hairline) var(--mx-border-muted);
   background: transparent;
+}
+.markdown-table:focus-visible {
+  outline: none;
+}
+/* The header band's outer cells round themselves into the frame's corners. */
+.markdown-table tr:first-child > th:first-child {
+  border-top-left-radius: var(--mx-radius-lg);
+}
+.markdown-table tr:first-child > th:last-child {
+  border-top-right-radius: var(--mx-radius-lg);
 }
 .markdown-table table {
   /* Fill the pane and WRAP. `max-content` sized every column to its longest
      unbroken line, so a single prose cell pushed the whole table into
      horizontal scroll while the pane still had room — the columns never got
-     the chance to divide the width they had. Auto layout now splits the pane
-     by content, the per-cell 64px floor keeps a column from collapsing, and
-     the wrapper's overflow-x engages only when that floor truly exceeds the
-     pane (many-column tables). */
+     the chance to divide the width they had. Auto layout splits the pane by
+     content and cells wrap (long tokens break), so the table fits the column
+     at any width. */
   width: 100%;
   margin: 0;
   display: table;
@@ -894,7 +1021,6 @@ html[data-window-material="mica"] .jump-to-latest {
 }
 /* The review bar's inline diff box: same fill, hairline ring and corner.
    .approval-detail is the call itself (the command, path or URL). */
-.approval-card dd code,
 .approval-detail {
   display: block;
   max-height: min(24vh, 160px);
@@ -910,11 +1036,6 @@ html[data-window-material="mica"] .jump-to-latest {
   line-height: var(--mx-line-meta);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-/* Decision row: right-aligned chips straight under the body, no divider. */
-.approval-actions {
-  gap: 4px;
-  padding: 0 var(--approval-inset) 10px;
 }
 
 /* Composer cluster: animated status text, compact message navigation, context,
@@ -1140,6 +1261,9 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
 /* Successful tool work is the transcript baseline, not an alert. Keep settled
    child rows neutral under the ListTree activity group; rare failures and
    warnings retain their semantic colors below. */
+.tool-card .tool-icon {
+  transition: color 150ms ease;
+}
 .tool-card.settled .tool-icon {
   color: var(--mx-icon-muted);
 }
@@ -1257,10 +1381,10 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
   line-height: var(--mx-line-ui);
 }
 /* Goal: the lead segment of the composer island (15-composer.css owns the
-   island and the segment chrome). Closed it is bar · title · n/m; a crowded
-   island keeps bar · n/m. Open, the island becomes the Goal tab (bar · n/m ·
-   elapsed): the task drawer with pause / edit / stop under it, or one
-   dismiss once the Goal has finished (the closed segment carries it too). */
+   island and the segment chrome). Closed it is numbers only: the progress
+   ring, n/m and elapsed time (the time drops on a narrow island). Open, the
+   island becomes the Goal tab (ring · n/m · elapsed): the task drawer with
+   its controls under it. */
 .session-goal-island {
   position: relative;
   min-width: 0;
@@ -1275,19 +1399,7 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
 .session-goal-island[data-open="true"] > .session-goal-trigger {
   display: none;
 }
-/* The Goal title is the segment's detail: it reads when the Goal is alone
-   or the column is wide, and drops when the island is shared or narrow
-   (same ladder as 15-composer's segments). */
-.composer-island-pill:has(> :not([hidden]) ~ :not([hidden])) .session-goal-trigger .session-goal-objective {
-  display: none;
-}
-@container composer-island (min-width: 720px) {
-  .composer-island-pill .session-goal-trigger .session-goal-objective,
-  .composer-island-pill:has(> :not([hidden]) ~ :not([hidden])) .session-goal-trigger .session-goal-objective {
-    display: block;
-  }
-}
-.composer-island[data-compact] .composer-island-pill .session-goal-trigger .session-goal-objective {
+.composer-island[data-compact] .session-goal-trigger-time {
   display: none;
 }
 /* The approval card and flashes hide the pill even with the Goal tab open. */
@@ -1328,23 +1440,14 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
 .session-goal-island[data-open="true"] > .session-goal-dismiss {
   display: none;
 }
-.session-goal-objective {
-  min-width: 0;
-  max-width: 230px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* State tint: the leading icon, the pips' fill and the status label share one
-   hue per state. Static: the Goal segment never animates. */
+/* State tint: the ring, the status label and the budget bar share one hue
+   per state. Static: the Goal segment never animates. */
 .session-goal-island {
   --goal-tint: var(--mx-accent);
-  --goal-fill: var(--mx-accent);
 }
 .session-goal-island[data-state="paused"],
 .session-goal-island[data-state="stopped"] {
   --goal-tint: var(--mx-text-muted);
-  --goal-fill: var(--mx-text-muted);
 }
 .session-goal-island[data-state="blocked"] {
   --goal-tint: var(--mx-danger);
@@ -1354,7 +1457,6 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
 }
 .session-goal-island[data-state="complete"] {
   --goal-tint: var(--mx-success);
-  --goal-fill: var(--mx-success);
 }
 .session-goal-state {
   display: inline-flex;
@@ -1362,32 +1464,12 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
   align-items: center;
   color: var(--goal-tint);
 }
-.session-goal-objective[data-label="status"] {
-  color: var(--goal-tint);
-}
-/* Five fixed 10px cells whatever the task count, so every Goal's mark keeps
-   one shape and length (goal-progress-bar-v1.html). Static: no motion, so it
-   never reads as a loading spinner. */
-.session-goal-pips {
-  width: 58px;
-  height: 4px;
-  display: grid;
+.session-goal-ring {
+  display: block;
   flex: none;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 2px;
 }
-.session-goal-pips > i {
-  border-radius: 2px;
-  background: var(--mx-meter-track);
-}
-.session-goal-pips > i[data-status="completed"] {
-  background: var(--goal-fill);
-}
-.session-goal-pips > i[data-status="in_progress"] {
-  background: linear-gradient(90deg, var(--goal-tint) 50%, var(--mx-meter-track) 50%);
-}
-.session-goal-pips > i[data-status="awaiting_approval"] {
-  background: var(--mx-warning);
+.session-goal-ring-track {
+  stroke: var(--mx-meter-track);
 }
 .session-goal-progress,
 .session-goal-time {
@@ -1427,38 +1509,130 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
      press landed on the composer behind it.
      With minmax(0, 1fr) the task list scrolls and the rows below it stay
      inside the panel. */
-  grid-template-rows: minmax(0, 1fr) auto;
-  padding: 10px 14px 12px;
+  grid-template-rows: minmax(0, 1fr);
+  grid-auto-rows: auto;
+  gap: 10px;
+  padding: 12px 14px;
   overflow: hidden;
 }
 .session-goal-controls {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 6px;
-  padding-top: 8px;
+  padding-top: 10px;
+  border-top: var(--mx-hairline) solid var(--composer-island-rule);
 }
+/* The content row is the one that scrolls when the drawer hits its
+   max-height; the header and the controls row stay put. */
 .session-goal-content {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 8px;
-}
-.session-goal-tasks {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-}
-.session-goal-tasks ul {
-  min-height: 0;
-  max-height: min(320px, 40dvh);
-  display: grid;
   align-content: start;
-  gap: 0;
-  margin: 0;
-  padding: 0;
+  gap: 12px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+/* A 24px fade at the bottom edge, only while more content waits below. */
+.session-goal-content[data-fade="true"] {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+.session-goal-tasks {
+  display: grid;
+  gap: 10px;
+}
+.session-goal-group {
+  display: grid;
+  gap: 2px;
+}
+.session-goal-group-label {
+  margin: 2px 0 0;
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-meta);
+  font-weight: var(--mx-weight-label);
+  line-height: var(--mx-line-minor);
+}
+.session-goal-tasks ul {
+  display: grid;
+  align-content: start;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
   list-style: none;
+}
+.session-goal-tasks ul[hidden] {
+  display: none;
+}
+.session-goal-fold {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--mx-text-muted);
+  font: inherit;
+  font-size: var(--mx-font-meta);
+  text-align: left;
+  cursor: pointer;
+}
+.session-goal-fold:hover,
+.session-goal-fold:focus-visible {
+  background: var(--mx-hover);
+  color: var(--mx-text);
+  outline: none;
+}
+.session-goal-fold > svg {
+  transform: rotate(-90deg);
+  transition: transform 0.15s;
+}
+.session-goal-fold[aria-expanded="true"] > svg {
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-goal-fold > svg {
+    transition: none;
+  }
+}
+.session-goal-link {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mx-text-muted);
+  font: inherit;
+  font-size: var(--mx-font-meta);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.session-goal-link:hover,
+.session-goal-link:focus-visible {
+  color: var(--mx-text);
+  outline: none;
+}
+/* One note slot under the status line: a blocker, a wait or an error, text
+   only. Tinted by state; neutral otherwise. */
+.session-goal-note {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--composer-island-wash);
+  color: var(--mx-text);
+  font-size: var(--mx-font-meta);
+  line-height: var(--mx-line-minor);
+  overflow-wrap: anywhere;
+}
+.session-goal-note[data-tone="blocked"],
+.session-goal-note[data-tone="error"] {
+  background: color-mix(in srgb, var(--mx-danger) 10%, transparent);
+}
+.session-goal-note[data-tone="waiting"] {
+  background: color-mix(in srgb, var(--mx-warning) 11%, transparent);
 }
 .session-goal-tasks li {
   min-width: 0;
@@ -1493,24 +1667,6 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
 .session-goal-tasks li[data-stalled="true"][data-status] > span {
   color: var(--mx-danger);
 }
-.session-goal-badge {
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 7px;
-  border-radius: var(--mx-radius-pill);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: var(--mx-weight-regular);
-  line-height: 18px;
-  white-space: nowrap;
-  color: var(--mx-warning);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mx-warning) 40%, transparent);
-}
-.session-goal-badge[data-tone="blocked"] {
-  color: var(--mx-danger);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mx-danger) 40%, transparent);
-}
 .session-goal-statusline {
   display: flex;
   flex-wrap: wrap;
@@ -1520,7 +1676,7 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
 }
 .session-goal-statusline-state {
   color: var(--goal-tint);
-  font-weight: var(--mx-weight-label);
+  font-weight: 600;
 }
 .session-goal-tasks li > span {
   width: var(--mx-icon-md);
@@ -1563,8 +1719,7 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-ui);
 }
-.session-goal-empty,
-.session-goal-blocker {
+.session-goal-empty {
   margin: 0;
   color: var(--mx-text-muted);
   font-weight: var(--mx-weight-regular);
@@ -1573,46 +1728,75 @@ html[data-mixdog-mobile-tabs] [data-component="text-shimmer"] [data-slot="text-s
 }
 .session-goal-details {
   display: grid;
-  gap: 2px;
-  color: var(--mx-text-muted);
-  font-weight: var(--mx-weight-regular);
-  font-size: var(--mx-font-meta);
-  line-height: var(--mx-line-minor);
+  justify-items: start;
+  gap: 4px;
 }
-/* Full objective, wrapped: the header's one-line ellipsis is only a handle
-. Capped so a paragraph-long goal scrolls
-   instead of pushing the task list out of the drawer. */
+.session-goal-title {
+  margin: 0;
+  max-width: 100%;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+/* The objective under the title: muted, wrapped, 3 lines before "Show more". */
 .session-goal-objective-full {
-  margin: 0 0 4px;
-  max-height: calc(var(--mx-line-ui) * 4);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  color: var(--mx-text);
-  font-size: var(--mx-font-minor);
+  margin: 0;
+  max-width: 100%;
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-meta);
   font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-ui);
+  line-height: 19px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.session-goal-actions {
+.session-goal-title[data-clamped="true"],
+.session-goal-objective-full[data-clamped="true"] {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.session-goal-status {
+  display: grid;
+  gap: 7px;
+}
+.session-goal-budget {
+  height: 3px;
+  display: block;
+  border-radius: 2px;
+  background: var(--mx-meter-track);
+  overflow: hidden;
+}
+.session-goal-budget > i {
+  height: 100%;
+  display: block;
+  border-radius: 2px;
+  background: var(--goal-tint);
+}
+/* The stop confirmation fills the controls row in place. */
+.session-goal-confirm {
+  width: 100%;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
-  gap: 4px;
-  padding-top: 4px;
-  border-top: var(--mx-hairline) solid var(--mx-border);
+  gap: 6px;
 }
-.session-goal-actions .composer-tool {
-  width: auto;
-  padding-inline: 8px;
+.session-goal-confirm-msg {
+  margin: 0 auto 0 0;
+  min-width: 0;
+  flex: 1 1 200px;
+  color: var(--mx-text);
   font-size: var(--mx-font-meta);
+  line-height: var(--mx-line-minor);
 }
-.session-goal-confirm {
-  display: grid;
-  gap: 8px;
+.session-goal-actions {
+  display: flex;
+  gap: 6px;
 }
-.session-goal-blocker {
-  color: var(--mx-warning);
+.session-goal-tasks li[data-status="completed"] > div > span {
+  color: var(--mx-text-muted);
 }
 
 html[data-mixdog-mobile-tabs] .session-goal-dismiss {
@@ -1620,13 +1804,18 @@ html[data-mixdog-mobile-tabs] .session-goal-dismiss {
   height: 28px;
 }
 html[data-mixdog-mobile-tabs] .composer-island .session-goal-control {
-  height: 32px;
+  height: auto;
+  min-height: var(--mx-touch, 44px);
   padding-inline: 12px;
 }
 /* Phone drawer rows: at a finger's row height and the phone's 14/20 body
    line. */
 html[data-mixdog-mobile-tabs] .session-goal-body {
-  padding: 10px 14px 12px;
+  padding: 12px 14px;
+}
+html[data-mixdog-mobile-tabs] .session-goal-fold,
+html[data-mixdog-mobile-tabs] .session-goal-link {
+  min-height: var(--mx-touch, 44px);
 }
 html[data-mixdog-mobile-tabs] .session-goal-tasks li {
   grid-template-columns: 16px minmax(0, 1fr) auto;
@@ -1645,8 +1834,7 @@ html[data-mixdog-mobile-tabs] .session-goal-tasks li > div > span {
   font-size: var(--mx-font-ui);
   line-height: var(--mx-line-ui);
 }
-html[data-mixdog-mobile-tabs] .session-goal-empty,
-html[data-mixdog-mobile-tabs] .session-goal-blocker {
+html[data-mixdog-mobile-tabs] .session-goal-empty {
   font-size: var(--mx-font-meta);
   line-height: var(--mx-line-minor);
 }

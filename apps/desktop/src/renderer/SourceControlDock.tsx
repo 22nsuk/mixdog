@@ -1,13 +1,17 @@
 import type React from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { DownloadSessionContext } from './project-file-download';
 import { InitialSurface } from './InitialSurface';
 import { sourceControlErrorToastText } from './SourceControlErrorNotice';
 import { useErrorToast } from './notifications';
 import { commitImmediateOverlay } from './immediate-overlay';
 import type { DesktopGitFile, DesktopGitLogEntry, DesktopGitStatus } from '../shared/contract';
+import { confirmAction } from './app-confirm';
 import { t } from './i18n';
 import { isSshConnectionWindow } from './desktop-connection';
 import { downloadAndOpenServerFile, revealFileFromWindow } from './server-transfers';
+import { openEditorFileExternally } from './editor-external-file';
+import { isRemoteHostRenderer } from './remote-ui-projection';
 import type { PullRequestOpenHandler } from './PullRequestsPane';
 import { GithubDock as PullRequestsPane } from './github/GithubDock';
 import {
@@ -120,6 +124,8 @@ export function SourceControlDock({
   onOpenSession?(sessionId: string): void;
 }) {
   const api = window.mixdogDesktop;
+  const remoteHost = isRemoteHostRenderer();
+  const downloadSessionId = useContext(DownloadSessionContext);
   const prOnly = surface === 'prs';
   const [error, setError] = useState('');
   // ONE error surface: a failed Git action reports where every other failure
@@ -296,8 +302,13 @@ export function SourceControlDock({
       });
     };
     const discardActionFiles = () => {
-      if (!window.confirm(discardPrompt(file, actionFiles.length))) return;
-      void run(`revert:${file.path}`, () => discardFiles(ctx, actionFiles), clearSelected);
+      void confirmAction(discardPrompt(file, actionFiles.length), {
+        key: `discard:${projectPath}:${actionFiles.map((entry) => entry.path).join('\u0000')}`,
+        danger: true,
+        confirmLabel: t('Discard'),
+      }).then((approved) => {
+        if (approved) return run(`revert:${file.path}`, () => discardFiles(ctx, actionFiles), clearSelected);
+      });
     };
     const fileMenuItems = () =>
       changedFileMenuItems({
@@ -305,8 +316,10 @@ export function SourceControlDock({
         busy: Boolean(busy),
         canRevert: Boolean(api?.gitRevert),
         canIgnore: Boolean(api?.gitIgnore),
-        canReveal: Boolean(api?.revealFile),
-        canOpenDefault: Boolean(api?.openFilePath),
+        // A paired device has no file manager of the PC's: the item is hidden.
+        canReveal: remoteHost ? null : Boolean(api?.revealFile),
+        // ...and opening downloads the file to the device instead.
+        canOpenDefault: remoteHost || Boolean(api?.openFilePath),
         missingChannel,
         guarded,
         onDiscard: discardActionFiles,
@@ -326,7 +339,8 @@ export function SourceControlDock({
           void revealFileFromWindow(projectPath, file.path);
         },
         onOpenDefault: () => {
-          if (isSshConnectionWindow()) void downloadAndOpenServerFile(projectPath, file.path);
+          if (remoteHost) void openEditorFileExternally(projectPath, file.path, undefined, downloadSessionId);
+          else if (isSshConnectionWindow()) void downloadAndOpenServerFile(projectPath, file.path);
           else void api?.openFilePath?.(projectPath, file.path);
         },
       });
@@ -352,14 +366,17 @@ export function SourceControlDock({
 
   const discardAllChanges = () => {
     const targets = files.filter((file) => !file.conflicted);
-    if (
-      !targets.length ||
-      !window.confirm(
-        t('Discard all {{count}} working tree changes? This cannot be undone.', { count: targets.length })
-      )
-    )
-      return;
-    void run('discard-all', () => discardFiles(ctx, targets), clearSelected);
+    if (!targets.length) return;
+    void confirmAction(
+      t('Discard all {{count}} working tree changes? This cannot be undone.', { count: targets.length }),
+      {
+        key: `discard-all:${projectPath}`,
+        danger: true,
+        confirmLabel: t('Discard'),
+      }
+    ).then((approved) => {
+      if (approved) return run('discard-all', () => discardFiles(ctx, targets), clearSelected);
+    });
   };
   const toggleViewSortMenu = (point: MenuPoint) => {
     commitImmediateOverlay(() =>

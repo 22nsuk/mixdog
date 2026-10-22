@@ -1,9 +1,12 @@
 // The SSH servers this machine has connected to: a small JSON list in the app
 // data folder. Only the entry is stored here — never a key, password or token.
-import { readFileSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
+import {
+  readJsonState,
+  readJsonStateSync,
+  writeJsonAtomicAsync,
+} from '../../../../../src/runtime/shared/atomic-file.mjs';
 import type { SshHostSettings } from './ssh-context';
 import { parseSshTarget, sshTargetKey } from './ssh-command';
 
@@ -47,18 +50,6 @@ const MAX_PROVIDER_ID_LENGTH = 64;
 const MAX_ALLOWED_PROVIDERS = 64;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are exactly what is refused.
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/;
-/** Whole-number model-use settings (model-proxy-grants) and their allowed ranges. */
-const MODEL_USE_LIMITS = {
-  grantMinutes: [10, 1_440, 'The model permission time must be a whole number of minutes from 10 to 1440.'],
-  grantCalls: [1, 1_000_000, 'The model calls per permission must be a whole number from 1 to 1000000.'],
-  grantTokens: [1_000, 10_000_000_000, 'The tokens per permission must be a whole number from 1000 to 10000000000.'],
-  backgroundCallsPerHour: [1, 1_000, 'The background model calls per hour must be a whole number from 1 to 1000.'],
-  backgroundTokensPerDay: [
-    1_000,
-    10_000_000_000,
-    'The background tokens per day must be a whole number from 1000 to 10000000000.',
-  ],
-} as const;
 
 /** The per-server settings as saved: trimmed, empty fields dropped. Throws when a value cannot be used. */
 export function parseHostSettings(raw: unknown): SshHostSettings {
@@ -101,30 +92,17 @@ export function parseHostSettings(raw: unknown): SshHostSettings {
     if (ids.size > MAX_ALLOWED_PROVIDERS) throw new Error('Too many providers.');
     settings.allowedProviders = [...ids];
   }
-  for (const [key, [min, max, message]] of Object.entries(MODEL_USE_LIMITS) as Array<
-    [keyof typeof MODEL_USE_LIMITS, (typeof MODEL_USE_LIMITS)[keyof typeof MODEL_USE_LIMITS]]
-  >) {
-    const raw = input[key];
-    if (raw === undefined || raw === null || raw === '') continue;
-    const value = Number(raw);
-    if (!Number.isInteger(value) || value < min || value > max) throw new Error(message);
-    settings[key] = value;
-  }
-  if (typeof input.allowBackgroundModelUse === 'boolean')
-    settings.allowBackgroundModelUse = input.allowBackgroundModelUse;
   return settings;
 }
 
 const copyHost = (host: SshHostRecord): SshHostRecord => ({
   ...host,
-  ...(host.settings
-    ? {
-        settings: {
-          ...host.settings,
-          ...(host.settings.allowedProviders ? { allowedProviders: [...host.settings.allowedProviders] } : {}),
-        },
-      }
-    : {}),
+  ...(host.settings && {
+    settings: {
+      ...host.settings,
+      ...(host.settings.allowedProviders && { allowedProviders: [...host.settings.allowedProviders] }),
+    },
+  }),
 });
 
 // One store per user-data folder, shared by the IPC handlers and the provider lookup.
@@ -165,24 +143,24 @@ export function allowedProvidersForHost(hostId: string): string[] | null {
   return host.settings?.allowedProviders ? [...host.settings.allowedProviders] : null;
 }
 
-/** A saved server's settings, read like allowedProvidersForHost; undefined
- *  for a server that is not saved (or a list that cannot be read). */
-export function savedHostSettings(hostId: string): SshHostSettings | undefined {
-  return savedHostSync(hostId)?.settings;
-}
-
 /** The saved entry, from the loaded store or else from disk. */
 function savedHostSync(hostId: string): SshHostRecord | undefined {
   if (!configuredPath) return undefined;
   const loaded = loadedStores.get(configuredPath);
   if (loaded) return loaded.get(hostId);
   try {
-    return storedHosts(JSON.parse(readFileSync(join(configuredPath, HOSTS_FILE), 'utf8'))).find(
+    return storedHosts(readJsonStateSync(join(configuredPath, HOSTS_FILE), { validate: hostsDocument })).find(
       (entry) => entry.id === hostId
     );
   } catch {
     return undefined;
   }
+}
+
+/** A saved list is an object holding a `hosts` array; anything else is damage. */
+function hostsDocument(value: unknown): unknown {
+  if (!Array.isArray((value as { hosts?: unknown } | null)?.hosts)) throw new TypeError('Missing hosts list.');
+  return value;
 }
 const keyOf = (target: string): string => sshTargetKey(parseSshTarget(target));
 
@@ -221,19 +199,20 @@ export async function loadSshHostStore(userDataPath: string): Promise<SshHostSto
   const file = join(userDataPath, HOSTS_FILE);
   let hosts: SshHostRecord[] = [];
   try {
-    hosts = storedHosts(JSON.parse(await readFile(file, 'utf8')));
-  } catch {
-    /* first run, or an unreadable list: start empty */
+    // A damaged list is kept aside as .corrupt-<ts> and the last good copy restored.
+    hosts = storedHosts(await readJsonState(file, { validate: hostsDocument }));
+  } catch (error) {
+    // The file cannot be read at all (permissions…): work in memory; a write
+    // that cannot read the file it replaces fails instead of wiping it.
+    console.warn(`[ssh-hosts] ${file} could not be read: ${(error as Error).message}`);
   }
   let writes: Promise<void> = Promise.resolve();
   const persist = (): Promise<void> => {
-    const snapshot = JSON.stringify({ version: 1, hosts });
+    const snapshot = structuredClone({ version: 1, hosts });
     writes = writes
       .catch(() => undefined)
       .then(async () => {
-        await mkdir(dirname(file), { recursive: true });
-        await writeFile(`${file}.tmp`, snapshot, 'utf8');
-        await rename(`${file}.tmp`, file);
+        await writeJsonAtomicAsync(file, snapshot, { compact: true, backup: true });
       });
     return writes;
   };

@@ -44,6 +44,60 @@ workflow dispatch needs Actions permission, and notifications require the
 account's notifications scope. A permission failure is not treated as an empty
 list. Authentication is managed in the plugin details.
 
+## Workspace activity recovery
+
+Mixdog records which folders of a repository are in use: running prompts,
+shell and background commands, and branch or worktree changes. The record is
+kept twice, in `mixdog-workspace-admission.json` and
+`mixdog-workspace-admission.json.management`, in the repository's shared Git
+directory (`git rev-parse --path-format=absolute --git-common-dir`). Both files
+always hold the same record. A merge, worktree cleanup, or branch switch runs
+only when no recorded work uses a folder it changes.
+
+"Workspace activity cannot be verified. Nothing was changed." means Mixdog
+could not confirm which work is running, so it changed nothing.
+
+- **One file damaged or missing** (truncated, malformed, zero-filled, or
+  deleted): nothing for you to do. Mixdog keeps the damaged bytes as
+  `<file>.corrupt-<time>` and rebuilds the file from the other one, which still
+  lists all running work. Prompts, commands, and workspace changes continue as
+  before.
+- **Both files damaged** (or one damaged and the other missing): the record of
+  running work is lost. Prompts and shell commands keep running, but branch and
+  worktree changes are refused with the message above until you reset the
+  record (below). Waiting does not clear it, and neither does work finishing.
+- **Unreadable file** (permissions, file in use, or other storage errors):
+  Mixdog leaves both files as they are and refuses new prompts, commands, and
+  workspace changes until the file can be read again. Restore access; do not
+  delete the files or the Git directory, or substitute an older copy that may
+  omit still-running work.
+- **Written by a newer Mixdog** (after a downgrade): both files are left
+  untouched, and new prompts, commands, and workspace changes are refused until
+  you run the newer version again.
+
+To reset the record after both files were damaged:
+
+1. Stop every Mixdog instance that uses this repository or any of its linked
+   worktrees.
+2. Stop the background commands those instances started, or confirm they have
+   finished.
+3. If you want to report the damage, copy the two files somewhere else. Leave
+   the `.corrupt-` copies where they are; they do not affect the reset.
+4. Remove `mixdog-workspace-admission.json` and
+   `mixdog-workspace-admission.json.management` from the shared Git directory.
+5. Start Mixdog again, using only updated builds.
+
+Limits:
+
+- Every Mixdog process that uses the same shared Git directory, and the
+  background commands it started, must run an updated build. Update all
+  instances together. An older build cannot read the current record: its
+  prompts and commands run without being recorded, so a change can run over
+  them, and when it meets a damaged file it can discard the record of other
+  instances' work.
+- Removing both files while work is running is not supported. Mixdog cannot
+  tell that apart from a new repository and starts an empty record.
+
 ## Reference review
 
 Reference repositories: `github-desktop` and

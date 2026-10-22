@@ -1,14 +1,22 @@
 import { RefreshCw } from 'lucide-react';
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { SESSION_DIFF_STYLE_KEY } from './desktop-types';
 import { diffModeActions, useDiffViewState, type DiffViewState } from './diff-header-controls';
 import { DockHeaderRow, type DockAction } from './pane-dock-chrome';
 import { t } from './i18n';
 import { ErrorNotice } from './ErrorNotice';
 import { InitialSurface } from './InitialSurface';
-import type { SessionDiffResult } from './session-diff-model';
+import { OpenSelect } from './OpenSelect';
+import {
+  SESSION_CHANGES_SOURCES,
+  sessionChangesEmptyText,
+  sessionChangesSourceLabel,
+  useSessionChangePatches,
+  type SessionChangesSource,
+} from './session-changes-store';
+import { gitRowOpenPath } from './session-diff-model';
 import { SessionDiffScope } from './session-diff-scope';
-import { SessionDiffStack } from './session-diff-section';
+import { SessionDiffStack, sessionDiffBodyPending } from './session-diff-section';
 import { SessionDiffTabStrip } from './session-diff-tab-strip';
 import { useSessionDiffCollapse } from './use-session-diff-collapse';
 import { useSessionDiffRequests } from './use-session-diff-requests';
@@ -33,11 +41,40 @@ function SessionDiffFrame({
   );
 }
 
+/** A Git root's Changes source picker (the composer chip follows it too). */
+function SessionChangesSourceSelect({
+  source,
+  base,
+  onChange,
+}: {
+  source: SessionChangesSource;
+  base: string;
+  onChange(source: SessionChangesSource): void;
+}) {
+  return (
+    <OpenSelect
+      className="session-diff-source-select"
+      ariaLabel={t('Changes source')}
+      value={source}
+      tooltip={base ? t('Compared with {{base}}', { base }) : undefined}
+      options={SESSION_CHANGES_SOURCES.map((value) => ({
+        value,
+        label: sessionChangesSourceLabel(value),
+        // The last turn stands apart from Git's sources.
+        separatorBefore: value === 'branch',
+      }))}
+      onChange={(value) => onChange(value as SessionChangesSource)}
+    />
+  );
+}
+
 /** Row 1 is the shared dock header with the surface's one tab strip (like the
  *  browser, terminal and file panes); row 2 is the toolbar row holding the
- *  scope pill (count + totals) and the refresh control. */
+ *  Changes source (Git roots), the scope pill (count + totals) and the
+ *  refresh control. */
 function SessionDiffHeader({
   tabStrip,
+  source,
   scope,
   actions,
   onClose,
@@ -45,6 +82,7 @@ function SessionDiffHeader({
   onRefresh,
 }: {
   tabStrip: ReactNode;
+  source: ReactNode;
   scope: ReactNode;
   actions: DockAction[];
   onClose?(): void;
@@ -61,6 +99,7 @@ function SessionDiffHeader({
         actions={actions}
       />
       <div className="browser-pane-toolbar session-diff-toolbar">
+        {source}
         {scope}
         <button
           type="button"
@@ -81,13 +120,13 @@ function SessionDiffHeader({
  *  null once there is a diff to list. */
 function sessionDiffStatus(
   sessionId: string,
-  { loading, result, error }: { loading: boolean; result: SessionDiffResult | null; error: string },
+  { loading, ready, unsupported, error }: { loading: boolean; ready: boolean; unsupported: boolean; error: string },
   onRetry: () => void
 ): ReactNode {
   if (!sessionId) return <p className="utility-dock-empty">{t('Open a session to view its diff.')}</p>;
-  if (loading && !result) return <InitialSurface />;
+  if (loading && !ready) return <InitialSurface />;
   if (error) return <ErrorNotice error={error} onRetry={onRetry} />;
-  if (result?.supported === false) return <p className="utility-dock-empty">{t('Session diff is unavailable.')}</p>;
+  if (unsupported) return <p className="utility-dock-empty">{t('Session diff is unavailable.')}</p>;
   return null;
 }
 
@@ -111,26 +150,47 @@ type SessionDiffPaneProps = {
 export function SessionDiffPane({
   sessionId,
   active,
-  onOpenFile,
   fileTabs,
   headerControlsExternal,
   viewState,
   onClose,
   cwd,
+  onOpenFile: openPath,
 }: SessionDiffPaneProps) {
   const ownViewState = useDiffViewState(SESSION_DIFF_STYLE_KEY);
   const { viewMode, onViewModeChange, splitAvailable } = viewState ?? ownViewState;
-  const { revision, busy, result, loading, error, refresh, adoptions, rows } = useSessionDiffRows(
-    sessionId,
-    active,
-    cwd
+  const {
+    turnReviewKey,
+    busy,
+    ready,
+    unsupported,
+    loading,
+    error,
+    refresh,
+    adoptions,
+    rows,
+    repository,
+    source,
+    setSource,
+    base,
+    root,
+  } = useSessionDiffRows(sessionId, active, cwd);
+  // Git rows are repository-root-relative; the host opens project paths.
+  const onOpenFile = useMemo(
+    () =>
+      openPath && repository && root ? (path: string) => openPath(gitRowOpenPath(root, cwd ?? '', path)) : openPath,
+    [openPath, repository, root, cwd]
   );
 
   // Every changed file is one section of a single scroll; the island's files
   // segment scrolls to the top and a turn card's file to that file's section.
   const [revertError, setRevertError] = useState('');
-  const [fileNotice, setFileNotice] = useState('');
+  // A capped set draws one file: the one picked by its header (default: first).
+  const [selectedPath, setSelectedPath] = useState('');
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  // The (session, source, folder) whose list was already drawn: later reads of
+  // it never hold the list back again.
+  const listDrawnFor = useRef('');
   const { collapsed, toggleCollapsed, expandPath, resetCollapsed, collapseActions } = useSessionDiffCollapse(rows);
   const tabs = useSessionDiffTabs({
     sessionId,
@@ -140,20 +200,18 @@ export function SessionDiffPane({
     onClose,
     onSessionChange: () => {
       setRevertError('');
-      setFileNotice('');
+      setSelectedPath('');
       resetCollapsed();
     },
-    onReopen: () => setFileNotice(''),
   });
   const fileRequest = useSessionDiffRequests({
     sessionId,
     active,
     rows,
-    result,
+    ready,
     error,
     refresh,
     adoptions,
-    setFileNotice,
     expandPath,
     showAllFiles: tabs.showAllFiles,
     openDiffTab: tabs.openDiffTab,
@@ -163,14 +221,14 @@ export function SessionDiffPane({
     sessionId,
     active,
     busy,
-    revision,
+    reviewKey: turnReviewKey,
     refresh,
     setRevertError,
   });
 
   // The ONE header row renders in every state (no session, loading, error,
   // unsupported, empty, files) so close/expand are always reachable.
-  const showCount = Boolean(sessionId) && !error && result?.supported !== false && Boolean(result);
+  const showCount = Boolean(sessionId) && !error && !unsupported && ready;
   const { focusRow, tabRows, awaitingFile, showChanges, pendingPath, visibleRows } = sessionDiffTabView({
     rows,
     diffTabs: tabs.diffTabs,
@@ -179,6 +237,32 @@ export function SessionDiffPane({
     fileRequest,
     otherSurfaceTabs: tabs.otherSurfaceTabs,
   });
+  // Git rows list counts only; the files drawn open read their own patch —
+  // one over the render limit only once the user asks to see it anyway.
+  const selectedRow = focusRow ?? visibleRows.find((row) => row.path === selectedPath) ?? visibleRows[0] ?? null;
+  const { withPatch, capped } = useSessionChangePatches({
+    cwd,
+    sessionId,
+    rows: visibleRows,
+    selectedId: selectedRow?.id ?? '',
+  });
+  // Capped: every file but the selected one lists its header only.
+  const shownCollapsed = useMemo(
+    () =>
+      capped
+        ? new Set([...collapsed, ...visibleRows.filter((row) => row !== selectedRow).map((row) => row.path)])
+        : collapsed,
+    [capped, collapsed, visibleRows, selectedRow]
+  );
+  // Capped: a header selects its file (unfolded); the selected one folds as usual.
+  const onToggleFile = (path: string) => {
+    if (!capped || path === selectedRow?.path) {
+      toggleCollapsed(path);
+      return;
+    }
+    setSelectedPath(path);
+    expandPath(path);
+  };
   const tabStrip = (
     <SessionDiffTabStrip
       pendingPath={pendingPath}
@@ -206,6 +290,7 @@ export function SessionDiffPane({
   const header = !headerControlsExternal && (
     <SessionDiffHeader
       tabStrip={tabStrip}
+      source={repository && <SessionChangesSourceSelect source={source} base={base} onChange={setSource} />}
       scope={scope}
       actions={[...diffModeActions(viewMode, onViewModeChange, splitAvailable), ...collapseActions]}
       onClose={onClose}
@@ -214,7 +299,7 @@ export function SessionDiffPane({
     />
   );
 
-  const status = sessionDiffStatus(sessionId, { loading, result, error }, () => void refresh(true));
+  const status = sessionDiffStatus(sessionId, { loading, ready, unsupported, error }, () => void refresh(true));
   if (status) {
     return (
       <SessionDiffFrame>
@@ -225,32 +310,44 @@ export function SessionDiffPane({
   }
   let body: ReactNode;
   if (awaitingFile) body = <InitialSurface />;
-  else if (rows.length === 0) body = <p className="utility-dock-empty">{t('No changes from this session.')}</p>;
-  else {
+  else if (rows.length === 0) {
     body = (
-      <SessionDiffStack
-        stackRef={bodyRef}
-        rows={visibleRows}
-        focusRow={focusRow}
-        mode={viewMode}
-        collapsed={collapsed}
-        onToggle={toggleCollapsed}
-        canRevertPath={canRevertPath}
-        onRevert={revertFile}
-        onOpenFile={onOpenFile}
-      />
+      <p className="utility-dock-empty">
+        {repository ? sessionChangesEmptyText(source) : t('No changes from this session.')}
+      </p>
     );
+  } else {
+    const drawnRows = visibleRows.map(withPatch);
+    const drawnFocus = focusRow && withPatch(focusRow);
+    // The list is first drawn once the unfolded files have their diffs: a
+    // section that grows from "Loading diff…" to the whole diff pushes every
+    // header below it out of view (a layout shift of the entire list).
+    const listKey = `${sessionId}\0${source}\0${cwd ?? ''}`;
+    const awaitingPatches =
+      listDrawnFor.current !== listKey &&
+      drawnRows.some((row) => sessionDiffBodyPending(row, row !== drawnFocus && shownCollapsed.has(row.path)));
+    if (awaitingPatches) body = <InitialSurface />;
+    else {
+      listDrawnFor.current = listKey;
+      body = (
+        <SessionDiffStack
+          stackRef={bodyRef}
+          rows={drawnRows}
+          focusRow={drawnFocus}
+          mode={viewMode}
+          collapsed={shownCollapsed}
+          onToggle={onToggleFile}
+          canRevertPath={canRevertPath}
+          onRevert={revertFile}
+          onOpenFile={onOpenFile}
+        />
+      );
+    }
   }
   return (
     <SessionDiffFrame>
       {header}
-      {result?.patchTruncated && <p className="session-diff-notice">{t('The session diff was truncated.')}</p>}
       {revertError && <p className="session-diff-notice">{revertError}</p>}
-      {fileNotice && (
-        <p className="session-diff-notice" role="status">
-          {fileNotice}
-        </p>
-      )}
       {body}{' '}
     </SessionDiffFrame>
   );

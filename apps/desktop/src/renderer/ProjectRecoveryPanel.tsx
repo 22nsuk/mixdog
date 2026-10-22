@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { recoveryFailureCode, type RecoveryErrorCode } from '../shared/project-recovery';
+import { timeFormatOptions } from './time-format-preference';
 import type {
   ProjectRecoveryDetail,
   ProjectRecoveryFileStatus,
@@ -44,7 +45,14 @@ export function recoveryMayRestore(detail: ProjectRecoveryDetail): boolean {
   );
 }
 
-export function ProjectRecoveryPanel({ projectPath, initialRecordId, request, confirm, openFile, labels }: ProjectRecoveryPanelProps) {
+export function ProjectRecoveryPanel({
+  projectPath,
+  initialRecordId,
+  request,
+  confirm,
+  openFile,
+  labels,
+}: ProjectRecoveryPanelProps) {
   const [records, setRecords] = useState<ProjectRecoverySummary[]>([]);
   const [detail, setDetail] = useState<ProjectRecoveryDetail | null>(null);
   const [pending, setPending] = useState(false);
@@ -154,7 +162,7 @@ export function ProjectRecoveryPanel({ projectPath, initialRecordId, request, co
             </span>{' '}
             {record.createdAt > 0 && (
               <time dateTime={new Date(record.createdAt).toISOString()}>
-                {new Date(record.createdAt).toLocaleString()}
+                {new Date(record.createdAt).toLocaleString(undefined, timeFormatOptions())}
               </time>
             )}{' '}
             <button

@@ -6,8 +6,13 @@
  * from anthropic.mjs. agent-trace instrumented.
  */
 import { traceAgentSse, traceAgentUsage } from '../agent-trace.mjs';
+import {
+  anthropicPrefixFingerprint,
+  latestAnthropicPrefix,
+  recordAnthropicPrefix,
+} from './lib/anthropic-prefix-trace.mjs';
 import { boundProviderAuthPath } from '../../../shared/provider-auth-binding.mjs';
-import { resolveAnthropicMaxTokens } from './anthropic-max-tokens.mjs';
+import { resolveAnthropicEscalatedMaxTokens, resolveAnthropicMaxTokens } from './anthropic-max-tokens.mjs';
 import { MODELS } from './lib/anthropic-models.mjs';
 import { systemBlockItems, systemBlockTtl } from './lib/anthropic-system-blocks.mjs';
 import { prepareAnthropicImages } from './lib/anthropic-image-input.mjs';
@@ -55,6 +60,8 @@ import { applyAnthropicEffortToBody, shouldIncludeEffortBeta } from './anthropic
 import { ANTHROPIC_EFFORT_LEVELS, withEffortRejectionFallback } from './effort-rejection.mjs';
 import { getLlmDispatcher, preconnect } from '../../../shared/llm/http-agent.mjs';
 import {
+  anthropicThinkingActive,
+  appendAnthropicTailReminder,
   applyAnthropicCacheMarkers,
   clampAnthropicThinkingBudget as clampThinkingBudgetTokens,
   deferredAnthropicTools as sharedDeferredAnthropicTools,
@@ -62,9 +69,11 @@ import {
   resolveAnthropicCacheTtls as resolveCacheTtls,
   resolveAnthropicMessageCacheSlots,
   sanitizeAnthropicInputSchema,
+  sharedCachePrefixBoundary,
   toAnthropicMessages,
   toAnthropicToolChoice,
 } from './lib/anthropic-request-utils.mjs';
+import { splitTailReminder } from './lib/tail-reminder-split.mjs';
 import {
   EFFORT_CONFIGURATION_BETA,
   isEffortConfigurationRejection,
@@ -88,8 +97,7 @@ const _oauthRefreshes = new Map();
 // Anthropic OAuth contract for first-party OAuth clients: Claude requests
 // are gated on this exact system-prompt prefix (Haiku 5.5 included).
 const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude.";
-const OAUTH_BETA_HEADERS =
-  'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,extended-cache-ttl-2025-04-11';
+const OAUTH_BETA_HEADERS = 'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27';
 
 function logQuiet(line) {
   if (!process.env.MIXDOG_QUIET_PROVIDER_LOG) process.stderr.write(`[anthropic-oauth] ${line}\n`);
@@ -168,8 +176,8 @@ function buildSystemBlocks(systemMsgs, systemTtl, tier3Ttl) {
 //      clamped to [MAX_TOKENS_FLOOR, safetyCap].
 //   3. Shared model catalog outputTokens, then the floor, when the live
 //      roster has no entry for this model.
-function resolveMaxTokens(model) {
-  return resolveAnthropicMaxTokens(model, { catalogLookup: _catalogOutputTokens });
+function resolveMaxTokens(model, { modelMaxOutputTokens = null, override = null } = {}) {
+  return resolveAnthropicMaxTokens(model, { catalogLookup: _catalogOutputTokens, modelMaxOutputTokens, override });
 }
 
 // --- Message conversion ---
@@ -188,11 +196,15 @@ function requestAnthropicTools(tools, messages, opts) {
 // the tier3 1h cache_control to that block; BP1/BP2 take the system TTL. No
 // `<system-reminder>` user message / sentinel scan is involved anymore.
 
-function buildRequestBody(messages, model, tools, sendOpts) {
+function buildRequestBody(requestMessages, model, tools, sendOpts) {
+  const { messages, reminder } = splitTailReminder(requestMessages);
   const systemMsgs = messages.filter((m) => m.role === 'system');
   const chatMsgs = messages.filter((m) => m.role !== 'system');
-  const maxTokens = resolveMaxTokens(model);
   const opts = sendOpts || {};
+  const maxTokens = resolveMaxTokens(model, {
+    modelMaxOutputTokens: opts.modelMaxOutputTokens,
+    override: opts.maxOutputTokensOverride,
+  });
   const effortProjection = projectEffortConfiguration(messages, 'anthropic-oauth', model, opts);
   const ttls = resolveCacheTtls(opts);
   // Each system message becomes its own Anthropic content block with its own
@@ -202,24 +214,33 @@ function buildRequestBody(messages, model, tools, sendOpts) {
 
   // Message-tail cache budget (4-BP layout + ANTHROPIC_MSG_SLOTS) is shared
   // with anthropic.mjs — see resolveAnthropicMessageCacheSlots.
-  const messageCacheSlots = resolveAnthropicMessageCacheSlots(systemBlocks, ttls);
   // Tools are resolved BEFORE the messages: the lowering needs the final
   // tool list to drop tool_reference blocks whose tool no longer ships in
   // this request (otherwise the API rejects the whole turn).
   const requestTools = requestAnthropicTools(tools, chatMsgs, opts);
+  const messageCacheSlots = resolveAnthropicMessageCacheSlots(systemBlocks, ttls, { tools: requestTools });
   // Build → sanitize (once, inside toAnthropicMessages) → mark. Markers are
   // applied to the FINAL sanitized array by invariant, so block drops /
   // inserts / reorders performed by the sanitizer can never move or delete a
   // marked block. NEVER sanitize again after this (see send path).
+  const lowerHistory = (history, projection) =>
+    lowerAnthropicEffortHistory(
+      history.filter((m) => m.role !== 'system'),
+      (segment) => toAnthropicMessages(segment, requestTools),
+      projection
+    );
   const anthropicMessages = applyAnthropicCacheMarkers(
-    lowerAnthropicEffortHistory(chatMsgs, (segment) => toAnthropicMessages(segment, requestTools), effortProjection),
-    messageCacheSlots
+    lowerHistory(chatMsgs, effortProjection),
+    messageCacheSlots,
+    sharedCachePrefixBoundary(messages, opts, (prefix) =>
+      lowerHistory(prefix, projectEffortConfiguration(prefix, 'anthropic-oauth', model, opts))
+    )
   );
 
   const body = {
     model,
     max_tokens: maxTokens,
-    messages: anthropicMessages,
+    messages: appendAnthropicTailReminder(anthropicMessages, reminder),
     stream: true,
   };
   applyAnthropicServerFallback(body, model, {
@@ -238,10 +259,8 @@ function buildRequestBody(messages, model, tools, sendOpts) {
   // tool_choice only when tools are actually present (Anthropic rejects
   // tool_choice without tools). 'none' rides the hard-cap final turn to
   // forbid tool USE while keeping the tools prefix stable for cache reuse.
-  if (body.tools) {
-    const toolChoice = toAnthropicToolChoice(opts.toolChoice);
-    if (toolChoice) body.tool_choice = toolChoice;
-  }
+  // Key reserved for wire order; resolved after thinking is applied.
+  if (body.tools) body.tool_choice = undefined;
 
   applyAnthropicEffortToBody(body, {
     model,
@@ -251,6 +270,16 @@ function buildRequestBody(messages, model, tools, sendOpts) {
     logTag: 'anthropic-oauth',
     progressUpdates: true,
   });
+
+  if (body.tools) {
+    const toolChoice = toAnthropicToolChoice(opts.toolChoice, {
+      thinking: anthropicThinkingActive(body),
+      disableParallelToolUse: opts.disableParallelToolUse === true,
+      onThinkingConflict: opts.toolChoiceThinkingConflict,
+    });
+    if (toolChoice) body.tool_choice = toolChoice;
+    else delete body.tool_choice;
+  }
 
   // Skipped while the fast capacity pool is in cooldown (or permanently
   // unavailable) so a drained pool is not re-probed every turn.
@@ -284,6 +313,16 @@ export class AnthropicOAuthProvider {
     // Warm a kept-alive socket to the messages API so the first request
     // skips the cold TLS handshake. Best-effort; never throws.
     preconnect('https://api.anthropic.com');
+  }
+
+  // The larger max_tokens the loop may retry a max_tokens-truncated turn with
+  // (one-shot, via opts.maxOutputTokensOverride), or null when the model has
+  // nothing above the normal request.
+  escalatedMaxTokens(model, opts = {}) {
+    return resolveAnthropicEscalatedMaxTokens(model, {
+      catalogLookup: _catalogOutputTokens,
+      modelMaxOutputTokens: opts.modelMaxOutputTokens,
+    });
   }
 
   async ensureAuth({ forceRefresh = false, reason = 'preemptive' } = {}) {
@@ -430,7 +469,8 @@ export class AnthropicOAuthProvider {
     // a hard 400. Pairing here closes the gap regardless of caller.
     messages = sanitizeToolPairs(messages);
     const opts = sendOpts || {};
-    const { onStageChange, onStreamDelta, onToolCall, onTextDelta, onTextReset } = streamCallbacks(opts);
+    const { onStageChange, onStreamDelta, onToolCall, onTextDelta, onTextReset, onStreamItemStart } =
+      streamCallbacks(opts);
     const externalSignal = opts.signal || null;
     // Test seam: lets the retry harness drive stream outcomes without a
     // live OAuth session.
@@ -444,6 +484,8 @@ export class AnthropicOAuthProvider {
     const useModel = model || (await ensureLatestAnthropicModel(this));
     const body = buildRequestBody(messages, useModel, tools, sendOpts);
     body.messages = await prepareAnthropicImages(body.messages, { signal: externalSignal });
+    // Diagnostic: per-block prefix hashes of exactly what is sent.
+    recordAnthropicPrefix(opts.sessionId || null, anthropicPrefixFingerprint(body));
     if (body.speed === 'fast') {
       this.fastModeBetaHeaderLatched = true;
     }
@@ -525,42 +567,15 @@ export class AnthropicOAuthProvider {
     let maxTokensAdjusted = false;
     try {
       for (let attemptIndex = 0; attemptIndex <= ANTHROPIC_MAX_MIDSTREAM_RETRIES; attemptIndex++) {
-        let response, controller, cancelHandler;
-        ({ response, controller, cancelHandler } = await requestWithRetry(auth.creds.accessToken));
-
-        // Refresh on 401, and only Anthropic's exact official revoked-token
-        // 403 signature. Ordinary permission/policy 403s are terminal.
-        let rejectedAuthBody = null;
-        if (response.status === 401 || response.status === 403) {
-          rejectedAuthBody = await response.text().catch(() => '');
-        }
-        if (isRefreshableAuthRejection(response.status, rejectedAuthBody)) {
-          process.stderr.write(`[anthropic-oauth] ${response.status} — forcing refresh and retrying once\n`);
-          cleanupCancelHandler(cancelHandler);
-          // Body was drained above; abort closes any remaining transport
-          // resources before the credential-refresh replay.
-          try {
-            controller?.abort?.();
-          } catch {}
-          auth.creds = await this.ensureAuth({ forceRefresh: true, reason: String(response.status) });
-          ({ response, controller, cancelHandler } = await requestWithRetry(auth.creds.accessToken));
-          rejectedAuthBody = null;
-        }
-
-        // "input length and max_tokens exceed context limit": shrink max_tokens
-        // to what the context has room for and replay once.
-        if (response.status === 400 && !maxTokensAdjusted) {
-          rejectedAuthBody = await response.text().catch(() => '');
-          if (adjustMaxTokensForContextOverflow(body, 400, rejectedAuthBody)) {
-            maxTokensAdjusted = true;
-            cleanupCancelHandler(cancelHandler);
-            try {
-              controller?.abort?.();
-            } catch {}
-            ({ response, controller, cancelHandler } = await requestWithRetry(auth.creds.accessToken));
-            rejectedAuthBody = null;
-          }
-        }
+        const opened = await this._openResponse({
+          requestWithRetry,
+          cleanupCancelHandler,
+          auth,
+          body,
+          maxTokensAdjusted,
+        });
+        const { response, controller, cancelHandler, rejectedAuthBody } = opened;
+        maxTokensAdjusted = opened.maxTokensAdjusted;
         if (!response.ok) {
           cleanupCancelHandler(cancelHandler);
           return await this._resendAfterRejection({
@@ -592,7 +607,7 @@ export class AnthropicOAuthProvider {
             midState,
             onTextDelta,
             knownToolNames,
-            { relayProgressUpdates: body.thinking?.display === 'updates' }
+            { relayProgressUpdates: body.thinking?.display === 'updates', onStreamItemStart }
           );
           try {
             controller?.abort?.('Anthropic SSE complete');
@@ -638,6 +653,51 @@ export class AnthropicOAuthProvider {
     }
   }
 
+  // One attempt's initial response: a 401 (or Anthropic's exact revoked-token
+  // 403) refreshes the credentials in `auth` and replays once; a context
+  // overflow 400 shrinks `body.max_tokens` and replays once per send
+  // (`maxTokensAdjusted`). `rejectedAuthBody`: the drained text of a final
+  // rejected response, null when none was read.
+  async _openResponse({ requestWithRetry, cleanupCancelHandler, auth, body, maxTokensAdjusted }) {
+    let response, controller, cancelHandler;
+    ({ response, controller, cancelHandler } = await requestWithRetry(auth.creds.accessToken));
+
+    // Refresh on 401, and only Anthropic's exact official revoked-token
+    // 403 signature. Ordinary permission/policy 403s are terminal.
+    let rejectedAuthBody = null;
+    if (response.status === 401 || response.status === 403) {
+      rejectedAuthBody = await response.text().catch(() => '');
+    }
+    if (isRefreshableAuthRejection(response.status, rejectedAuthBody)) {
+      process.stderr.write(`[anthropic-oauth] ${response.status} — forcing refresh and retrying once\n`);
+      cleanupCancelHandler(cancelHandler);
+      // Body was drained above; abort closes any remaining transport
+      // resources before the credential-refresh replay.
+      try {
+        controller?.abort?.();
+      } catch {}
+      auth.creds = await this.ensureAuth({ forceRefresh: true, reason: String(response.status) });
+      ({ response, controller, cancelHandler } = await requestWithRetry(auth.creds.accessToken));
+      rejectedAuthBody = null;
+    }
+
+    // "input length and max_tokens exceed context limit": shrink max_tokens
+    // to what the context has room for and replay once.
+    if (response.status === 400 && !maxTokensAdjusted) {
+      rejectedAuthBody = await response.text().catch(() => '');
+      if (adjustMaxTokensForContextOverflow(body, 400, rejectedAuthBody)) {
+        maxTokensAdjusted = true;
+        cleanupCancelHandler(cancelHandler);
+        try {
+          controller?.abort?.();
+        } catch {}
+        ({ response, controller, cancelHandler } = await requestWithRetry(auth.creds.accessToken));
+        rejectedAuthBody = null;
+      }
+    }
+    return { response, controller, cancelHandler, rejectedAuthBody, maxTokensAdjusted };
+  }
+
   // A non-OK initial response: quota errors surface as-is; a CLI-version
   // floor or an unknown/retired model replays the turn ONCE through send().
   async _resendAfterRejection({ response, rejectedAuthBody, messages, model, useModel, tools, opts, onStageChange }) {
@@ -657,9 +717,7 @@ export class AnthropicOAuthProvider {
       response.status === 400 &&
       opts.fast === true &&
       !opts._fastModeRetry &&
-      fastModeDowngraded(
-        noteFastModeCapacityError({ httpStatus: 400, message: scrubbedText }, { fast: true })
-      )
+      fastModeDowngraded(noteFastModeCapacityError({ httpStatus: 400, message: scrubbedText }, { fast: true }))
     ) {
       process.stderr.write(`[anthropic-oauth] fast mode is not enabled for this account; retrying at standard speed\n`);
       return this.send(messages, useModel, tools, { ...opts, _fastModeRetry: true });
@@ -763,6 +821,7 @@ export class AnthropicOAuthProvider {
       rawUsage: result.usage?.raw || null,
       provider: 'anthropic-oauth',
       requestKind,
+      prefixBlocks: latestAnthropicPrefix(sessionId),
     });
 
     // Phase I: if the live response surfaced a model id we don't know

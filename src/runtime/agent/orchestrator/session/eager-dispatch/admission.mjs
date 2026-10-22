@@ -12,6 +12,7 @@ import {
 } from '../loop/tool-classify.mjs';
 import { isSingleCallPerTurnTool, isToolCallDedupEligible } from '../loop/tool-helpers.mjs';
 import { lookupToolResultReuse } from '../cache/tool-result-reuse.mjs';
+import { bridgeClassificationTools } from '../loop/tool-call-resolution.mjs';
 
 export function createEagerAdmission({ tools, cwd, sessionId, sessionRef, repeatFailLimit }) {
   // Streaming-time intra-turn dedup. When the LLM emits two
@@ -63,7 +64,7 @@ export function createEagerAdmission({ tools, cwd, sessionId, sessionRef, repeat
     // Authorization precedes cache lookup and dedup, not just IO.
     if (preDispatchDenyForSession(sessionRef, call) !== null) return null;
     const sig = _intraTurnSig(call.name, call.arguments);
-    const dedupEligible = isToolCallDedupEligible(call.name, tools);
+    const dedupEligible = isToolCallDedupEligible(call.name, bridgeClassificationTools(tools, [call]));
     if (dedupEligible && _eagerInFlightSigs.has(sig)) return null;
     // Repeat-failure guard also gates eager dispatch (reviewer-flagged):
     // streaming onToolCall / startEagerRun would otherwise re-run an
@@ -75,7 +76,7 @@ export function createEagerAdmission({ tools, cwd, sessionId, sessionRef, repeat
     // The same cache policy authorizes both serial cache hits and short
     // cross-turn references. Recheck there: an entry can expire or be
     // invalidated between streaming admission and serial consumption.
-    if (lookupToolResultReuse({ sessionId, call, cwd, touch: false }) !== null) return null;
+    if (lookupToolResultReuse({ sessionId, call, cwd, touch: false, sessionRef }) !== null) return null;
     return { sig, dedupEligible };
   }
 

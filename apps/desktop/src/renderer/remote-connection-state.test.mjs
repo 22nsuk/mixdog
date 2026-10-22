@@ -17,6 +17,7 @@ const {
   beginRemoteConnectionTimeline,
   clearRemoteConnectionState,
   currentRemoteConnectionState,
+  REMOTE_DESKTOP_OFFLINE_CLOSE,
   takeRemoteConnectionTimeline,
   remoteConnectionInterruptedError,
   reportRemoteConnectionIssue,
@@ -26,6 +27,7 @@ const {
   subscribeRemoteConnectionState,
 } = await import('./remote-connection-state.ts');
 const { RemoteConnectionBanner } = await import('./RemoteConnectionBanner.tsx');
+const { isInvalidRemotePairingClose } = await import('./remote-pairing-recovery.ts');
 
 test('the mobile heartbeat runs only while the page is foregrounded', () => {
   assert.equal(shouldRunRemoteHeartbeat('visible'), true);
@@ -59,7 +61,7 @@ test('a transient disconnect carries no user-facing wording', () => {
 // The threshold timers are the whole contract of the overlay, so both are
 // driven by hand instead of waiting out real seconds: `pendingDisconnect` is
 // the 10s countdown and `pendingRecovery` the 3s connected hold.
-async function withBanner(run) {
+async function withBanner(run, props = {}) {
   clearRemoteConnectionState();
   const mount = document.querySelector('main');
   const root = createRoot(mount);
@@ -101,9 +103,9 @@ async function withBanner(run) {
   };
   try {
     await act(async () => {
-      root.render(React.createElement(RemoteConnectionBanner));
+      root.render(React.createElement(RemoteConnectionBanner, props));
     });
-    assert.equal(document.querySelector('.remote-connection-overlay'), null);
+    assert.equal(document.querySelector('.remote-connection-indicator'), null);
     await run({ timers, fire, setState });
   } finally {
     window.setTimeout = realSetTimeout;
@@ -113,7 +115,7 @@ async function withBanner(run) {
   }
 }
 
-const overlayElement = () => document.querySelector('.remote-connection-overlay');
+const indicatorElement = () => document.querySelector('.remote-connection-indicator');
 
 test('a persistent disconnect shows diagnostics without resetting its countdown or retry behavior', async () => {
   await withBanner(async ({ timers, fire, setState }) => {
@@ -122,7 +124,7 @@ test('a persistent disconnect shows diagnostics without resetting its countdown 
       setRemoteConnectionState('reconnecting');
       setRemoteConnectionPhase('websocket');
     });
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
     assert.ok(timers.pendingDisconnect);
     const countdown = timers.pendingDisconnect;
     await act(async () => {
@@ -134,7 +136,7 @@ test('a persistent disconnect shows diagnostics without resetting its countdown 
     await setState('connected');
     await fire('pendingRecovery');
     assert.equal(timers.pendingDisconnect, null);
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
 
     await act(async () => {
       setRemoteConnectionState('reconnecting');
@@ -142,10 +144,11 @@ test('a persistent disconnect shows diagnostics without resetting its countdown 
       reportRemoteConnectionIssue('encryption-timeout');
     });
     await fire('pendingDisconnect');
-    const overlay = overlayElement();
+    const overlay = indicatorElement();
     assert.ok(overlay);
-    assert.equal(overlay.textContent, '', 'connection diagnostics never reach the screen');
-    assert.equal(overlay.getAttribute('aria-label'), 'Retry');
+    // A bare dot: no words, no cause, no error, nothing to act on.
+    assert.equal(overlay.textContent, '');
+    assert.equal(overlay.getAttribute('aria-label'), 'Connecting…');
     let retries = 0;
     const onRetry = () => retries++;
     window.addEventListener('mixdog:remote-wake', onRetry);
@@ -154,9 +157,9 @@ test('a persistent disconnect shows diagnostics without resetting its countdown 
     assert.equal(retries, 1);
 
     await setState('connected');
-    assert.equal(overlayElement(), overlay, 'a fresh connection has not proven itself yet');
+    assert.equal(indicatorElement(), overlay, 'a fresh connection has not proven itself yet');
     await fire('pendingRecovery');
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
     assert.equal(document.documentElement.dataset.mixdogRemotePhase, 'connected');
     assert.equal(document.documentElement.dataset.mixdogRemoteError, undefined);
   });
@@ -166,19 +169,19 @@ test('a flapping connection keeps the overlay up until a connection holds', asyn
   await withBanner(async ({ timers, fire, setState }) => {
     await setState('reconnecting');
     await fire('pendingDisconnect');
-    const overlay = overlayElement();
+    const overlay = indicatorElement();
     assert.ok(overlay);
     for (let flap = 0; flap < 3; flap++) {
       await setState('connected');
       assert.ok(timers.pendingRecovery);
-      assert.equal(overlayElement(), overlay, 'a connected blip must not hide the overlay');
+      assert.equal(indicatorElement(), overlay, 'a connected blip must not hide the overlay');
       await setState('reconnecting');
       assert.equal(timers.pendingRecovery, null, 'leaving connected abandons the hold');
-      assert.equal(overlayElement(), overlay, 'the overlay never cycles through hidden');
+      assert.equal(indicatorElement(), overlay, 'the overlay never cycles through hidden');
     }
     await setState('connected');
     await fire('pendingRecovery');
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
   });
 });
 
@@ -186,16 +189,16 @@ test('a connecting state after the overlay is shown keeps it up', async () => {
   await withBanner(async ({ fire, setState }) => {
     await setState('reconnecting');
     await fire('pendingDisconnect');
-    const overlay = overlayElement();
+    const overlay = indicatorElement();
     assert.ok(overlay);
     await setState('connecting');
-    assert.equal(overlayElement(), overlay);
+    assert.equal(indicatorElement(), overlay);
     await setState('syncing');
-    assert.equal(overlayElement(), overlay);
+    assert.equal(indicatorElement(), overlay);
     await setState('connected');
-    assert.equal(overlayElement(), overlay);
+    assert.equal(indicatorElement(), overlay);
     await fire('pendingRecovery');
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
   });
 });
 
@@ -209,10 +212,35 @@ test('a connected blip before the overlay appears does not restart the countdown
     await setState('connecting');
     await setState('reconnecting');
     assert.equal(timers.pendingDisconnect, countdown, 'the countdown is never restarted mid-outage');
-    await setState('syncing');
-    assert.equal(timers.pendingDisconnect, countdown);
     await fire('pendingDisconnect');
-    assert.ok(overlayElement());
+    assert.ok(indicatorElement());
+  });
+});
+
+// A redial that lands straight in a healthy view sync, with no 'connected'
+// in between: the link is up, so the countdown it started counts no further.
+test('a redial that goes straight into a healthy sync never shows the dot', async () => {
+  await withBanner(async ({ timers, fire, setState }) => {
+    await setState('connecting');
+    assert.ok(timers.pendingDisconnect);
+    await setState('syncing');
+    assert.ok(timers.pendingRecovery, 'a healthy sync holds toward recovery');
+    await fire('pendingDisconnect');
+    assert.equal(indicatorElement(), null, 'an expired countdown shows nothing while the link is up');
+    await fire('pendingRecovery');
+    assert.equal(timers.pendingDisconnect, null);
+    await setState('connected');
+    assert.equal(indicatorElement(), null);
+  });
+  // A countdown that expired during a short healthy sync surfaces only if
+  // the link really drops again.
+  await withBanner(async ({ fire, setState }) => {
+    await setState('connecting');
+    await setState('syncing');
+    await fire('pendingDisconnect');
+    assert.equal(indicatorElement(), null);
+    await setState('reconnecting');
+    assert.ok(indicatorElement());
   });
 });
 
@@ -221,18 +249,18 @@ test('a countdown that expires during a connected blip surfaces only if the link
     await setState('reconnecting');
     await setState('connected');
     await fire('pendingDisconnect');
-    assert.equal(overlayElement(), null, 'no overlay while the link is up');
+    assert.equal(indicatorElement(), null, 'no overlay while the link is up');
     await setState('reconnecting');
-    assert.ok(overlayElement());
+    assert.ok(indicatorElement());
   });
   await withBanner(async ({ timers, fire, setState }) => {
     await setState('reconnecting');
     await setState('connected');
     await fire('pendingDisconnect');
     await fire('pendingRecovery');
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
     await setState('reconnecting');
-    assert.equal(overlayElement(), null, 'a held connection starts the countdown over');
+    assert.equal(indicatorElement(), null, 'a held connection starts the countdown over');
     assert.ok(timers.pendingDisconnect);
   });
 });
@@ -244,7 +272,7 @@ test('a hidden page neither counts toward nor keeps the disconnect overlay', asy
   };
   try {
     await withBanner(async ({ timers, fire, setState }) => {
-      await setState('syncing');
+      await setState('reconnecting');
       assert.ok(timers.pendingDisconnect);
       await setVisibility('hidden');
       assert.equal(timers.pendingDisconnect, null, 'going hidden cancels the countdown');
@@ -252,16 +280,149 @@ test('a hidden page neither counts toward nor keeps the disconnect overlay', asy
       await setState('reconnecting');
       assert.equal(timers.pendingDisconnect, null, 'no countdown runs while hidden');
       await setVisibility('visible');
-      assert.equal(overlayElement(), null, 'a return from background never opens on the overlay');
+      assert.equal(indicatorElement(), null, 'a return from background never opens on the overlay');
       assert.ok(timers.pendingDisconnect, 'the return starts a fresh countdown');
       await fire('pendingDisconnect');
-      assert.ok(overlayElement());
+      assert.ok(indicatorElement());
       await setVisibility('hidden');
-      assert.equal(overlayElement(), null, 'going hidden drops a shown overlay');
+      assert.equal(indicatorElement(), null, 'going hidden drops a shown overlay');
     });
   } finally {
     delete document.visibilityState;
   }
+});
+
+test('a redial counts toward the calm indicator; a sync on a live socket does not', async () => {
+  await withBanner(async ({ timers, fire, setState }) => {
+    // A resume redial or a re-handshake on a kept socket: the link is down,
+    // so a long one earns the pill — but nothing before the threshold.
+    await setState('connecting');
+    assert.ok(timers.pendingDisconnect);
+    assert.equal(indicatorElement(), null);
+    await setState('connected');
+    await fire('pendingRecovery');
+    // The socket is up and the PC is sending the view: however long a busy
+    // PC takes, the transcript on screen stays readable.
+    await setState('syncing');
+    assert.equal(timers.pendingDisconnect, null);
+    // A sync that FAILED is a failed attempt: its retries start the countdown.
+    await act(async () => reportRemoteConnectionIssue('sync-failed'));
+    assert.ok(timers.pendingDisconnect);
+    await fire('pendingDisconnect');
+    assert.equal(indicatorElement()?.getAttribute('aria-label'), 'Connecting…');
+    await setState('connected');
+    await fire('pendingRecovery');
+    assert.equal(indicatorElement(), null);
+    // The failure belonged to that sync, not to the next one.
+    await setState('syncing');
+    assert.equal(timers.pendingDisconnect, null);
+  });
+});
+
+const unreachableElement = () => document.querySelector('.remote-unreachable');
+const unreachableButtons = () =>
+  [...document.querySelectorAll('.remote-unreachable button')].map((button) => button.textContent);
+
+test('a cold boot has nothing on screen, so every wait counts there and ends in the unreachable state', async () => {
+  await withBanner(
+    async ({ timers, fire, setState }) => {
+      await setState('connecting');
+      assert.ok(timers.pendingDisconnect);
+      await setState('syncing');
+      await fire('pendingDisconnect');
+      // Issue #134: no endless loading mark — a plain state with a retry.
+      assert.equal(indicatorElement(), null);
+      assert.equal(unreachableElement()?.getAttribute('role'), 'alert');
+      assert.equal(document.querySelector('.remote-unreachable-title').textContent, 'Can’t connect to your PC');
+      assert.equal(
+        document.querySelector('.remote-unreachable-sub').textContent,
+        'Your PC needs to be on with Mixdog running.'
+      );
+      assert.deepEqual(unreachableButtons(), ['Try again'], 'no PC list to return to outside the phone app');
+    },
+    { boot: true }
+  );
+});
+
+test('a cold boot the relay answers "PC offline" shows the unreachable state at once; Try again redials', async () => {
+  await withBanner(
+    async ({ timers, fire, setState }) => {
+      await setState('connecting');
+      await act(async () => reportRemoteConnectionIssue('websocket-closed', undefined, REMOTE_DESKTOP_OFFLINE_CLOSE));
+      assert.ok(unreachableElement(), 'the relay’s own answer ends the wait without the countdown');
+      assert.equal(timers.pendingDisconnect, null);
+      let wakes = 0;
+      const onWake = () => wakes++;
+      window.addEventListener('mixdog:remote-wake', onWake);
+      await act(async () => document.querySelector('.remote-unreachable button').click());
+      window.removeEventListener('mixdog:remote-wake', onWake);
+      assert.equal(wakes, 1);
+      assert.equal(unreachableElement(), null, 'the loading mark is the retry in progress');
+      assert.ok(timers.pendingDisconnect, 'the retry starts a fresh countdown');
+      // Still offline: the relay says so again.
+      await act(async () => reportRemoteConnectionIssue('websocket-closed', undefined, REMOTE_DESKTOP_OFFLINE_CLOSE));
+      assert.ok(unreachableElement());
+      // Another failure after it keeps the state up; only a connection ends it.
+      await act(async () => reportRemoteConnectionIssue('websocket-error'));
+      assert.ok(unreachableElement());
+      await setState('connected');
+      assert.equal(unreachableElement(), null, 'connected: the cover only waits for the first paint');
+      await fire('pendingRecovery');
+      assert.equal(unreachableElement(), null);
+    },
+    { boot: true }
+  );
+});
+
+test('in the phone app the unreachable state goes back to the app’s PC list', async () => {
+  const calls = [];
+  window.mixdogNative = {
+    platform: 'android',
+    version: '1.3.1',
+    call: async (method) => {
+      calls.push(method);
+      return true;
+    },
+  };
+  try {
+    await withBanner(
+      async ({ setState }) => {
+        await setState('connecting');
+        await act(async () => reportRemoteConnectionIssue('websocket-closed', undefined, REMOTE_DESKTOP_OFFLINE_CLOSE));
+        assert.deepEqual(unreachableButtons(), ['Try again', 'Choose another PC']);
+        await act(async () => document.querySelectorAll('.remote-unreachable button')[1].click());
+        assert.deepEqual(calls, ['openHostPicker']);
+      },
+      { boot: true }
+    );
+  } finally {
+    delete window.mixdogNative;
+  }
+});
+
+test('a live session never turns the PC-offline answer into a blocking state', async () => {
+  await withBanner(async ({ timers, setState }) => {
+    await setState('reconnecting');
+    await act(async () => reportRemoteConnectionIssue('websocket-closed', undefined, REMOTE_DESKTOP_OFFLINE_CLOSE));
+    assert.equal(unreachableElement(), null);
+    assert.equal(indicatorElement(), null, 'the calm countdown still runs');
+    assert.ok(timers.pendingDisconnect);
+  });
+});
+
+test('a cold boot that connects quickly never shows the indicator', async () => {
+  await withBanner(
+    async ({ timers, fire, setState }) => {
+      await setState('connecting');
+      await setState('syncing');
+      await setState('connected');
+      assert.equal(indicatorElement(), null);
+      await fire('pendingRecovery');
+      assert.equal(timers.pendingDisconnect, null);
+      assert.equal(indicatorElement(), null);
+    },
+    { boot: true }
+  );
 });
 
 test('a gap that recovers inside ten seconds shows nothing', async () => {
@@ -271,15 +432,62 @@ test('a gap that recovers inside ten seconds shows nothing', async () => {
     assert.ok(countdown);
     await setState('syncing');
     await setState('connected');
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
     await fire('pendingRecovery');
     assert.equal(timers.pendingDisconnect, null, 'a held connection cancels the countdown');
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
     await setState('reconnecting');
     assert.ok(timers.pendingDisconnect);
     assert.notEqual(timers.pendingDisconnect, countdown, 'the next gap starts a fresh countdown');
-    assert.equal(overlayElement(), null);
+    assert.equal(indicatorElement(), null);
   });
+});
+
+test('the indicator never turns a cause into an error and never blocks the screen', async () => {
+  const setOnline = async (online) => {
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, get: () => online });
+    await act(async () => window.dispatchEvent(new window.Event(online ? 'online' : 'offline')));
+  };
+  try {
+    await withBanner(async ({ fire, setState }) => {
+      await setState('reconnecting');
+      await fire('pendingDisconnect');
+      const indicator = indicatorElement();
+      // A dot, not a layer over the screen.
+      assert.notEqual(indicator.className, 'remote-connection-overlay');
+      assert.equal(indicator.querySelector('svg'), null);
+      // The PC being offline, this device's own network, a failed attempt:
+      // the shim retries each on its own, and the pill says only that.
+      await act(async () => reportRemoteConnectionIssue('websocket-closed', undefined, REMOTE_DESKTOP_OFFLINE_CLOSE));
+      assert.equal(indicatorElement().getAttribute('aria-label'), 'Connecting…');
+      await setOnline(false);
+      assert.equal(indicatorElement().getAttribute('aria-label'), 'Connecting…');
+      await setOnline(true);
+      await act(async () => reportRemoteConnectionIssue('encryption-timeout'));
+      assert.equal(indicatorElement().getAttribute('aria-label'), 'Connecting…');
+      await act(async () => setRemoteConnectionPhase('sync'));
+      await setState('syncing');
+      assert.equal(indicatorElement().getAttribute('aria-label'), 'Connecting…');
+      await setState('connected');
+      await fire('pendingRecovery');
+      assert.equal(indicatorElement(), null);
+    });
+  } finally {
+    delete window.navigator.onLine;
+  }
+});
+
+test('the PC-offline close is transient and keeps the stored pairing', () => {
+  assert.equal(isInvalidRemotePairingClose({ code: REMOTE_DESKTOP_OFFLINE_CLOSE, reason: 'desktop offline' }), false);
+  assert.equal(isInvalidRemotePairingClose({ code: 4005, reason: '' }), true);
+});
+
+test('only real authentication failures drop the pairing; a redial race never does', () => {
+  const close = (reason) => isInvalidRemotePairingClose({ code: 4004, reason });
+  assert.equal(close('relay encryption authentication failed'), true);
+  assert.equal(close('invalid encrypted relay frame'), true);
+  assert.equal(close('relay encryption handshake required'), false);
+  assert.equal(close('relay encryption handshake timed out'), false);
 });
 
 test('a connection timeline reports each wait once, in order, with fixed tokens only', () => {

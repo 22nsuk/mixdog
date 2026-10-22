@@ -3,7 +3,7 @@ import test from 'node:test';
 import { describeError, safeErrorDetails } from './error-presentation.mjs';
 import { anthropicQuotaError } from '../agent/orchestrator/providers/anthropic-oauth-request/initial-status.mjs';
 import { presentErrorText } from './err-text.mjs';
-import { providerErrorKind } from '../agent/orchestrator/providers/provider-error-kind.mjs';
+import { DETERMINISTIC_KINDS, providerErrorKind } from '../agent/orchestrator/providers/provider-error-kind.mjs';
 
 const providerFailure = (index) =>
   new Error(
@@ -101,7 +101,11 @@ test('typed codes classify errors; the wait and reset time are shown when known'
   const overloaded = Object.assign(new Error('Overloaded'), { status: 529 });
   assert.equal(describeError(overloaded).providerKind, 'overloaded');
   assert.equal(presentErrorText(overloaded), 'Provider is busy at capacity.');
-  const limited = Object.assign(new Error('slow down'), { status: 429, code: 'rate_limit_exceeded', retryAfterMs: 90_000 });
+  const limited = Object.assign(new Error('slow down'), {
+    status: 429,
+    code: 'rate_limit_exceeded',
+    retryAfterMs: 90_000,
+  });
   const rate = describeError(limited);
   assert.equal(rate.kind, 'rate-limit');
   assert.equal(rate.recovery, 'Try again in 2m.');
@@ -110,13 +114,10 @@ test('typed codes classify errors; the wait and reset time are shown when known'
   const resetAt = Date.now() + 3_600_000;
   const quota = describeError({ message: 'out', errorKind: { kind: 'quota_exhausted', resetAt } });
   assert.equal(quota.resetAt, resetAt);
-  assert.match(quota.recovery, /^It resets at \S+\. Switch accounts or providers/);
+  assert.match(quota.recovery, /^It resets at (?:\d+\/\d+ )?\d{2}:\d{2}\. Switch accounts or providers/);
   assert.equal(describeError({ message: 'x', errorKind: { kind: 'quota_exhausted' } }).params, null);
   assert.equal(describeError(Object.assign(new Error('forbidden'), { status: 403 })).providerKind, 'permission');
-  assert.equal(
-    describeError(Object.assign(new Error('nope'), { status: 400, code: 'cyber_policy' })).kind,
-    'policy'
-  );
+  assert.equal(describeError(Object.assign(new Error('nope'), { status: 400, code: 'cyber_policy' })).kind, 'policy');
   assert.equal(
     describeError(Object.assign(new Error('x'), { code: 'context_length_exceeded', status: 400 })).kind,
     'context-overflow'
@@ -129,6 +130,12 @@ test('typed codes classify errors; the wait and reset time are shown when known'
     presentErrorText(new Error('Anthropic OAuth API 429 quota/rate limit retryAfter=214641s')),
     'Anthropic quota/rate limit hit; retry after 2d 11h 37m.'
   );
+});
+
+test('a 403 keeps its account-permission reading: no model-proxy gate kind exists', () => {
+  assert.equal(providerErrorKind(Object.assign(new Error('forbidden'), { status: 403 })).kind, 'permission');
+  assert.equal(DETERMINISTIC_KINDS.has('model_proxy_permission'), false);
+  assert.equal(DETERMINISTIC_KINDS.has('model_proxy_wait'), false);
 });
 
 test('a persisted kind beats auth wording in the text', () => {
@@ -152,7 +159,13 @@ test('typed kinds skip every wording heuristic; wording only serves untyped item
     assert.equal(rejected.providerKind, providerKind);
     assert.notEqual(rejected.kind, 'request', `${providerKind} must not read as a retryable rejection`);
   }
-  assert.equal(describeError({ message: 'Anthropic OAuth API 429 request rejected', errorKind: { kind: 'rate_limited', status: 429 } }).kind, 'request');
+  assert.equal(
+    describeError({
+      message: 'Anthropic OAuth API 429 request rejected',
+      errorKind: { kind: 'rate_limited', status: 429 },
+    }).kind,
+    'request'
+  );
   // Legacy untyped wording still reads as sign-in expiry.
   assert.equal(describeError('refresh failed: invalid_grant').kind, 'reauth');
   assert.equal(describeError({ message: 'refresh failed: invalid_grant' }).kind, 'reauth');
@@ -187,7 +200,10 @@ test('a persisted descriptor presents exactly like the live error it came from',
   assert.equal(tier.kind, 'service-tier');
   assert.equal(tier.providerKind, 'service_tier_unavailable');
   assert.equal(tier.summary, 'The requested service tier is unavailable right now.');
-  assert.equal(describeError({ message: 'invalid_grant', errorKind: { kind: 'service_tier_unavailable' } }).kind, 'service-tier');
+  assert.equal(
+    describeError({ message: 'invalid_grant', errorKind: { kind: 'service_tier_unavailable' } }).kind,
+    'service-tier'
+  );
   assert.equal(describeError({ message: 'x', errorKind: providerErrorKind(live.invalid_request) }).kind, 'request');
   assert.equal(describeError({ message: 'x', errorKind: providerErrorKind(live.transient_503) }).kind, 'connection');
 });
@@ -258,4 +274,117 @@ test('dead OAuth grants are classified as reauth, transient failures are not', (
   ]) {
     assert.notEqual(describeError(Object.assign(new Error(text), { status })).kind, 'reauth');
   }
+});
+
+const failure = (message, fields = {}) => Object.assign(new Error(message), fields);
+
+test('an unknown, retired or unoffered model names the model as the problem and the next step', () => {
+  const anthropicBody = JSON.stringify({
+    type: 'error',
+    error: { type: 'not_found_error', message: 'model: claude-x' },
+  });
+  for (const error of [
+    failure(`Anthropic API 404: ${anthropicBody}`, { status: 404, code: 'not_found_error' }),
+    failure('The model `gpt-x` does not exist or you do not have access to it.', {
+      status: 404,
+      code: 'model_not_found',
+    }),
+    failure('models/gemini-9.5-pro is not found for API version v1beta', { status: 404, code: 'not_found' }),
+    failure('The requested model is not supported.', { status: 400, code: 'model_not_supported' }),
+    failure('acme/foo is not a valid model ID', { status: 400 }),
+    failure('The model claude-2 has been deprecated', { status: 410 }),
+    failure('model "llama9" not found, try pulling it first', { status: 404 }),
+    failure('This model is not available in your region', { status: 403 }),
+    'HTTP 404 Not Found: model not found',
+  ]) {
+    const result = describeError(error);
+    assert.equal(result.kind, 'model-unavailable', String(error.message ?? error));
+    assert.equal(result.summary, "This model isn't available for this account.");
+    assert.match(result.recovery, /Choose another model/);
+    assert.equal(presentErrorText(error), result.summary);
+    // Persisted descriptor and persisted summary both keep the reading.
+    if (typeof error === 'object') {
+      assert.deepEqual(describeError({ message: error.message, errorKind: providerErrorKind(error) }), result);
+    }
+    assert.equal(describeError(result.summary).kind, 'model-unavailable');
+  }
+  // Typed kinds that are not request refusals never read as a missing model.
+  for (const error of [
+    failure('model overloaded, not available right now', { status: 529 }),
+    failure('model gpt-x: rate limit, not available for 20s', { status: 429 }),
+    failure('Invalid API key for model gpt-x is not supported', { status: 401 }),
+  ]) {
+    assert.notEqual(describeError(error).kind, 'model-unavailable', error.message);
+  }
+});
+
+test('model wording counts only when the refusal is about the model itself', () => {
+  for (const [message, status] of [
+    ['For model gpt-4, tool lookup: route not found', 400],
+    ["Tool 'model_search' not found", 400],
+    ['File models/config.json not found while preparing the request', 400],
+    ['Using model gpt-4: the requested route was not found', 400],
+    ['The model selector tool is not available in this workspace; file not found', 400],
+  ]) {
+    assert.notEqual(describeError(failure(message, { status })).kind, 'model-unavailable', message);
+  }
+  // A 404 whose text only mentions a model elsewhere stays a not-found notice.
+  const route = describeError(failure('For model gpt-4, tool lookup: route not found', { status: 404 }));
+  assert.equal(route.kind, 'not-found');
+  assert.equal(route.summary, 'For model gpt-4, tool lookup: route not found');
+  assert.equal(describeError(failure('Not Found: /v1/chat/completionz', { status: 404 })).kind, 'not-found');
+  // The typed codes and subject wordings still read as the model.
+  const anthropicBody = JSON.stringify({
+    type: 'error',
+    error: { type: 'not_found_error', message: 'model: claude-x' },
+  });
+  for (const error of [
+    failure('route not found', { status: 404, code: 'model_not_found' }),
+    failure('Unknown model: gpt-x', { status: 400 }),
+    failure('Error: model gpt-x is not available for your account', { status: 403 }),
+    failure(
+      "OpenAI OAuth HTTP fallback 400: The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+      { status: 400, code: 'invalid_request_error' }
+    ),
+    failure(
+      'Publisher Model `projects/p/locations/us-central1/publishers/google/models/gemini-9-pro` was not found or your project does not have access to it.',
+      { status: 404, code: 'not_found' }
+    ),
+    failure('Publisher Model `gemini-9-pro` was not found or your project does not have access to it.', {
+      status: 400,
+    }),
+    failure('No endpoints found for anthropic/claude-x.', { status: 404 }),
+    failure('The model gpt-x is currently unavailable.', { status: 400 }),
+    failure(`Anthropic API 404: ${anthropicBody}`, { status: 404, code: 'not_found_error' }),
+  ]) {
+    assert.equal(describeError(error).kind, 'model-unavailable', error.message);
+  }
+});
+
+test('a 404 without model wording keeps the provider words and points at the model and endpoint', () => {
+  const result = describeError(failure('No endpoints found matching your data policy', { status: 404 }));
+  assert.equal(result.kind, 'not-found');
+  assert.equal(result.summary, 'No endpoints found matching your data policy');
+  assert.match(result.recovery, /model and endpoint in Providers/);
+  const bare = describeError(failure('<html><body>404</body></html>', { status: 404 }));
+  assert.equal(bare.summary, "The provider couldn't find the requested model or endpoint.");
+  assert.equal(describeError(bare.summary).kind, 'not-found');
+});
+
+test('a refused tool schema names the tool definition instead of a generic rejection', () => {
+  for (const message of [
+    "Invalid schema for function 'mcp__x__search': In context=(), 'additionalProperties' is required",
+    'tools.3.custom.input_schema: JSON schema is invalid. It must match JSON Schema draft 2020-12',
+    'Invalid JSON payload received. Unknown name "exclusiveMinimum" at \'tools[0].function_declarations[3].parameters.properties[1]\'',
+  ]) {
+    const error = failure(message, { status: 400, code: 'invalid_request_error' });
+    const result = describeError(error);
+    assert.equal(result.kind, 'tool-schema', message);
+    assert.equal(result.summary, 'The provider rejected a tool definition.');
+    assert.match(result.recovery, /MCP server named in the details/);
+    assert.equal(presentErrorText(error), result.summary);
+    assert.equal(describeError(result.summary).kind, 'tool-schema');
+  }
+  // An ordinary 400 keeps the generic rejection.
+  assert.equal(describeError(failure('messages: bad', { status: 400 })).kind, 'request');
 });

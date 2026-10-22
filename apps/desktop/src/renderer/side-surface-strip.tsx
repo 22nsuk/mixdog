@@ -1,5 +1,6 @@
 import {
   Columns2,
+  Download,
   ExternalLink,
   FileDiff,
   FileText as FileIcon,
@@ -15,6 +16,8 @@ import { t } from './i18n';
 import { sideFileKey, type PaneSideDockFile } from './side-file-tabs';
 import { EditorViewSwitch, type EditorViewControls } from './editor-view-switch';
 import { DockHeaderRow, type DockAction } from './pane-dock-chrome';
+import { useMobileRemoteSurface } from './mobile-surface';
+import { useZoomBarVisible, zoomBarAction } from './zoom-bar-pref';
 import './tab-strip.css';
 
 /** What the side-dock file editor reports upward so the dock can draw the
@@ -22,6 +25,8 @@ import './tab-strip.css';
 export interface SideFileChrome extends EditorViewControls {
   /** False for previews, binaries and read-only files: no Save / Problems. */
   editable: boolean;
+  /** An image/SVG/PDF/Office preview with a zoom bar: ⋯ carries its toggle. */
+  zoomable?: boolean;
   dirty: boolean;
   saving: boolean;
   /** Rendered CSV/TSV table: body rows × columns, shown on the footer's right. */
@@ -32,6 +37,8 @@ export interface SideFileChrome extends EditorViewControls {
   copyPath?(): void;
   /** Previews and binaries: hand the file to the OS default app. */
   openDefault?(): void;
+  /** Remote surfaces: download the host file to this device (and share it). */
+  download?(): void;
   /** Editor readout that used to live in the footer: problem counts (a ⋯ item
    *  that toggles the Problems split), cursor and language (⋯ menu),
    *  and the document formatter when the language server offers one. */
@@ -123,6 +130,9 @@ export function sideFileActions(
       onSelect: chrome.openDefault,
     });
   }
+  if (chrome?.download) {
+    actions.push({ id: 'download', label: t('Download / Share'), icon: Download, onSelect: chrome.download });
+  }
   if (chrome?.reveal) {
     actions.push({ id: 'reveal', label: t('Reveal in Explorer'), icon: FolderOpen, onSelect: chrome.reveal });
   } else if (chrome?.copyPath) {
@@ -132,6 +142,7 @@ export function sideFileActions(
   if (chrome?.format) {
     actions.push({ id: 'format', label: t('Format Document'), onSelect: chrome.format });
   }
+  if (chrome?.zoomable) actions.push(zoomBarAction(true));
   return actions;
 }
 
@@ -216,6 +227,11 @@ export function SideFileStrip({
 }) {
   const [menu, setMenu] = useState<{ key: string; x: number; y: number } | null>(null);
   const dismissMenu = useCallback(() => setMenu(null), []);
+  useZoomBarVisible();
+  // The phone sheet's header names the open file alone: its ⋯ menu already
+  // switches back to Changes, and a Changes chip ahead of the file takes the
+  // header's start (and a share of its narrow width) from the file name.
+  const phone = useMobileRemoteSurface();
   const activePreview = files.find((file) => file.preview && sideFileKey(file) === activeKey);
   const menuFile = menu ? files.find((file) => sideFileKey(file) === menu.key) : undefined;
   return (
@@ -224,7 +240,7 @@ export function SideFileStrip({
         className="side-file-header"
         left={
           <div className="browser-tab-list" role="tablist" aria-label={t('Files')}>
-            {leadingTab && (
+            {leadingTab && !phone && (
               <div className="browser-tab dock-header-chip" data-side-leading-tab="">
                 <button
                   type="button"
@@ -245,6 +261,7 @@ export function SideFileStrip({
               const name = file.rel.split('/').at(-1) ?? file.rel;
               const tabClass = `browser-tab dock-header-chip${active ? ' is-active' : ''}${file.preview ? ' is-preview' : ''}`;
               return (
+                // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only shortcuts (double-click keeps the preview, context menu); the child buttons are the keyboard-accessible controls.
                 <div
                   key={key}
                   className={tabClass}

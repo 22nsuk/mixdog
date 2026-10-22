@@ -4,6 +4,43 @@
 import { randomUUID } from 'node:crypto';
 import { createAgentChildFactory } from './agent-child.mjs';
 import { partialHandoffTextFromSession } from '../../../runtime/agent/orchestrator/agent-runtime/agent-progress-watchdog.mjs';
+import { attachmentsForIntake } from '../../../runtime/attachments/store.mjs';
+import { artifactLines } from '../../../runtime/shared/handoff-artifacts.mjs';
+import { collectTurnArtifacts, handoffContent, sessionRoots } from '../../../session-runtime/handoff-attachments.mjs';
+
+/** An agent turn's prompt: text, or text with forwarded attachment parts
+ *  (handoff-attachments.mjs), never any other shape. */
+export function agentTurnContent(prompt) {
+  if (!Array.isArray(prompt)) return String(prompt || '');
+  const text = prompt
+    .filter((part) => part?.type === 'text' && !part.attachmentRef)
+    .map((part) => String(part.text || ''))
+    .join('\n');
+  return handoffContent(text, prompt);
+}
+
+/** The prompt row's metadata: a Lead's message, with the files it carries. */
+export function agentTurnTranscriptMeta(content) {
+  const attachments = Array.isArray(content) ? attachmentsForIntake(content) : [];
+  return { sender: 'lead', ...(attachments.length ? { attachments } : {}) };
+}
+
+/** The artifact lines of the turn that began at `messageStart`; [] on any
+ *  failure to read it (the handoff still goes out). */
+async function turnArtifactLines(runtime, messageStart, descriptor) {
+  try {
+    const { messages } = await runtime.readModelMessages(messageStart);
+    const session = runtime.session || descriptor;
+    const { files, omitted } = collectTurnArtifacts(messages, {
+      cwd: descriptor.cwd,
+      roots: sessionRoots(session, descriptor.cwd),
+    });
+    // Text only: the caller forwards these by path (an id in text is never trusted).
+    return artifactLines(files, omitted, { ids: false });
+  } catch {
+    return [];
+  }
+}
 
 export function createAgentTurns({
   registry,
@@ -14,7 +51,12 @@ export function createAgentTurns({
   takeWatchdogStop,
   takeCancelTranscript,
 }) {
-  const createAgentChild = createAgentChildFactory({ registry, rehydrateAgentSessions, createSession });
+  const createAgentChild = createAgentChildFactory({
+    registry,
+    rehydrateAgentSessions,
+    createSession,
+    entryForSession,
+  });
 
   // The turn was stopped (progress watchdog or cancellation): rethrow its error
   // carrying the assistant text the turn produced, so the owner still gets a
@@ -35,6 +77,7 @@ export function createAgentTurns({
   async function runAgentTurn({ session, prompt, context = null, onToolResult, onTerminalResult } = {}) {
     await rehydrateAgentSessions();
     const sessionId = String(session?.id || session || '').trim();
+    const cancelEpoch = registry.assertAdmission(sessionId);
     const descriptor = registry.get(sessionId);
     if (!descriptor || descriptor.closed) {
       throw new Error(`agent session ${sessionId || '(empty)'} is closed`);
@@ -46,6 +89,7 @@ export function createAgentTurns({
       toolMode: 'full',
     });
     const target = entry.runtime.submitAndWait;
+    registry.assertAdmission(sessionId, cancelEpoch);
     if (typeof target !== 'function') {
       throw new TypeError('session runtime must implement submitAndWait');
     }
@@ -55,19 +99,21 @@ export function createAgentTurns({
     // Transcript length before this turn: where a watchdog stop's partial
     // output starts.
     const { messageCount: messageStart } = await entry.runtime.readModelMessages(Number.MAX_SAFE_INTEGER);
+    registry.assertAdmission(sessionId, cancelEpoch);
     descriptor.status = 'running';
     descriptor.stage = 'running';
     descriptor.updatedAt = Date.now();
     try {
+      const content = agentTurnContent(prompt);
       const options = {
         id: `agent-turn-${randomUUID()}`,
         mode: 'prompt',
         priority: 'next',
         context,
-        transcriptMeta: { sender: 'lead' },
+        transcriptMeta: agentTurnTranscriptMeta(content),
         ...(entry.runtime.isWireSafe === true || typeof onToolResult !== 'function' ? {} : { onToolResult }),
       };
-      const detail = await target.call(entry.runtime, String(prompt || ''), options);
+      const detail = await target.call(entry.runtime, content, options);
       if (detail?.status === 'failed') {
         throw new Error(String(detail.error || 'agent session turn failed'));
       }
@@ -83,7 +129,12 @@ export function createAgentTurns({
         const reason = String(detail?.reason || detail?.error || '').trim();
         throw new Error(`agent turn ${status}${reason ? `: ${reason}` : ''}`);
       }
-      const result = detail?.result || { content: '' };
+      let result = detail?.result || { content: '' };
+      // The files the turn produced reach the owner with its handoff.
+      const files = await turnArtifactLines(entry.runtime, messageStart, descriptor);
+      if (files.length) {
+        result = { ...result, content: [String(result.content || ''), files.join('\n')].join('\n\n') };
+      }
       descriptor.status = 'idle';
       descriptor.stage = 'idle';
       descriptor.lastHandoff = typeof result?.content === 'string' ? result.content : '';

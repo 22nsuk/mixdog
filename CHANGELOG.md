@@ -5,6 +5,362 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+## v1.3.3 - 2026-10-22
+
+Added a 12/24-hour time setting, legacy Office attachments and long-paste folding, with smoother phone scrolling, steadier compaction and broad room and bot fixes.
+
+### New features
+
+- **Time format** — Added Settings → General → "Time format" (phone: Settings → Display) to show times as System, 12-hour or 24-hour.
+- **Legacy Office attachments** — Added sending `.xls`, `.doc` and `.ppt` files; they are converted through LibreOffice when the Office feature is installed (#163).
+- **Long pastes** — Added folding pastes over 1,000 characters in the composer, and sent messages longer than 20 lines behind "Show more" (#186).
+- **Everyone in a room** — Added `@all` to address every room member, and naming a room member from another session to reach it (#164, #180).
+- **New task without a project** — Added `Ctrl+Alt+N` to open a new task that is not tied to a project (#185).
+- **All usage accounts** — Added expanding every signed-in account in the usage panel and the side rail.
+- **Image input per model** — Added an Auto/On/Off "Image input" choice to each custom provider model (#191).
+- **Goal bar** — Added a progress ring, a compact count-only bar and an inline stop confirmation to the Goal bar.
+
+### Changes
+
+- Changed the session list to hide sub-agent and archived sessions; idle sub-agent sessions are archived after 3 days and deleted after 30 (#165).
+- Changed a bot's model change to apply to its open chats from the next turn (#166).
+- Changed bot approvals to ask only in the bot's own chats, with room members following their home chat's rules (#167).
+- Changed Mixy's look to both ears down and a thick tail with a lighter tip.
+- Changed the representative bot's position to one dropdown in Settings, added a Free placement, and showed its uploaded picture (#178, #179).
+- Changed agent sessions in the sidebar to show only the model name, and a bot's task session to show as one result card.
+- Changed coding replies to appear word by word, with finished tool groups named in the past tense and the status line last.
+- Changed custom providers to show their registered name in model pickers, usage, workflows and notices.
+- Changed connectors with several accounts, such as three Gmail accounts, to show as one row and one icon.
+- Changed tapping a notification to open the session at its latest message.
+- Changed phone browser tabs to pair directly instead of showing the Add to Home Screen guide.
+- Changed the Android notification icon to the Mixdog mark.
+
+### Bug fixes
+
+- Fixed scrolling up on the phone stopping midway or jumping when older messages loaded.
+- Fixed taps and drags not reaching the browser panel when using Mixdog remotely from an iPhone or iPad.
+- Fixed agent reports, tool results and late MCP tools being lost after a conversation was compacted.
+- Fixed the conversation stopping to follow a long reply, or releasing it when text was pressed.
+- Fixed the unread dot staying on a chat you were reading in a side pane.
+- Fixed editing a previous message dropping its attachments, and rewinds that ignored later history (#186).
+- Fixed open conversations not noticing agents that were enabled or disabled (#184).
+- Fixed replies stopping at the output limit and a broken reasoning-effort judge staying broken (#183).
+- Fixed a removed bot continuing its work in rooms and conversations (#180).
+- Fixed bots escaping the bot-to-bot limit by passing through background tasks.
+- Fixed a failed settings backup pushing out good backups early (thanks @22nsuk).
+- Fixed Windows Computer Use losing screen elements during a snapshot (#173, thanks @22nsuk).
+- Fixed memory sorting rejecting classifier answers that list row ranges (#170, thanks @134634623).
+- Fixed staging Git changes in files that are not UTF-8 (#177).
+- Fixed the mascot not showing when its picture had no size.
+
+## v1.3.2 - 2026-10-21
+
+Added themes and photo skins, the representative bot overlay, and switching the workflow and delegation mode mid-conversation, with Windows code signing and broad fixes to compaction, approvals and attachments.
+
+### New features
+
+- **Themes** — Added Settings → Themes to pick System, Dark or White, one of four moving photo skins or your own photo or short video, and the font and text size on one screen.
+- **Representative bot overlay** — Added the representative bot sitting above the PC app's composer, showing replies in a speech bubble that pages through long answers on its own; click it to send a message, or right-click for size, position pinning and settings. Choose it in Settings → Bots.
+- **Fallback models** — Added fallback models to Lead, the representative bot and bot profiles, moving to the next model when one hits its usage limit.
+- **Workflow and delegation switch** — Added switching the workflow and delegation mode from the model menu during a conversation; it applies from the next turn to that conversation only.
+- **Smart compaction** — Added Settings → Context → "Compaction summary model" with Smart, Maintainer or Conversation model. Smart is the default.
+- **Auto reasoning base** — Added Settings → General → "Auto reasoning base" to pick the effort Auto works around.
+- **Image generation** — Added image generation in Studio with OpenRouter and NanoGPT image models.
+- **Side panel position** — Added Settings → General option to place the side panel on the right, at the bottom or automatically.
+- **Bots page layout** — Added dragging bots to reorder them, showing or hiding the representative bot, bots, rooms and agents from the `…` menu, and one place for running tasks.
+
+### Changes
+
+- Changed the Windows installer and app to be code-signed, so Windows security warnings and antivirus false positives are reduced.
+- Changed browser-use approvals from OS windows to approval cards in the chat, and file uploads now ask too.
+- Changed approval cards to show the requesting bot and a one-line question, decline in one click, and never decline on their own while waiting.
+- Changed sub-agent approval requests to also appear in the top-level chat, with "Open session" to jump there.
+- Changed bot profiles to list items set to "Always allow" and turn each back with "Ask again".
+- Changed schedules and webhooks to ask once when saved and not again while running; payments and permanent deletion never run unattended.
+- Changed a linked phone to only narrow, never widen, bot permissions and connectors.
+- Changed a disabled bot to stay on the Bots page as "Off" so it can be turned back on, and to be hideable from the sidebar separately (#153).
+- Changed sub-agents to expand by clicking the face or right-click "Show sub-agents" instead of an arrow.
+- Changed the model picker to drop the "Auto reasoning" switch and list Auto at the top of the effort list.
+- Changed the model picker to open right below its row, and custom providers to show the name you gave them.
+- Adjusted bot rooms so bots talk naturally instead of agreeing with each other every time; without a Maintainer model, each mentioned bot answers once.
+- Changed bot-to-bot messages to show the sending and receiving bot, and limited back-and-forth between bots to three exchanges.
+- Changed bot reply notifications on PC and phone to use the bot's or room's name as the title.
+- Changed the composer's Git button to open the Git tab, where Create PR, Commit & push and Commit each have their own Run button.
+- Changed the end-of-task card to show thumbnails only of files the answer linked or opened in the side panel.
+- Changed scrolling so the view moves only when you scroll and follows new replies again once you reach the bottom; long answers arriving at once start from their first line.
+- Changed a slow MCP server to delay the first reply by at most 3 seconds; tools that connect later are available from the next turn.
+- Changed streaming replies to appear in small steps with a brief fade on new words, so text no longer pops in chunks.
+- Added pinning agents on the Bots page from the right-click menu, and "Keep finished agents" in the `…` menu for 1 hour, 1 day, 7 days or forever.
+- Added "Unlimited" to idle session auto-clear.
+- Adjusted the agent window's token and cost line to hold its place from the start so the view no longer shifts.
+- Adjusted the setup tool's guidance so the AI can set a skill's trigger line (`when_to_use`) when it creates or edits a skill.
+
+### Bug fixes
+
+- Fixed Anthropic chats with a large image or PDF failing repeatedly with "attachmentReference: Extra inputs are not permitted".
+- Fixed attaching several PDFs blocking the chat by exceeding the context; large attachments stay on this PC and only needed parts are read (#150).
+- Fixed rich text copied from Word, Excel or a browser being attached as an image (#135).
+- Fixed unsent attachments disappearing after visiting another session (#139).
+- Fixed Lead's model and reasoning effort changing whenever a new task opened (#149).
+- Fixed Claude Opus 5.5 answering in English instead of Korean at the end of long tasks; Lead and bot final answers now come in Korean.
+- Fixed settings and account files breaking after a forced shutdown and losing sign-ins and settings; they are now restored from the last good copy (#151).
+- Fixed creating or editing files in sync folders such as NAVER MYBOX failing with EPERM (#138).
+- Fixed the model list staying empty after signing in to OpenCode Go (#141).
+- Fixed an interrupted code-tidy engine install getting stuck and never reinstalling; it now reports the failure and reinstalls per engine (#152).
+- Fixed saving a custom provider with a slow model list failing with a timeout.
+- Fixed starting a new task returning to a blank screen.
+- Fixed the finished sub-agent list disappearing after restarting the app or background service.
+- Fixed sub-agents in work handed off by the representative bot reporting an interim answer as the result before finishing.
+- Fixed tasks waiting for approval showing as stalled or being cut off by a timeout.
+- Fixed sub-agents following the main chat's context, reasoning effort and speed settings, and ignoring the Maintainer setting.
+- Fixed a long answer arriving at once looking blank and faint for a moment.
+- Fixed a stopped queued input running again after recovery (#142, thanks @22nsuk).
+- Fixed shell jobs whose exit was never confirmed being treated as finished (#133, thanks @22nsuk).
+- Fixed running tasks losing their protection when the workspace record was damaged (#117, thanks @22nsuk).
+- Fixed Cursor models losing tool call IDs and stalled tool handoffs never ending (#156, thanks @22nsuk).
+- Fixed the typing indicator never ending in bot rooms, and messages sent mid-reply going missing.
+- Fixed the "results omitted" notice not appearing in a bot's chat when many routine results piled up.
+- Fixed the Bots list's unread count also counting tool calls.
+- Fixed completion notices for other sessions not appearing while the app was in view.
+- Fixed the session list jumping on phones when its order changed while scrolling, and iPhone settings sheets not closing on an outside tap.
+- Fixed email links in answers doing nothing when clicked.
+- Fixed PreToolUse hooks being skipped on sessions reopened later, such as an agent's follow-up turn (#161).
+- Fixed GitHub sign-in getting stuck at "Starting GitHub sign-in…" (#162).
+- Fixed the reasoning effort still showing Auto after you picked another one (#131).
+- Fixed the fullscreen button of videos in the side panel doing nothing (#160, thanks @Deno2026).
+- Fixed the app showing "Object has been destroyed" when its window closed with the representative bot overlay on.
+- Fixed a slow Git command making the app reconnect to its background service and briefly lose live session updates.
+
+## v1.3.1 - 2026-10-20
+
+A stabilization patch for issues found since 1.3.0, with an upgraded reasoning-effort judge.
+
+We're sorry that the 1.3.0 update reset some workflow data for some users.
+
+### Changes
+
+- Changed messages sent during a running task to appear in the chat right away, with **Send now** until they are read; the queue above the composer is gone.
+- Changed outbound approval cards to appear only when a bot sends, posts or deletes; coding sessions no longer ask.
+- Changed the representative bot and Lead to keep separate models, and sending without a model to open the model picker instead of choosing one automatically.
+- Changed bots and agents to pass attachments and produced files along when they hand work to each other.
+- Changed visualize cards to one card per task, gathering the pages it opened as thumbnails.
+- Changed confirmation dialogs such as delete from the Windows default to dialogs that match the app theme.
+- Removed the model picker and context indicator from the bot room composer.
+- Changed GitHub to no longer be a connector; it uses the signed-in GitHub CLI directly.
+- Adjusted error notices to give a clear error instead of the raw message when a model is unavailable or a key is invalid.
+- Adjusted output styles so replies pick paragraphs, tables or lists to fit the content.
+- Changed the composer's tok/s to count the wait for the first token, matching the Usage window.
+- Changed Auto reasoning effort to use effort judge v7, which agrees with reference ratings more often than v6.
+
+### Bug fixes
+
+- Fixed saving Lead's model options failing with "model selection contains an unsupported field" (#132).
+- Fixed bot chats failing with "provider message prefix changed outside compaction".
+- Fixed an empty Lead model after updating to 1.3.0; it now takes the model you last used in a new task, and bots keep the model they chatted with.
+- Fixed older custom agents showing up as bots after updating to 1.3.0.
+- Fixed the representative bot's persona leaking into coding sessions.
+- Fixed the representative bot not reporting back after handing work to another session; reports now continue after a restart.
+- Fixed agent task sessions created by the representative bot opening with an empty model ("Select model").
+- Fixed switching to the Bots page replacing the main area with the representative bot's chat.
+- Fixed the composer not accepting input after deleting a bot room.
+- Fixed agents not moving to their next model when the first one hit its usage limit.
+- Fixed the phone loading forever when the connected PC was off; it now says it can't connect and lets you retry (#134).
+- Fixed phone scrolling stopping or jumping while earlier messages loaded.
+- Fixed the visualize panel opening slowly on the phone.
+- Fixed Gemini 4 Argon failing with 404 when signed in with Antigravity.
+
+## v1.3.0 - 2026-10-20
+
+Added a bot system, support for more connectors including Gmail via app password, and improved client stability.
+
+### New features
+
+- **Bot chats** — Added messenger-style bot chats with persistent home threads, customizable bot profiles, and the default representative bot Mixy.
+- **Group rooms** — Added group rooms where multiple bots collaborate, with `@` mentions, attachments routed to addressed bots, and light supervisor orchestration using the Maintainer model.
+- **Approval cards for outbound actions** — Added approval cards for sending messages, emails, posts, payments and deletions, showing exact details before anything runs.
+- **Routines in bot chats** — Added running schedules and webhooks as turns inside their owning bot's chat.
+- **Setup guide** — Added a first-setup guide with role-by-role model recommendations and subscription plan detection.
+- **Connectors** — Added connectors for outside services, including Gmail with an app password, so bots can work with your accounts.
+
+### Changes
+
+- Changed the PC composer to a one-line input bar that grows with longer prompts.
+- Changed long session lists and long transcripts to scroll more smoothly.
+- Changed session diff views to fold unchanged lines and drop missing-file banners.
+- Changed phone app updates to download in the background, with status in Settings and the activity rail.
+- Adjusted the visualize side panel to widen across the same range as the browser panel.
+- Changed routines to drop their own model and workflow fields and use the owning bot's settings.
+
+### Bug fixes
+
+- Fixed phone transcript scrolling stalling when a streaming word finished fading during a drag.
+- Fixed queued messages and their attachments being lost or skipped after a restart (#119, thanks @22nsuk).
+- Fixed settings restoring an older backup when two saves landed at the same moment (#120, thanks @22nsuk).
+- Fixed shell commands finishing while child processes were still running after a failed start or cancel (#124, thanks @22nsuk).
+- Fixed search listing the same file twice under different path spellings (#118, thanks @22nsuk).
+- Fixed the session list jumping when favoriting, unfavoriting or deleting a session (#129, thanks @oh1701).
+
+### Other
+
+- Updated interface translations across all supported languages.
+
+## v1.2.6 - 2026-10-18
+
+The desktop now idles lighter and switches sessions faster, shell commands move to the background after 60 seconds, and Model management and OpenCode Go sign-in are new.
+
+### New features
+
+- **Model management** — Added a Settings page to favourite and hide models, plus a right-click menu in the model picker.
+- **OpenCode Go sign-in** — Added signing in to OpenCode Go with your OpenCode account; it replaces the old API key.
+
+### Changes
+
+- Changed the desktop to use less CPU while idle and to switch sessions faster.
+- Changed the shell to move a command to the background after 60 seconds; completion notices now include the exit code and output.
+- Changed provider lists to show why models failed to load instead of an empty list, and added an API key link to connected providers.
+- Changed archiving or deleting a busy session to ask for confirmation first (#109).
+- Changed replies to read shorter and group results, causes, and decisions; tables now wrap instead of scrolling sideways.
+
+### Bug fixes
+
+- Fixed the backend stalling under heavy agent load and restarting itself, which stopped running agents.
+- Fixed cancel leaving child processes and servers running (#115).
+- Fixed pasted text being hard to read or edit when long (#110), and typing a plain `/` in the composer (thanks @oh1701).
+- Fixed the shell confirm dialog pushing its buttons off screen (#114) and empty `.git` folders blocking tasks (#108).
+- Fixed agent usage totals leaving out closed agents (#99, thanks @22nsuk).
+- Fixed attachments being lost while loading, and a failed agent marking its whole session tab as failed.
+- Fixed every turn failing with "Workspace activity cannot be verified" after a crash damaged the workspace ledger.
+- Fixed expired account cooldowns not retrying (#106), settings backups losing originals (#105), and unreadable usage history blocking totals (#103), thanks @22nsuk.
+
+## v1.2.5 - 2026-10-18
+
+Phones now connect faster and without popups, the desktop no longer slows down once many agents have run, and streaming replies appear more smoothly.
+
+### Changes
+
+- Changed phone connections to reconnect automatically without popups or countdowns; a small dot appears only during a long outage.
+- Changed streaming replies to appear word by word with a soft fade, without jumps from unfinished Markdown; code blocks appear with their content.
+- Changed agent status to show Done until you open the result, then Idle.
+- Changed the branch menu to open from a `…` button or right-click; on phones, long-press a branch.
+- Changed visualize pages on phones to open directly without a Run prompt, as on the desktop.
+- Adjusted the usage panel and the composer island summary to keep their height while figures load.
+- Changed the Android install QR code to download the app directly.
+
+### Bug fixes
+
+- Fixed sent messages and replies not appearing in the conversation after the app restarted until it was reopened (#113, thanks @oh1701).
+- Fixed the desktop pausing about a second at a time once more than 256 agent sessions existed.
+- Fixed phone requests waiting behind slow usage and Git reads on the desktop.
+- Fixed phones being disconnected while the desktop was busy, and the first connection after opening the app taking over 10 seconds.
+- Fixed phones staying on "Allowed. Connecting…" forever, or showing "Request expired" after the PC had approved.
+- Fixed a phone asking for approval again on launch after its saved sign-in was lost.
+- Fixed phones looking connected while the PC restarted, with every message timing out.
+- Fixed paired phones being cut off for good when the PC failed to read its connection identity.
+- Fixed one slow file-path check holding up every other phone request.
+- Fixed scrolling up in long conversations stalling while older messages load (#104).
+- Fixed the conversation pulling back down while scrolling up on phones during a streaming reply.
+- Fixed overlapping icons on file cards and repeated download-failure notices.
+
+## v1.2.4 - 2026-10-17
+
+Added agent session control and fallback model assignment, automatic worktree preparation, harness output optimization, and overall performance improvements.
+
+### 1. Harness improvements: reduced output, cleaner styles, and general stabilization
+
+- Adjusted agent completion reports and question cards to be more concise, and reduced Git, search, and GitHub tool outputs to save tokens.
+- Changed background shell and external tool process cleanup to be more reliable, and adjusted unresponsive agent detection during long tasks.
+
+### 2. Media generation improvements
+
+- Added transparent background support and preferred model pinning by media type, and improved ChatGPT image generation stability.
+
+### 3. Agent fallback model assignment
+
+- Added fallback models that engage in order when the primary model fails, and allowed specifying a model directly when spawning sub-agents (#86).
+
+### 4. Worktree improvements
+
+- Added automatic package installation and environment setup when creating a new worktree, and improved branch menu responsiveness.
+
+### 5. Provider tool call stabilization
+
+- Fixed Claude thinking handling errors and added usage tracking on Antigravity, and reinforced reasoning and tool call reliability on custom gateways (#79, #94, thanks @22nsuk and @sukjong2002).
+- Adjusted Antigravity connection and retry handling for better stability, and improved tool execution in Cursor and OpenAI-compatible environments.
+- Added the ability to check the status of PC-registered providers directly from remote SSH windows (#77, thanks @22nsuk).
+- Changed Anthropic and ChatGPT request compression to handle large requests with safe fallback, speeding up initial responses.
+
+### 6. Agent session management refresh
+
+- Changed finished agents to remain in the panel for one hour, and restored the task count summary by status and waiting notices.
+
+### 7. Lead agent session management
+
+- Added the ability for lead agents to view other sessions and their contents, and manage them directly by sending messages, cancelling, or deleting sessions.
+
+### 8. Remote and desktop performance optimizations
+
+- Adjusted remote reconnects to quickly catch up on missed content, and improved mobile streaming smoothness and session switching speed.
+- Added reopening the two most recent sessions directly on mobile, and fixed freezes on the launch screen.
+- Adjusted desktop panels, sidebar, session switching, editor, and settings screens to open faster and transition more smoothly.
+
+### 9. Remote app download improvements
+
+- Added zip downloads for folders excluding unnecessary files in the remote web app, and expanded the range of downloadable files via conversation links.
+- Adjusted mobile file saving and notification enabling (file saving on Android/iOS applies after an app update).
+
+### 10. Other bug fixes and minor improvements
+
+- Changed SSH remote model connections to remove call and rate limits (#101).
+- Fixed paused Goals to resume automatically after usage resets, and fixed several bugs in the Changes panel and command status display.
+- Fixed the internal browser getting blocked by Google login and bot detection checks (#102).
+
+## v1.2.3 - 2026-10-16
+
+Since launch, far more of you have been using Mixdog than we expected, and we are truly grateful. Some parts are still unstable, and we are fixing them as quickly as we can. Your issues and pull requests shaped much of this release. If something goes wrong, please let us know from **Settings → About → Feedback**.
+
+New to Auto reasoning? A small judge model on your PC picks how hard the model thinks for each message and step. Read how it works and how it did on Terminal-Bench 2.1 in [Auto reasoning effort](https://github.com/tribgames/mixdog/blob/main/docs/auto-reasoning-effort.md).
+
+Added moving a chat into a worktree from the composer island, smoother streaming text, and a faster, more reliable background service.
+
+### New features
+
+- **Worktrees from the island** — Added a branch segment to the composer island that moves a chat into a worktree, carrying or leaving uncommitted changes.
+- **Question cards** — Added a card for questions an agent asks you, in the desktop app and the TUI.
+- **`/btw`** — Added `/btw` to ask a quick question without interrupting the current task.
+- **Session tool** — Added a tool that lets the agent rename, compact, fork, and move the current session (#14, thanks @hyeon1035298).
+- **Several PCs on Android** — Added switching between up to 16 saved PCs in the Android app (#83, thanks @yupguni).
+- **Recover interrupted edits** — Added a recovery panel that shows file edits interrupted by a crash and restores or discards them safely (#60, thanks @22nsuk).
+
+### Changes
+
+- Changed streaming replies to appear smoothly as they are written instead of in line-sized bursts.
+- Changed quitting, new chats, and the Changes panel to respond much faster.
+- Changed MCP tool schemas to be converted for each provider, so tools that work in other apps work in Mixdog; a broken tool is skipped with a notice.
+- Changed usage totals to stay hidden when a provider did not report usage for every call (#90, #91, thanks @22nsuk).
+- Changed moving changes into a worktree to refuse files Git hides from status, so no edit is lost.
+- Changed settings backups to stay with each profile, so one profile's settings are never overwritten by another's.
+- Changed the Visualize version strip to a Versions menu, and added tab renaming by double-click and slash command highlighting.
+- Changed provider icons to the official logos.
+- Changed Auto reasoning to also run on ChatGPT sign-in routes.
+
+### Bug fixes
+
+- Fixed Claude models on Antigravity failing with HTTP 400 because of tool schemas (#80, thanks @ProofPage).
+- Fixed the New branch button in chat doing nothing (#85, thanks @oh1701).
+- Fixed newly started agents not seeing MCP tools on their first turn (#88, thanks @oh1701).
+- Fixed the background service freezing when deleting sessions, and deleted sessions or their tabs coming back.
+- Fixed the database sometimes staying open after quitting the app.
+- Fixed the first message after switching a chat's model failing with "Session state changed unexpectedly".
+- Fixed the Android back button not closing the right side panel.
+- Fixed the island branch name appearing late and shifting the layout, and shell rows flickering as a command finished.
+- Fixed the side panel staying open after its last tab closed, and the Visualize panel staying collapsed when a visual opened.
+- Fixed developer provider switches showing off after turning them on, and custom provider errors showing internal messages.
+- Fixed the transcript jumping when the composer changed height.
+
+### Other
+
+- Fixed a desktop build error (#89, thanks @22nsuk).
+
 ## v1.2.2 - 2026-10-14
 
 Added explicit MCP OAuth sign-in, in-place model switching, and a one-line quota banner.

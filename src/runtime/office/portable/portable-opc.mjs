@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
+import { noteOfficeWrite } from '../core/office-write-ledger.mjs';
 import { koreanParticleReplacements } from '../shared/korean-particles.mjs';
 import { presetLabels } from '../shared/labels.mjs';
 import {
@@ -137,7 +138,9 @@ export async function packageBuffer(zip) {
 }
 
 export async function savePackage(zip, path) {
-  await writeFile(path, await packageBuffer(zip));
+  const bytes = await packageBuffer(zip);
+  noteOfficeWrite(path);
+  await writeFile(path, bytes);
 }
 
 export function relationshipMap(xml) {
@@ -203,7 +206,10 @@ export async function ensureContentTypeOverride(zip, part, type) {
   const path = '[Content_Types].xml';
   const xml = await zipText(zip, path);
   if (xml.includes(`PartName="${part}"`)) return;
-  zip.file(path, xml.replace('</Types>', `<Override PartName="${part}" ContentType="${type}"/></Types>`));
+  zip.file(
+    path,
+    xml.replace('</Types>', () => `<Override PartName="${part}" ContentType="${type}"/></Types>`)
+  );
 }
 
 export async function removeContentTypeOverride(zip, part) {
@@ -216,7 +222,10 @@ export async function ensureDefaultContentType(zip, extension, type) {
   const path = '[Content_Types].xml';
   const xml = await zipText(zip, path);
   if (new RegExp(`<Default\\b[^>]*\\bExtension="${extension}"`, 'i').test(xml)) return;
-  zip.file(path, xml.replace(/<Types\b[^>]*>/, `$&<Default Extension="${extension}" ContentType="${type}"/>`));
+  zip.file(
+    path,
+    xml.replace(/<Types\b[^>]*>/, (__m) => `${__m}<Default Extension="${extension}" ContentType="${type}"/>`)
+  );
 }
 
 export async function addPackageRelationship(zip, relsPath, type, target, mode = '') {
@@ -234,7 +243,10 @@ export async function addPackageRelationship(zip, relsPath, type, target, mode =
   const relationship =
     `<Relationship Id="${id}" Type="${type}" Target="${xmlEncode(target)}"` +
     `${mode ? ` TargetMode="${mode}"` : ''}/>`;
-  zip.file(relsPath, xml.replace('</Relationships>', `${relationship}</Relationships>`));
+  zip.file(
+    relsPath,
+    xml.replace('</Relationships>', () => `${relationship}</Relationships>`)
+  );
   return id;
 }
 
@@ -414,7 +426,9 @@ async function clonePartTree(zip, sourcePath, cache = new Map()) {
     const cloned = await clonePartTree(zip, partFromTarget(directory, target), cache);
     if (!cloned) continue;
     const rewrittenTarget = absolute ? `/${cloned}` : posix.relative(posix.dirname(targetPath), cloned);
-    output = output.replace(block, block.replace(`Target="${raw}"`, `Target="${xmlEncode(rewrittenTarget)}"`));
+    output = output.replace(block, () =>
+      block.replace(`Target="${raw}"`, () => `Target="${xmlEncode(rewrittenTarget)}"`)
+    );
   }
   zip.file(partRelationshipPath(targetPath), output);
   return targetPath;
@@ -443,7 +457,9 @@ export async function cloneOwnedSlideParts(zip, relationshipsPath) {
     if (!cloned) continue;
     copied.push(cloned);
     const rewrittenTarget = absolute ? `/${cloned}` : posix.relative(owner, cloned);
-    output = output.replace(block, block.replace(`Target="${raw}"`, `Target="${xmlEncode(rewrittenTarget)}"`));
+    output = output.replace(block, () =>
+      block.replace(`Target="${raw}"`, () => `Target="${xmlEncode(rewrittenTarget)}"`)
+    );
   }
   if (copied.length) zip.file(relationshipsPath, output);
   return copied;
@@ -465,9 +481,11 @@ async function remapLayoutRelationships(source, zip, { layoutPath, targetPath, m
       ? master
       : await importPartTree(source, zip, resolved, cache);
     if (!mapped) continue;
-    output = output.replace(
-      block,
-      block.replace(/\bTarget="[^"]*"/, `Target="${xmlEncode(posix.relative(posix.dirname(targetPath), mapped))}"`)
+    output = output.replace(block, () =>
+      block.replace(
+        /\bTarget="[^"]*"/,
+        () => `Target="${xmlEncode(posix.relative(posix.dirname(targetPath), mapped))}"`
+      )
     );
   }
   zip.file(partRelationshipPath(targetPath), output);
@@ -487,8 +505,8 @@ async function registerLayoutOnMaster(zip, master, targetPath) {
   zip.file(
     master,
     masterXml.includes('</p:sldLayoutIdLst>')
-      ? masterXml.replace('</p:sldLayoutIdLst>', `${entry}</p:sldLayoutIdLst>`)
-      : masterXml.replace(/(<p:clrMap\b[^>]*\/>)/, `$1<p:sldLayoutIdLst>${entry}</p:sldLayoutIdLst>`)
+      ? masterXml.replace('</p:sldLayoutIdLst>', () => `${entry}</p:sldLayoutIdLst>`)
+      : masterXml.replace(/(<p:clrMap\b[^>]*\/>)/, (__m, __1) => `${__1}<p:sldLayoutIdLst>${entry}</p:sldLayoutIdLst>`)
   );
 }
 
@@ -545,9 +563,8 @@ export async function rewriteImportedRelationships(source, zip, sourceOwner, tar
     } else {
       mapped = await importPartTree(source, zip, resolved, cache);
     }
-    output = output.replace(
-      block,
-      block.replace(/\bTarget="[^"]*"/, `Target="${xmlEncode(posix.relative(targetDirectory, mapped))}"`)
+    output = output.replace(block, () =>
+      block.replace(/\bTarget="[^"]*"/, () => `Target="${xmlEncode(posix.relative(targetDirectory, mapped))}"`)
     );
   }
   return output;

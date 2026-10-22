@@ -19,20 +19,29 @@ export function createTurnEvents({
   onToolCall,
   relayProgressUpdates,
   labels,
+  onStreamItemStart,
 }) {
   const { onMessageStart, onMessageDelta, onMessageStop } = createMessageEvents({ turn, blocks, state });
+  const onContentBlockDelta = createContentBlockDelta({
+    turn,
+    blocks,
+    state,
+    leak,
+    relayText,
+    progress,
+    relayProgressUpdates,
+  });
   return {
     onMessageStart,
-    onContentBlockStart: createContentBlockStart({ turn, blocks, state, progress }),
-    onContentBlockDelta: createContentBlockDelta({
+    onContentBlockStart: createContentBlockStart({
       turn,
       blocks,
       state,
-      leak,
-      relayText,
       progress,
-      relayProgressUpdates,
+      seedText: onContentBlockDelta.seedText,
+      onStreamItemStart,
     }),
+    onContentBlockDelta,
     onContentBlockStop: createContentBlockStop({ turn, blocks, state, leak, progress, onToolCall, labels }),
     onMessageDelta,
     onMessageStop,

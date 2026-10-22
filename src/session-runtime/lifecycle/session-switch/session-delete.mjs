@@ -1,13 +1,19 @@
 /**
- * session-switch/session-delete.mjs — deleting a catalogued session together
- * with its linked agent children, and releasing the work a closing session
- * owns (shared with the context switch).
+ * session-switch/session-delete.mjs — deleting one catalogued session (Lead
+ * or agent), and releasing the execution work a closing session owns
+ * (shared with the context switch).
  */
 import { clean } from '../../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { forgetSessionSearch } from '../../../runtime/session-search/session-search-ingest.mjs';
-import { listLeadSessions } from '../session-catalog.mjs';
-import { SESSION_ID_PATTERN } from '../shared.mjs';
+import { leadSessionRow } from '../session-catalog.mjs';
+import { getStoreDir } from '../../../runtime/agent/orchestrator/session/store/session-paths.mjs';
+import {
+  STORED_SESSION_UNREADABLE,
+  _storedSessionFromFile,
+} from '../../../runtime/agent/orchestrator/session/store/serialize.mjs';
+import { SESSION_ID_PATTERN, closeManagedSession } from '../shared.mjs';
 import { replacementSessionCwd } from '../../workspace/workspace-state.mjs';
+import { isHistoricalAutomaticClosure } from '../../../runtime/agent/orchestrator/session/historical-session-closure.mjs';
 
 export function createSessionDelete(deps, { cancelBackgroundTasks }) {
   const {
@@ -21,33 +27,22 @@ export function createSessionDelete(deps, { cancelBackgroundTasks }) {
     invalidatePreSessionToolSurface,
   } = deps;
 
-  // Cancel the work a closing session owns: background tasks, agent workers,
-  // and its gateway status route.
+  // Release this execution session, not independent sessions it delegated to.
   function releaseSessionWork(sessionId, reason) {
     try {
-      cancelBackgroundTasks({ reason, notify: false, callerSessionId: sessionId });
-    } catch {}
-    try {
-      agentTool?.closeAll?.(reason, { callerSessionId: sessionId });
+      cancelBackgroundTasks({ reason, notify: false, executionSessionId: sessionId });
     } catch {}
     statusRoutes?.clearGatewaySessionRoute?.(sessionId);
   }
 
-  function ownedAgentSessionIds(sessionId) {
-    try {
-      const candidates = mgr.listOwnedAgentSessionIds?.(sessionId);
-      if (!Array.isArray(candidates)) return [];
-      return [
-        ...new Set(
-          candidates
-            .map(clean)
-            .filter((childId) => childId && childId !== sessionId && SESSION_ID_PATTERN.test(childId))
-        ),
-      ];
-    } catch {
-      /* parent deletion remains available if child enumeration fails */
-      return [];
-    }
+  // Availability is one strict read of the session's own file, filtered like
+  // the session catalog (an unreadable, foreign, closed or non-catalogued
+  // record is not deletable). No catalog rebuild, no folder scan.
+  function isAvailableSession(sessionId) {
+    const stored = _storedSessionFromFile(getStoreDir(), `${sessionId}.json`);
+    if (!stored || stored === STORED_SESSION_UNREADABLE) return false;
+    if (stored.closed === true && !isHistoricalAutomaticClosure(stored)) return false;
+    return leadSessionRow(stored) !== null;
   }
 
   // The deleted task's worktree: the autoCleanup setting decides (clean and
@@ -61,43 +56,36 @@ export function createSessionDelete(deps, { cancelBackgroundTasks }) {
   async function deleteSession(id) {
     const sessionId = clean(id);
     if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) return false;
-    const available = listLeadSessions(mgr, { refreshFromStorage: true }).some((row) => row.id === sessionId);
-    if (!available) return false;
-    const childIds = ownedAgentSessionIds(sessionId);
+    if (!isAvailableSession(sessionId)) return false;
     const current = getSession();
+    const cleanupReason = 'desktop-session-delete';
     if (current?.id !== sessionId) {
-      const deleted = mgr.deleteSession(sessionId) === true;
+      // A turn can still be running in a session that is no longer current.
+      // Stop its runtime first (controller abort, shells, generation bump) and
+      // release its worker row and its own background tasks, so nothing can
+      // write it back. Sessions it delegated to are independent and keep running.
+      if ((await closeManagedSession(mgr, sessionId, cleanupReason, { tombstone: false })) !== true) return false;
+      agentTool?.forgetLeadSession?.(sessionId);
+      releaseSessionWork(sessionId, cleanupReason);
+      const deleted = mgr.deleteSession(sessionId, { fenceWrites: true }) === true;
       if (!deleted) return false;
       void forgetSessionSearch(sessionId);
-      // The parent is already irreversibly gone, so child cleanup is
-      // best-effort and idempotent. Any vetoed child becomes sweep-eligible
-      // because its retained-parent proof disappeared with the parent.
-      for (const childId of childIds) {
-        try {
-          mgr.deleteSession(childId);
-        } catch {}
-      }
       void releaseDeletedWorktree(sessionId);
       return true;
     }
-    // Leaving a worktree-bound Lead: the replacement starts in the Project
-    // folder, and the worktree can go once nothing runs in it.
+    // Leaving a worktree-bound current session: the replacement starts in the
+    // Project folder, and the worktree can go once nothing runs in it.
     const projectFolder = replacementSessionCwd(current);
-    const cleanupReason = 'desktop-session-delete';
     releaseSessionWork(sessionId, cleanupReason);
     // Active sessions retain a tombstone until the normal sweep. Unlinking
     // immediately would let a late provider/save continuation resurrect the
     // deleted conversation after the user has moved to its replacement.
-    if (mgr.closeSession(sessionId, cleanupReason, { tombstone: true }) !== true) return false;
+    if ((await closeManagedSession(mgr, sessionId, cleanupReason, { tombstone: true })) !== true) return false;
+    // The unwinding turn's late saves and its idle lead-row upsert must not
+    // touch the deleted conversation (an unguarded save would pass the tombstone).
+    mgr.fenceSessionWrites?.(sessionId);
+    agentTool?.forgetLeadSession?.(sessionId);
     void forgetSessionSearch(sessionId);
-    // Active parent deletion uses the same durable tombstone boundary for
-    // every linked child. Their files then mature with the parent instead of
-    // disappearing while the parent task is still retained.
-    for (const childId of childIds) {
-      try {
-        mgr.closeSession(childId, cleanupReason, { tombstone: true });
-      } catch {}
-    }
     setSession(null);
     if (projectFolder) await deps.applyResolvedCwd?.(projectFolder);
     invalidateContextStatusCache();

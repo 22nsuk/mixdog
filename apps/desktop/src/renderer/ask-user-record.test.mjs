@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { holdsWaitingAskUser, splitAskUser } from './ask-user-record.tsx';
-import { askUserAnswers } from './transcript-tool-result.ts';
+import { askUserAnswers, askUserChatReply } from './transcript-tool-result.ts';
 
 const ask = (id, result) => ({ kind: 'tool', id, name: 'ask_user', args: { questions: [] }, ...(result ? { result } : {}) });
 const read = (id) => ({ kind: 'tool', id, name: 'read', args: {}, result: 'ok', completedAt: 1 });
@@ -21,6 +21,28 @@ test('questions leave a roll-up; counts follow only what was completed', () => {
   assert.equal(splitAskUser([aggregate], false).waiting, false);
   assert.equal(holdsWaitingAskUser(aggregate), true);
   assert.equal(holdsWaitingAskUser(ask('done', answered)), false);
+});
+
+test('a question asked through the call_tool bridge is still a question', () => {
+  const bridged = { kind: 'tool', id: 'b', name: 'call_tool', args: { name: 'ask_user', arguments: { questions: [] } } };
+  assert.equal(holdsWaitingAskUser(bridged), true);
+  assert.equal(splitAskUser([bridged], true).waiting, true);
+  assert.deepEqual(splitAskUser([{ ...bridged, result: answered }], true).asked.map((item) => item.id), ['b']);
+  assert.equal(holdsWaitingAskUser({ ...bridged, args: { name: 'read', arguments: {} } }), false);
+});
+
+test('a chat reply leads the result and the picks still parse', () => {
+  const both =
+    'User replied in chat: "keep \\"it\\"". User has answered your questions: "q1"="PG"; "q2"=(no answer). You can now continue with these answers in mind.';
+  assert.deepEqual(askUserChatReply(both).reply, 'keep "it"');
+  assert.deepEqual(Object.fromEntries(askUserAnswers(both)), {
+    q1: { picked: 'PG', typed: '' },
+    q2: { picked: '', typed: '' },
+  });
+  const only = 'User replied in chat: "hi". You can now continue with these answers in mind.';
+  assert.equal(askUserChatReply(only).reply, 'hi');
+  assert.equal(askUserAnswers(only).size, 0);
+  assert.equal(askUserChatReply(answered).reply, '');
 });
 
 test('answers parse picks and typed text apart, quotes included', () => {

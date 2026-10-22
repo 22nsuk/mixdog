@@ -4,10 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
 
+import { optionValue } from './cli-args.mjs';
 import { writeRemoteServerDependencies } from './remote-server-deps.mjs';
 
 const desktopDir = join(dirname(fileURLToPath(import.meta.url)), '..');
-const outfile = join(desktopDir, 'out', 'main', 'daemon.cjs');
+// --outfile: the dev build's own main output (an isolated instance's --outDir).
+const outfile = optionValue('outfile') || join(desktopDir, 'out', 'main', 'daemon.cjs');
 // Loaded at runtime from node_modules, never bundled; a server install gets
 // them from its generated lockfile.
 const DAEMON_EXTERNALS = ['@homebridge/node-pty-prebuilt-multiarch'];
@@ -16,6 +18,14 @@ const DAEMON_EXTERNALS = ['@homebridge/node-pty-prebuilt-multiarch'];
 // (opened-file-path.ts). The app keeps it unpacked beside daemon.cjs
 // (electron-builder asarUnpack); a host without it refuses downloads.
 const DESKTOP_HOST_EXTERNALS = ['koffi'];
+// Legacy Office attachments convert where a prompt is prepared for a provider:
+// the session runtime (session-turns.mjs, agent-room-delivery.mjs), loaded
+// from the runtime source and never bundled. This service imports
+// attachments/store.mjs only to read stored blobs, so the converter's lazy
+// import of the office stack (and its native @napi-rs/canvas binding) stays an
+// unfollowed import instead of bundling an office stack it never runs. A static
+// import of the stack still resolves and fails the build on its native binding.
+const RUNTIME_ONLY_LAZY_IMPORT = /^\.\.\/office\/portable\/portable-soffice\.mjs$/;
 
 await build({
   entryPoints: [join(desktopDir, 'src', 'main', 'desktop-service.ts')],
@@ -37,6 +47,9 @@ await build({
         builder.onResolve({ filter: /^electron(?:\/|$)/ }, () => ({
           errors: [{ text: 'daemon service bundle must not import Electron' }],
         }));
+        builder.onResolve({ filter: RUNTIME_ONLY_LAZY_IMPORT }, (args) =>
+          args.kind === 'dynamic-import' ? { path: args.path, external: true } : undefined
+        );
       },
     },
   ],
@@ -54,6 +67,8 @@ console.log(`Built plain-Node desktop service: ${outfile}`);
 const serverDepsDir = writeRemoteServerDependencies({
   rootDir: join(desktopDir, '..', '..'),
   desktopDir,
+  // Beside the outfile's out/main, so an isolated build never touches the shared out/.
+  outDir: join(dirname(outfile), '..', 'server', 'deps'),
   externals: DAEMON_EXTERNALS,
 });
 console.log(`Wrote remote server module lockfile: ${serverDepsDir}`);

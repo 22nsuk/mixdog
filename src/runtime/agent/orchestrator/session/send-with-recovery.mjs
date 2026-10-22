@@ -4,6 +4,7 @@
 // context-overflow compact retry (caller re-enters the pre-send compact
 // pass), and unrecoverable errors throw.
 import { appendAgentTrace } from '../agent-trace.mjs';
+import { withTailReminder } from './tail-reminder-rules.mjs';
 import {
   classifyError,
   isConnectFailure,
@@ -37,13 +38,14 @@ import {
   isThinkingReplayRejection,
   repairThinkingReplayInPlace,
 } from './thinking-replay-recovery.mjs';
-import { readStreamOutcome } from '../providers/lib/stream-outcome.mjs';
+import { readStreamOutcome, stampStreamOutcome } from '../providers/lib/stream-outcome.mjs';
 import { cloneProviderReplay } from '../providers/lib/provider-replay.mjs';
 import { resolveWorkerCompactPolicy } from './loop/compact-policy.mjs';
 import { agentContextOverflowError } from './loop/context-overflow.mjs';
 import { estimateMessagesTokensSafe } from './loop/compact-debug.mjs';
 import { isOutputLimitStopReason } from './loop/termination.mjs';
 import { instrumentSendCallbacks } from './send-instrumentation.mjs';
+import { rejectedToolSchema } from './tool-schema-rejection.mjs';
 
 function normalizedIncompleteUsage(raw) {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -254,14 +256,27 @@ export async function sendWithRecovery(ctx) {
     let response;
     try {
       const { timedOpts } = hooks;
-      const admittedOpts = timedOpts?.admissionOwner ? timedOpts : { ...(timedOpts || {}), admissionOwner: sessionId };
-      response = await provider.send(messages, model, sendTools.length ? sendTools : undefined, admittedOpts);
+      const baseOpts = timedOpts?.admissionOwner ? timedOpts : { ...(timedOpts || {}), admissionOwner: sessionId };
+      // A one-shot max_tokens request rides on this send's own copy only: the
+      // shared opts never carry it, so no later attempt can inherit it.
+      const admittedOpts =
+        ctx.maxOutputTokensOverride > 0
+          ? { ...baseOpts, maxOutputTokensOverride: ctx.maxOutputTokensOverride }
+          : baseOpts;
+      // Ephemeral tail reminder (tail-reminder-rules.mjs): added to this request's
+      // copy only, never to the stored transcript.
+      const requestMessages = withTailReminder(messages, { session: ctx.sessionRef, provider, model });
+      response = await provider.send(requestMessages, model, sendTools.length ? sendTools : undefined, admittedOpts);
       hooks.logTurnTiming('ok');
     } catch (sendErr) {
       hooks.logTurnTiming(`err:${sendErr?.code || sendErr?.name || 'unknown'}`);
+      stampStreamOutcome(sendErr, hooks.relayWitness);
       return await recoverFromSendError(sendErr, { ...ctx, relayWitness: hooks.relayWitness });
     }
-    return { action: 'proceed', response };
+    // streamedChars: what this send put on screen through onTextDelta (net of
+    // acknowledged retractions), so the loop can withdraw it if it discards
+    // the response and re-sends.
+    return { action: 'proceed', response, streamedChars: hooks.relayWitness.text.length };
   } finally {
     hooks.restore();
   }
@@ -405,6 +420,7 @@ async function recoverFromSendError(sendErr, state) {
     transportRetriesUsed = 0,
     imageStripUsed = false,
     thinkingReplayRepairUsed = false,
+    toolSchemaDropUsed = false,
     relayWitness,
   } = state;
   const outcome = readStreamOutcome(sendErr, relayWitness);
@@ -445,6 +461,19 @@ async function recoverFromSendError(sendErr, state) {
     (await transportReplayPermitted(sendErr, outcome, retract, state))
   ) {
     return retryTransport(sendErr, state);
+  }
+  // A 400 naming one tool's input schema: the session drops that tool (with
+  // the notice) and the turn is replayed once without it. Nothing was
+  // generated, and the same body would fail every later turn.
+  if (toolSchemaDropUsed !== true) {
+    const exclusion = rejectedToolSchema(sendErr, state);
+    if (exclusion) {
+      logLoop(
+        `[loop] provider rejected tool schema "${exclusion.name}" (${loopTag(state)}); dropping it and replaying once`
+      );
+      traceLoop(state, 'tool_schema_drop', { tool: exclusion.name });
+      return { action: 'retry_tool_schema_drop', exclusion };
+    }
   }
   // Anthropic replay-shape refusal: the latest assistant turn carries
   // thinking blocks the API will not accept back (a thinking run it did not

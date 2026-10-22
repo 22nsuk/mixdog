@@ -2,6 +2,7 @@
 // One authoritative provider catalog load: secrets and providers ready, the
 // daemon-wide startup refresh joined (or a forced refresh run), then the shared
 // catalog flattened into deduplicated rows with per-provider profiling.
+import { modelProxyClientMode } from '../../runtime/shared/model-proxy-mode.mjs';
 import { isSelectableLlmModel } from '../model-recency.mjs';
 import { sharedProviderCatalog } from '../provider-catalog-cache.mjs';
 import { NO_ENABLED_PROVIDERS } from '../../runtime/agent/orchestrator/providers/registry-errors.mjs';
@@ -16,6 +17,7 @@ export function createCatalogLoader({
   ensureFullConfig,
   awaitKeychainPrewarm,
   ensureProvidersReady,
+  providerTimeoutMs,
 }) {
   function rowsForEntry({ name, models, error, ms }) {
     const out = [];
@@ -49,6 +51,14 @@ export function createCatalogLoader({
     }
     const providersStartedAt = performance.now();
     try {
+      if (forceRefresh && modelProxyClientMode()) {
+        const { loadModelProxyProviderConfig } = await import(
+          '../../runtime/agent/orchestrator/providers/model-proxy-provider.mjs'
+        );
+        await loadModelProxyProviderConfig({ force: true });
+        // Rebuild even when daemon readiness already settled on the old PC set.
+        await reg().initProviders({});
+      }
       await ensureProvidersReady(config().providers || {});
     } catch (error) {
       if (error?.code === NO_ENABLED_PROVIDERS) return false;
@@ -67,7 +77,10 @@ export function createCatalogLoader({
   }
 
   /** `request` ({ seq }) identifies the caller's load; `request.complete`
-   *  reports whether every provider answered. */
+   *  reports whether every provider answered, `request.missing` names the
+   *  providers that failed or timed out, `request.partial` marks a load
+   *  where some but not all providers answered, and `request.retryAt` is when
+   *  the first missing provider may be asked again. */
   return async function loadProviderModelsFresh({ forceRefresh = false, loadSecrets = true, request = null } = {}) {
     const startedAt = performance.now();
     profile('load:start', { forceRefresh, loadSecrets });
@@ -84,8 +97,15 @@ export function createCatalogLoader({
     // forward only for the still-current request, never for a superseded load.
     if (ownsLoad) request.seq = caches.providerModelsLoadSeq;
     const seq = request?.seq ?? caches.providerModelsLoadSeq;
-    const catalogEntries = await sharedProviderCatalog(reg());
-    if (request) request.complete = catalogEntries.every((entry) => !Object.hasOwn(entry, 'error'));
+    const catalogEntries = await sharedProviderCatalog(reg(), { force: forceRefresh, timeoutMs: providerTimeoutMs });
+    if (request) {
+      const failed = catalogEntries.filter((entry) => Object.hasOwn(entry, 'error'));
+      request.missing = failed.map((entry) => entry.name);
+      request.complete = failed.length === 0;
+      request.partial = !request.complete && failed.length < catalogEntries.length;
+      // The shared, process-wide backoff of the soonest missing provider.
+      request.retryAt = request.partial ? Math.min(...failed.map((entry) => entry.retryAt)) : null;
+    }
     const results = [];
     const seen = new Set();
     for (const row of catalogEntries.flatMap(rowsForEntry)) {

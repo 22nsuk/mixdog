@@ -25,8 +25,33 @@ export type DraftPanePrefs = {
   orchestrationMode?: DesktopOrchestrationMode | null;
 };
 
-/** What a draft actually paints and submits: the project is resolved. */
-export type ResolvedDraftPrefs = DraftPanePrefs & { projectPath: string };
+/** What a draft actually paints and submits: the project is resolved.
+ *  `modelSelection` is what the composer paints; `explicitModelSelection` is
+ *  only what the user picked in this draft — the one thing a new task may
+ *  write to the Main route. */
+export type ResolvedDraftPrefs = DraftPanePrefs & {
+  projectPath: string;
+  explicitModelSelection?: DesktopModelSelection | null;
+};
+
+/** The route a New task submit sends, if any. A draft that merely inherits a
+ *  model (cache, last session, the host's Main route) sends none: the task
+ *  starts on the host's saved Main route, and a stale cached effort can never
+ *  be written back over the user's Lead. */
+export function submittedDraftRoute(prefs: ResolvedDraftPrefs | null | undefined): DesktopModelSelection | null {
+  return prefs?.explicitModelSelection ?? null;
+}
+
+type CapabilityReader = {
+  invokeCapability?: (request: { capability: 'listPresets' }) => Promise<{ snapshot?: unknown } | undefined>;
+};
+
+/** The Main (Lead) route the host currently holds, read from the host's own
+ *  control session. Null when the host has no Main model or cannot answer. */
+export async function readHostMainRoute(api: CapabilityReader | undefined): Promise<DesktopModelSelection | null> {
+  const result = await api?.invokeCapability?.({ capability: 'listPresets' });
+  return result?.snapshot ? draftModelSelectionFromSnapshot(result.snapshot as Snapshot) : null;
+}
 
 /** A first-touch entry: every field inherits live until the user stages it. */
 export const emptyDraftPanePrefs = (): DraftPanePrefs => ({ projectPath: null, modelSelection: null, workflow: null });
@@ -95,6 +120,41 @@ export const draftModelSelectionFromSnapshot = (snapshot: Snapshot): DesktopMode
       : {}),
   };
 };
+
+/** An empty Lead (Main) route takes the model last used in a new task, once;
+ *  nothing used leaves it empty (the composer then opens the model picker on
+ *  send). A route that already has a model is never overwritten: the runtime
+ *  applies the selection only while the route is still empty (compare-and-set,
+ *  no read here to race a pick made meanwhile). Answers whether it applied and
+ *  the Lead route in force afterwards (the winner when it was skipped). */
+export async function backfillLeadRoute({
+  last,
+  setModelRoute,
+}: {
+  last: DraftPanePrefs | null;
+  setModelRoute(selection: DesktopModelSelection): Promise<Snapshot>;
+}): Promise<{ applied: boolean; route: DesktopModelSelection | null }> {
+  const used = last?.modelSelection;
+  if (!used?.provider || !used.model) return { applied: false, route: null };
+  const route = draftModelSelectionFromSnapshot(await setModelRoute({ ...used, onlyIfEmpty: true }));
+  return { applied: sameRouteModel(route, used), route };
+}
+
+const sameRouteModel = (a: DesktopModelSelection | null | undefined, b: DesktopModelSelection | null | undefined) =>
+  Boolean(a && b && a.provider === b.provider && a.model === b.model);
+
+/** A skipped backfill means another route already is the Lead route. The
+ *  last-used cache that still holds the model the backfill tried (nobody staged
+ *  another since) follows that route, so no window or phone keeps showing and
+ *  submitting a stale model. Null when nothing changes. */
+export function followLeadRoute(
+  last: DraftPanePrefs | null,
+  tried: DesktopModelSelection,
+  route: DesktopModelSelection | null
+): DraftPanePrefs | null {
+  if (!last || !route || !sameRouteModel(last.modelSelection, tried) || sameRouteModel(route, tried)) return null;
+  return { ...last, modelSelection: route };
+}
 
 /** The last-used cache from storage. `legacy` means a v1 key answered and the
  *  caller must write the current keys back right away. */
@@ -180,6 +240,7 @@ export function resolveDraftPrefs({
   last,
   seed,
   snapshotDraftModelSelection,
+  hostMainRoute = null,
   preferredDraftProjectPath,
   effectiveDraftProjectPath,
 }: {
@@ -187,6 +248,8 @@ export function resolveDraftPrefs({
   last: DraftPanePrefs | null;
   seed: DesktopModelSelection | undefined;
   snapshotDraftModelSelection: DesktopModelSelection | null;
+  /** The Main route the host holds: what an unpicked draft paints and runs on. */
+  hostMainRoute?: DesktopModelSelection | null;
   preferredDraftProjectPath: string;
   effectiveDraftProjectPath(candidate: unknown): string;
 }): ResolvedDraftPrefs {
@@ -196,7 +259,11 @@ export function resolveDraftPrefs({
   const projectPath = entry?.projectPath ?? last?.projectPath ?? preferredDraftProjectPath;
   return {
     projectPath: effectiveDraftProjectPath(projectPath),
-    modelSelection: entry?.modelSelection ?? last?.modelSelection ?? seed ?? snapshotDraftModelSelection,
+    // The last-used cache is only a placeholder until the host's Main route is
+    // known; it is never submitted (submittedDraftRoute).
+    modelSelection:
+      entry?.modelSelection ?? hostMainRoute ?? seed ?? snapshotDraftModelSelection ?? last?.modelSelection ?? null,
+    explicitModelSelection: entry?.modelSelection ?? null,
     workflow: entry?.workflow ?? last?.workflow ?? null,
     orchestrationMode: entry?.orchestrationMode ?? last?.orchestrationMode ?? null,
   };

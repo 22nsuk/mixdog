@@ -31,6 +31,8 @@ interface SessionClientModule {
     onUpgradeWait?: (info: DaemonUpgradeWait) => void;
   }): Promise<Record<string, unknown>>;
   forceDaemonUpgrade(options?: { log?: (line: string) => void }): Promise<boolean>;
+  /** Quit only: stop a daemon this process forked into its own tree. */
+  stopInTreeDaemon?(options?: { timeoutMs?: number }): Promise<boolean>;
   /** Health + protocol verdict for an explicit discovery; reads no files. */
   probeSessionCompatibility(
     discovery: Record<string, unknown>,
@@ -83,6 +85,11 @@ function isDaemonTransportFailure(error: unknown): boolean {
     ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT'].includes(code) ||
     /socket hang up|ECONNREFUSED|ECONNRESET|EPIPE|daemon (?:exited|replaced)/i.test(message)
   );
+}
+
+/** One call outlived its inactivity bound on a daemon that still answers. */
+function isCallTimeout(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === 'ESESSIONTIMEOUT';
 }
 
 function desktopSessionProtocolError(error: unknown): Error {
@@ -247,8 +254,7 @@ export class SessionTransport implements DesktopTransport {
     if (remote) {
       const endpoint = await this.measureBootPhase(
         'remote-connect',
-        () =>
-          remote.connect((line) => this.emit('diagnostic', 'remote-daemon-log', { detail: line, attempt })),
+        () => remote.connect((line) => this.emit('diagnostic', 'remote-daemon-log', { detail: line, attempt })),
         { attempt }
       );
       await this.checkRemoteCompatibility(daemonModule, remote, endpoint, attempt);
@@ -399,7 +405,10 @@ export class SessionTransport implements DesktopTransport {
 
   /** Spawn-or-attach the machine-local daemon, waiting out an older build
    *  that is still draining. */
-  private async ensureLocalDaemon(daemonModule: SessionClientModule, attempt: number): Promise<Record<string, unknown>> {
+  private async ensureLocalDaemon(
+    daemonModule: SessionClientModule,
+    attempt: number
+  ): Promise<Record<string, unknown>> {
     let discovery: Record<string, unknown>;
     let upgradeWaiting = false;
     const emitUpgradeWait = (state: 'waiting' | 'done', fromVersion?: unknown, toVersion?: unknown): void => {
@@ -570,6 +579,20 @@ export class SessionTransport implements DesktopTransport {
             failure = retryError;
           }
         }
+        if (failure && isCallTimeout(failure)) {
+          // A slow call is not a dead daemon: the event stream judges
+          // liveness. Re-attaching here dropped every window's attachment
+          // and this PC's relay leg (each paired phone with it) for one
+          // call. Ask once more under the same call id, which joins the
+          // run still in progress instead of starting another.
+          const target =
+            message.method === 'invokeDesktopOperation' || message.method === 'invokeCapability'
+              ? String(message.args?.[0] || '')
+              : '';
+          this.emit('diagnostic', 'session-call-timeout', { method: message.method, ...(target ? { target } : {}) });
+          value = await client.call('desktop.invoke', args, { callId });
+          failure = null;
+        }
         if (failure) {
           if (!isDaemonTransportFailure(failure)) throw failure;
           await this.recoverDaemon(client, failure instanceof Error ? failure.message : String(failure));
@@ -648,5 +671,13 @@ export class SessionTransport implements DesktopTransport {
   async close(): Promise<void> {
     this.closed = true;
     await this.closeClient('desktop view closed');
+  }
+
+  /** App quit only (never a transport restart): a local daemon this process
+   *  forked into its own tree exits with the app, so let it shut down — and
+   *  stop the PostgreSQL it started — before that happens. */
+  async stopInTreeDaemon(timeoutMs: number): Promise<boolean> {
+    if (this.remote || !this.daemonModule?.stopInTreeDaemon) return false;
+    return this.daemonModule.stopInTreeDaemon({ timeoutMs });
   }
 }

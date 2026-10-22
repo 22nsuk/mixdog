@@ -27,6 +27,7 @@ export function createInlineSessionRuntimeHost({
     await keychain.prewarmSecrets();
   },
   executeAgentControl = null,
+  executeSessionControl = null,
 } = {}) {
   let closed = false;
   let closePromise = null;
@@ -59,6 +60,7 @@ export function createInlineSessionRuntimeHost({
       ...options,
       ...(options.cwd ? {} : { cwd }),
       ...(typeof executeAgentControl === 'function' ? { executeAgentControl } : {}),
+      ...(typeof executeSessionControl === 'function' ? { executeSessionControl } : {}),
     });
     if (closed) {
       try {
@@ -74,6 +76,7 @@ export function createInlineSessionRuntimeHost({
   return {
     create,
     prewarmKeychain: loaders.prewarmKeychain,
+    warmLocalRuntime: loaders.warmLocalRuntime,
     agentDispatch: dispatch.agentDispatch,
     async agentControl(args = {}, context = {}) {
       if (closed) throw new Error('session runtime host is closed');

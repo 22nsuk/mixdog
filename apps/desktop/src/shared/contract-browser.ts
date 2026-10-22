@@ -52,6 +52,22 @@ export interface DesktopBrowserCredentialSuggestion {
   label: string;
 }
 
+/** A site the Browser Use profile stays signed in to; no cookie data. */
+export interface DesktopBrowserSignedInSite {
+  site: string;
+  cookies: number;
+}
+
+/** A login takeover's sign-in window (main/browser/login-popup.ts): idle (not
+ *  opened yet), open, closed (closed without 완료, still pending), refused (the
+ *  provider refused an embedded sign-in), done, or unavailable (no such login
+ *  takeover on this PC). */
+export interface DesktopBrowserLoginStatus {
+  state: 'idle' | 'open' | 'closed' | 'refused' | 'done' | 'unavailable';
+  /** refused: who refused (Google). */
+  provider?: string;
+}
+
 export interface DesktopBrowserCredentialFillResult {
   usernameFilled: boolean;
   passwordFilled: boolean;
@@ -82,18 +98,22 @@ export interface DesktopBrowserRemoteViewerChange {
   driving?: boolean;
 }
 
+/** A session's shown page entered or left element fullscreen (a video's own
+ *  button, `requestFullscreen()`): the pane fills the fullscreen window. */
+export interface DesktopBrowserFullscreenChange {
+  sessionId: string;
+  active: boolean;
+}
+
 export interface DesktopBrowserOpenRequest {
   sessionId: string;
   /** False creates or retains the surface without opening its session dock. */
   reveal?: boolean;
   /** Hide only: never create or release pages; overrides reveal. */
   hide?: boolean;
-  /** Temporary automation reveal, scoped to one runtime turn. */
-  temporaryTurnId?: number;
-  /** Restore only the matching temporary reveal, never a user's selection. */
-  restoreTurnId?: number;
-  /** Human takeover commits a temporary surface without reopening it. */
-  retainTurnId?: number;
+  /** A takeover hand-off: the user must act on the page, so the panel opens
+   *  even where they closed it. Agent work alone never opens it. */
+  handoff?: boolean;
 }
 
 export interface DesktopRemoteBrowserFrame {
@@ -171,6 +191,10 @@ export interface DesktopBrowserPageFrame extends DesktopRemoteBrowserFrame {
   surfaceHeight?: number;
   fault?: string;
   tabs?: DesktopBrowserTab[];
+  /** The tab the session's agent last drove, and the turn that did; every
+   *  pane showing the session follows it unless `paused` (the person picked a
+   *  tab of their own during that turn). */
+  agentPage?: { tabId: string; turn: number; paused: boolean };
   dialog?: DesktopBrowserPageDialog;
   fileChooser?: { id: string; multiple: boolean };
 }
@@ -183,6 +207,15 @@ export interface DesktopBrowserPageDialog {
   type: string;
   message: string;
   defaultPrompt?: string;
+  /** A `permission` dialog names who asks and for what; the pane words it. */
+  permission?: {
+    /** The origin of the frame asking. */
+    origin: string;
+    /** The top-level site embedding it, when that is another site. */
+    embedder?: string;
+    /** What it asks for (`notifications`, `media:video`, `clipboard-read`, ...). */
+    keys: string[];
+  };
 }
 
 export type DesktopBrowserPageAction =
@@ -197,7 +230,8 @@ export type DesktopBrowserPageAction =
     }
   | { type: 'choose-files'; requestId: string; cancel?: boolean }
   | { type: 'new-tab' }
-  | { type: 'select-tab' | 'close-tab'; tabId: string }
+  | { type: 'select-tab'; tabId: string; follow?: 'agent' | 'resume' }
+  | { type: 'close-tab'; tabId: string }
   | { type: 'navigate'; url: string }
   | { type: 'back' | 'forward' | 'reload' | 'stop' }
   | { type: 'resize'; width: number; height: number }

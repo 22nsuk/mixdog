@@ -1,6 +1,6 @@
 {
   "id": "reviewer",
   "name": "Reviewer",
-  "description": "Use only at the end, as the final check of non-trivial work: after the implementation is written and verified, before reporting completion, to independently verify correctness, regressions, risks, and acceptance criteria. Skip for low-difficulty work.",
+  "description": "Use one per worker scope, after that worker reports, reviewing only its diff; edits the Lead made itself need only Lead's review.",
   "entry": "AGENT.md"
 }

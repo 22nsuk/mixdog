@@ -1,6 +1,10 @@
 // Sessions, projects, workspaces, editor, LSP, renderer diagnostics, boot,
 // workspace text search, local files and document previews.
 import type { DesktopSessionWorkspace } from './contract-worktree';
+import type { RoutineProvenance } from '../../../../src/runtime/agent/orchestrator/session/routine-result.mjs';
+
+/** A schedule's or webhook's run result, as routine-result.mjs normalizes it. */
+export type { RoutineProvenance };
 
 export type DesktopSessionClassification = 'task' | 'project' | null;
 
@@ -89,8 +93,30 @@ export interface DesktopRemoteHost {
   online?: boolean;
 }
 
+/** A group room as its log session's catalog row carries it. */
+export interface DesktopAgentRoomSummary {
+  id: string;
+  name: string;
+  /** Member agent ids in speaking order. */
+  members: string[];
+  maxRounds: number;
+  maxMessages: number;
+  /** Members also see each other's tool output, not only their words. */
+  shareTools: boolean;
+  /** Who said the last line: an agent id, or 'user'. */
+  lastSpeaker?: string;
+  /** The last line said (the user's or a member's words), for the list row. */
+  lastPreview?: string;
+  /** Display names by member agent id, as the host last resolved them. */
+  memberNames?: Record<string, string>;
+  /** Members are speaking right now. */
+  running?: boolean;
+}
+
 export interface DesktopSessionSummary {
   id: string;
+  /** Presentation classification only; all sessions share lifecycle operations. */
+  agentSession?: boolean;
   preview: string;
   title: string;
   updatedAt: number;
@@ -100,6 +126,10 @@ export interface DesktopSessionSummary {
   /** User/assistant message count — the unread dot keys off GROWTH here, not
    *  updatedAt, so housekeeping saves never re-dot an already-checked session. */
   messageCount: number;
+  /** Places (in `messageCount` numbering) of the last incoming chat messages of
+   *  a bot home / room log; the unread pill counts those past the read cursor
+   *  (shared/incoming-tail.ts). Absent when unknown. */
+  incomingTail?: number[];
   /** Host-persisted read cursor shared by desktop and paired mobile surfaces. */
   readMessageCount?: number;
   /** Monotonic cursor revision; advances for completion-only reads too. */
@@ -107,16 +137,39 @@ export interface DesktopSessionSummary {
   cwd: string;
   classification: DesktopSessionClassification;
   projectPath: string | null;
-  /** Fresh cross-process turn heartbeat; independent of which session is selected. */
+  /** The daemon's in-memory run state has a turn of this session (or its agents) in flight; independent of which session is selected. */
   working?: boolean;
-  /** Fresh heartbeat from this session's Lead, excluding child-agent work. */
+  /** The daemon is running this session's own Lead turn, excluding child-agent work. */
   leadWorking?: boolean;
-  /** Fresh heartbeat from a running child agent owned by this lead session. */
+  /** The daemon is running a child agent owned by this lead session. */
   agentWorking?: boolean;
   /** Archive: hidden from Recent, restorable; file stays on disk. */
   archived?: boolean;
   /** Favorite: pinned to the Favorites section above Recent. */
   favorite?: boolean;
+  /** The agent whose home thread this is: shown as that agent's contact in
+   *  the Agents pane, never in the session lists. */
+  agentHome?: string;
+  /** That home's bot was deleted: the chat stays to read, never to send. */
+  agentDeleted?: boolean;
+  /** The agent that created this coding task session (session create): the
+   *  Agents pane lists it under that agent's contact. */
+  taskAgent?: string;
+  /** Where `taskAgent` created it: its own chat (`home`), a group room, or a
+   *  schedule/webhook run; absent when not recorded (an older session). Only a
+   *  `home` task acts as the bot for Browser Use approvals. */
+  taskFrom?: 'home' | 'room' | 'run';
+  /** 'agent' for a Lead created as an agent (an agent home, a room member, an
+   *  agent's schedule/webhook run: session/agent-mode.mjs); absent = coding. */
+  sessionMode?: 'agent';
+  /** A group room's log (agent-rooms.ts): listed as that room in the Agents
+   *  pane, never in the session lists. */
+  agentRoom?: DesktopAgentRoomSummary;
+  /** The last user or assistant message, one line; contact rows show it. */
+  lastMessagePreview?: string;
+  /** Set when that line is a schedule's or webhook's result
+   *  (routine-result.mjs): the row labels it from this, never from its text. */
+  lastMessageRoutine?: RoutineProvenance;
   /** Automation origin: present on schedule/webhook runner sessions so the
    *  sidebar groups them under Automations instead of Recent. */
   sourceType?: 'schedule' | 'webhook';

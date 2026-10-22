@@ -11,7 +11,12 @@ import { once } from 'node:events';
 // developer's connected account is never overwritten by a login test.
 process.env.MIXDOG_DATA_DIR = mkdtempSync(join(tmpdir(), 'mixdog-antigravity-login-data-'));
 
-import { beginOAuthLogin, discoverProject, exchangeAuthorizationCode } from './antigravity-oauth-login.mjs';
+import {
+  beginOAuthLogin,
+  discoverAccount,
+  discoverProject,
+  exchangeAuthorizationCode,
+} from './antigravity-oauth-login.mjs';
 import {
   antigravityHeaders,
   codeAssistMetadata,
@@ -96,6 +101,17 @@ test('existing accounts return the refreshed project without onboarding', async 
     });
     assert.equal(call.redirect, 'error');
   }
+});
+
+test('discoverAccount reports the paid tier id, else the current tier, else empty', async () => {
+  const tier = async (payload) =>
+    (await discoverAccount('t', { fetchFn: scriptedFetch([payload, payload]).fetchFn })).tierId;
+  assert.equal(await tier(account('p')), 'standard-tier');
+  assert.equal(
+    await tier({ currentTier: { id: 'free-tier' }, paidTier: {}, cloudaicompanionProject: 'p' }),
+    'free-tier'
+  );
+  assert.equal(await tier({ currentTier: {}, paidTier: {}, cloudaicompanionProject: 'p' }), '');
 });
 
 test('missing or null paidTier causes a project-scoped reload on both status loads', async () => {
@@ -597,8 +613,8 @@ test('browser and manual callbacks share one exchange and show success only for 
   const [firstResponse, secondResponse, tokens, outcome] = await Promise.all([first, second, manual, fixture.outcome]);
   assert.equal(firstResponse.status, 200);
   assert.equal(secondResponse.status, 200);
-  assert.match(await firstResponse.text(), /Signed in to Antigravity\./);
-  assert.match(await secondResponse.text(), /Signed in to Antigravity\./);
+  assert.match(await firstResponse.text(), /Antigravity 로그인이 완료되었습니다\./);
+  assert.match(await secondResponse.text(), /Antigravity 로그인이 완료되었습니다\./);
   assert.equal(tokens, outcome.value);
   assert.equal(tokens.project_id, 'current-project');
   assert.equal(api.calls[0].init.body.get('code'), 'browser-code');
@@ -636,7 +652,7 @@ test('failed eligibility produces a failure page, never premature browser succes
   assert.equal(response.status, 500);
   const html = await response.text();
   assert.match(html, /sign-in was not completed/);
-  assert.doesNotMatch(html, /Authentication successful|Signed in to Antigravity/);
+  assert.doesNotMatch(html, /로그인 완료|Antigravity 로그인이 완료/);
   assert.match((await fixture.outcome).error.message, /Account eligibility denied/);
   assert.equal(existsSync(fixture.tokenPath), false);
 });

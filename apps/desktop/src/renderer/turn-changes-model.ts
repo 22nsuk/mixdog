@@ -22,6 +22,9 @@ export type TurnChangesFile = {
   reason?: string;
   /** The record kept no counts for this file; the transcript may complete them. */
   unmeasured?: boolean;
+  /** Git ignores this file. The record lists only the agent's own tool writes,
+   *  so it is still a turn artifact. */
+  ignored?: true;
 };
 export type TurnChangesReply = {
   status: 'ready' | 'pending' | 'none' | 'missing';
@@ -85,6 +88,7 @@ function decodeTurnChangesReply(value: unknown): TurnChangesReply | null {
         ...(file.binary === true ? { binary: true } : {}),
         ...(file.patchOmitted === true ? { patchOmitted: true as const } : {}),
         ...(file.unmeasured === true ? { unmeasured: true } : {}),
+        ...(file.ignored === true ? { ignored: true as const } : {}),
         state: file.state === 'reverted' ? 'reverted' : 'applied',
         revertable: file.revertable === true,
         ...(typeof file.reason === 'string' && file.reason ? { reason: file.reason } : {}),
@@ -185,7 +189,9 @@ export function resetTurnChangesCache() {
 }
 
 /** The card's reply: cached when this boundary/epoch already answered, else
- *  fetched once mounted; `pending` retries with bounded backoff. */
+ *  fetched once mounted; `pending` retries with bounded backoff. `unread` is
+ *  true until the first read answers (or fails, or reports `pending`): the
+ *  card's final height is not known yet. */
 export function useTurnChanges({
   sessionId,
   checkpointId,
@@ -208,6 +214,9 @@ export function useTurnChanges({
     key,
     reply: cachedTurnChanges(sessionId, checkpointId, boundary, epoch),
   }));
+  // The first read answered without a reply to show: a failure, or a turn
+  // the runtime is still recording (its card is new content when it lands).
+  const [unanswered, setUnanswered] = useState(true);
   // A newer boundary or epoch keeps the last settled reply on screen until
   // its refetch answers (the card is keyed per session + checkpoint).
   const reply =
@@ -227,6 +236,7 @@ export function useTurnChanges({
           if (stale) return;
           if (next.status === 'pending') {
             const delay = TURN_CHANGES_PENDING_DELAYS_MS[retry];
+            setUnanswered(false);
             if (delay !== undefined) timer = setTimeout(() => attempt(retry + 1), delay);
             return;
           }
@@ -235,6 +245,7 @@ export function useTurnChanges({
         },
         () => {
           // A failed read leaves no card; the next boundary or mutation retries.
+          if (!stale) setUnanswered(false);
         }
       );
     };
@@ -257,7 +268,8 @@ export function useTurnChanges({
     replyCache.delete(turnChangesKey(sessionId, checkpointId));
     setReads((value) => value + 1);
   };
-  return { reply, adopt, invalidate };
+  const unread = enabled && Boolean(sessionId && checkpointId) && reply === null && unanswered;
+  return { reply, unread, adopt, invalidate };
 }
 
 // ── Presentation helpers ─────────────────────────────────────────────────
@@ -304,6 +316,48 @@ export function visibleTurnChangeRows(files: readonly TurnChangesFile[], expande
     rows: files.slice(0, TURN_CHANGES_COLLAPSED_ROWS),
     hidden: files.length - TURN_CHANGES_COLLAPSED_ROWS,
   };
+}
+
+/** A file's identity: its full path resolved against the record's root (a
+ *  changed file is root-relative, a visualized target is root-relative or
+ *  absolute), separators and `.`/`..` normalized, and case-folded on drive
+ *  paths (Windows). Two names are one file only when these are equal, so
+ *  `index.html` is never `site/index.html`. */
+export function fileIdentity(root: string, path: string): string {
+  const clean = (value: string) => value.replace(/\\/g, '/');
+  let full = clean(path);
+  if (!full.startsWith('/') && !/^[a-z]:\//i.test(full) && root) full = `${clean(root).replace(/\/+$/, '')}/${full}`;
+  const parts: string[] = [];
+  for (const part of full.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') parts.pop();
+    else parts.push(part);
+  }
+  const resolved = `${full.startsWith('/') ? '/' : ''}${parts.join('/')}`;
+  return /^[a-z]:\//i.test(full) ? resolved.toLowerCase() : resolved;
+}
+
+/** The files a turn's changes card lists: those its visualize cards did not
+ *  already show (a visualized file stands as its card, not as a diff). `root`
+ *  is the reply's root the changed paths are relative to. */
+export function unvisualizedChanges(
+  files: readonly TurnChangesFile[],
+  visualized: readonly string[] | undefined,
+  root: string
+): readonly TurnChangesFile[] {
+  if (!visualized?.length) return files;
+  const shown = new Set(visualized.map((target) => fileIdentity(root, target)));
+  return files.filter((file) => !shown.has(fileIdentity(root, file.path)));
+}
+
+/** Whether every changed file was shown as a visualize card (the changes card
+ *  is then not drawn; Undo moves onto the visualize card). */
+export function allChangesVisualized(
+  files: readonly TurnChangesFile[],
+  visualized: readonly string[] | undefined,
+  root: string
+) {
+  return files.length > 0 && unvisualizedChanges(files, visualized, root).length === 0;
 }
 
 /** Whether the file exists on disk in its current state. */

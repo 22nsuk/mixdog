@@ -66,6 +66,11 @@ export function classifyConsole(
   // A failed resource load is reported by the network layer (host.ts), with
   // its status; Chromium does not log it to the page console.
   if (/^Failed to load resource/.test(message)) return null;
+  // A ResizeObserver whose callback resizes what it observes (a fit-to-width
+  // mockup) defers the rest to the next frame; Chromium logs that as an error
+  // whenever the panel resizes the frame. Nothing is broken, and the
+  // off-screen render never resizes, so it would show only in the panel.
+  if (/^ResizeObserver loop (?:completed with undelivered notifications|limit exceeded)/.test(message)) return null;
   return { kind: report.level === 'error' ? 'console-error' : 'console-warn', message };
 }
 
@@ -88,7 +93,12 @@ export function buildProblem(
 }
 
 const sameProblem = (a: VisualizeProblem, b: VisualizeProblem) =>
-  a.kind === b.kind && a.pane === b.pane && a.version === b.version && a.message === b.message && a.source === b.source && a.line === b.line;
+  a.kind === b.kind &&
+  a.pane === b.pane &&
+  a.version === b.version &&
+  a.message === b.message &&
+  a.source === b.source &&
+  a.line === b.line;
 
 /** `problem` added to `list`: a repeat only raises the count of the existing
  *  entry; a new one is dropped once the list holds the cap. `added` is true
@@ -108,7 +118,11 @@ export function recordProblem(
 }
 
 /** The "Page problems" section of a tool result, or '' when there are none. */
-export function formatProblemsSection(tabId: string, problems: readonly VisualizeProblem[], paneLabels: string[]): string {
+export function formatProblemsSection(
+  tabId: string,
+  problems: readonly VisualizeProblem[],
+  paneLabels: string[]
+): string {
   if (!problems.length) return '';
   const lines = problems.slice(0, MAX_LISTED_PROBLEMS).map((problem) => {
     const where = visualizeProblemLocation(problem);
@@ -118,10 +132,17 @@ export function formatProblemsSection(tabId: string, problems: readonly Visualiz
     return `- ${pane}${problem.kind}: ${problem.message}${where ? ` (${where})` : ''}${problem.count > 1 ? ` ×${problem.count}` : ''}`;
   });
   if (problems.length > lines.length) lines.push(`- …and ${problems.length - lines.length} more`);
-  const blocked = problems.some((problem) => problem.kind === 'blocked-network' || problem.kind === 'blocked-navigation')
+  const blocked = problems.some(
+    (problem) => problem.kind === 'blocked-network' || problem.kind === 'blocked-navigation'
+  )
     ? [
         'blocked-network: visualize pages cannot reach the outside network unless the user allows it; make the page self-contained (inline or bundle the file in the project) instead of loading it from a CDN or API.',
       ]
     : [];
-  return [`Page problems on tab ${tabId} (${problems.length}):`, ...lines, ...blocked, 'Fix these before reporting.'].join('\n');
+  return [
+    `Page problems on tab ${tabId} (${problems.length}):`,
+    ...lines,
+    ...blocked,
+    'Fix these before reporting.',
+  ].join('\n');
 }

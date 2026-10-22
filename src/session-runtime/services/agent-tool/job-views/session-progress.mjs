@@ -38,7 +38,7 @@ export function terminalJobFrozenFields(status, now = Date.now()) {
 }
 
 /** A worker/job row as the published session state carries it. That state
- *  (statusline, desktop, phone, live-share viewers) re-reads agent status on a
+ *  (statusline, desktop, phone) re-reads agent status on a
  *  2s pulse, and these fields are the agent card's diagnostics, derived from
  *  the read time or the last stream delta: they changed on every read while
  *  nothing a surface shows did, so each pulse re-sent both row lists. Surfaces
@@ -58,23 +58,33 @@ export function liveAgentStatusRow(row) {
 }
 
 export function createSessionProgress({ mgr }) {
-  function sessionProgressExtras(sessionId, role, now = Date.now(), taskStatus = null) {
+  /** `loaded`: the caller's own getSession(sessionId) answer from this same
+   *  read, so the session is not loaded a second time. */
+  function sessionProgressExtras(sessionId, role, now = Date.now(), taskStatus = null, { loaded } = {}) {
     if (!sessionId) return {};
-    const session = mgr.getSession(sessionId);
+    // Only the session's status is read here: the manager's stamp-validated
+    // status lookup spares a whole-transcript read per idle worker per pulse.
+    let sessionStatus;
+    if (loaded !== undefined) sessionStatus = loaded?.status || null;
+    else if (typeof mgr.loadSessionStatus === 'function') sessionStatus = mgr.loadSessionStatus(sessionId) || null;
+    else sessionStatus = mgr.getSession(sessionId)?.status || null;
     const runtime = mgr.getSessionRuntime?.(sessionId) || null;
     const snapshot =
       typeof mgr.getSessionProgressSnapshot === 'function' ? mgr.getSessionProgressSnapshot(sessionId) : null;
-    const policy = role ? resolveAgentWatchdogPolicy(role) : null;
+    // The armed watchdog's own policy (agent definition and provider budget
+    // applied); the role default only when none is registered.
+    const watchdogState = getProgressWatchdogState(mgr, sessionId);
+    const policy = watchdogState.policy || (role ? resolveAgentWatchdogPolicy(role) : null);
     const queuedFollowups =
       typeof mgr.getSessionPendingMessageDepth === 'function' ? mgr.getSessionPendingMessageDepth(sessionId) : null;
     return buildAgentTaskProgressFields({
       now,
-      sessionStatus: session?.status || null,
-      runtimeStage: runtime?.stage || snapshot?.stage || session?.status || null,
+      sessionStatus,
+      runtimeStage: runtime?.stage || snapshot?.stage || sessionStatus,
       snapshot,
       runtime,
       policy,
-      watchdogState: getProgressWatchdogState(mgr, sessionId),
+      watchdogState,
       queuedFollowups,
       taskStatus,
       lastToolCall: runtime?.lastToolCall || null,
@@ -93,6 +103,8 @@ export function createSessionProgress({ mgr }) {
       stage: progress.worker_stage || runtime?.stage || status,
       // Additive: present only while the worker's turn waits on a user approval.
       ...(runtime?.awaitingUser ? { awaitingUser: runtime.awaitingUser } : {}),
+      // Additive: present only while the worker's turn sits in `task wait`.
+      ...(runtime?.taskWaits > 0 ? { awaitingTask: 'wait' } : {}),
       clientHostPid: session.clientHostPid || null,
       lastStreamDeltaAt: runtime?.lastStreamDeltaAt ? new Date(runtime.lastStreamDeltaAt).toISOString() : null,
       ...progress,

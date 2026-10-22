@@ -34,7 +34,9 @@ import {
   createContextStatus,
 } from '../../runtime/agent/orchestrator/runtime-core/context-status.mjs';
 import { createInternalToolExecutor } from '../internal-tool-executor.mjs';
-import { STANDALONE_ROOT, STANDALONE_DATA_DIR } from '../runtime-paths.mjs';
+import { registerWorktreeToolHost } from '../../runtime/shared/worktrees/tool-host.mjs';
+import { createWorktreeToolHost } from '../workspace/worktree-tool.mjs';
+import { STANDALONE_ROOT, standaloneDataDir } from '../runtime-paths.mjs';
 import { dataDirOf, workflowHelpers } from './shared.mjs';
 
 export function wireTools(boot) {
@@ -71,6 +73,8 @@ function wireAgent(boot) {
     mcpScopeId: rt.mcpScopeId,
     awaitKeychainPrewarm,
     isKeychainPrewarmReady: () => rt.keychainPrewarmWaitDone,
+    // Lazy: wireProviders runs after wireTools and defines the catalog.
+    listProviderModels: (options) => boot.collectProviderModels(options),
     notifySessionCompletion,
     // SubagentStart/SubagentStop: bridge internal worker spawn/finish to the
     // standard hook bus. agent_type is passed top-level via hookCommonPayload.
@@ -180,7 +184,7 @@ function wireToolSurface(boot) {
       getCurrentCwd: () => rt.currentCwd,
       cfgMod,
       delegatableAgentIds: workflowHelpers.delegatableAgentIds,
-      dataDir: STANDALONE_DATA_DIR,
+      dataDir: standaloneDataDir(),
       getFeatureDisallowedTools: featureDisallowedTools,
     });
   Object.assign(boot, {
@@ -223,6 +227,8 @@ function wireInternalTools(boot) {
     getConfig: () => rt.config,
     notifySessionUi,
     getSessionId: () => rt.session?.id || rt.reservedSessionId || null,
+    getCallerSession: (sessionId) =>
+      sessionId === rt.session?.id ? rt.session : boot.mgr?.getSession?.(sessionId) || null,
     flushSettings: () => boot.flushAllConfigSavesAsync({ requireSaved: true }),
   });
   const disposeInternalTools = internalTools.setInternalToolsProvider({
@@ -248,12 +254,32 @@ function wireInternalTools(boot) {
       runNativeWebSearch: (...a) => boot.runNativeWebSearch(...a),
       activeToolSurface: boot.activeToolSurface,
       mcpStatus: boot.mcpStatus,
+      awaitMcpConnect: () => boot.awaitInitialMcpConnect?.(),
       skillToolContent: boot.skillToolContent,
       // Late-bound: the workspace authority is built with the API slices.
       getWorkspaceApi: () => boot.workspaceApi || null,
       getSessionManager: () => boot.mgr || null,
       getLifecycleApi: () => boot.lifecycleApi || null,
+      executeSessionControl: boot.params.executeSessionControl,
     }),
   });
-  Object.assign(boot, { setupTool, disposeInternalTools });
+  // The git tool's managed-worktree operations reach this Lead's workspace
+  // authority (late-bound like the internal tools) through this host.
+  const disposeWorktreeToolHost = registerWorktreeToolHost({
+    sessionId: () => rt.session?.id || null,
+    run: createWorktreeToolHost({
+      getSession: () => rt.session,
+      getWorkspaceApi: () => boot.workspaceApi || null,
+      executeSessionControl: boot.params.executeSessionControl || null,
+    }).run,
+  });
+  Object.assign(boot, {
+    setupTool,
+    disposeInternalTools: () => {
+      disposeWorktreeToolHost();
+      // Its turn snapshot cleanups stop with the runtime (maintenance finishes them).
+      boot.workspaceApi?.dispose();
+      disposeInternalTools();
+    },
+  });
 }

@@ -1,10 +1,9 @@
 // Cross-source transcript identity adoption.
 //
-// One conversation reaches the renderer under THREE id namespaces: the local
-// engine's runtime ids, the deterministic disk-restore ids (hist_<session>_N),
-// and — for attached viewers — the OWNER process's runtime ids mirrored over
-// the live-share pipe. Entering a working session crosses namespaces (cached
-// previous visit → disk restore → owner full frame), and every crossing used
+// One conversation reaches the renderer under two id namespaces: the engine's
+// runtime ids and the deterministic disk-restore ids (hist_<session>_N).
+// Entering a working session crosses namespaces (cached previous visit → disk
+// restore → live runtime frame), and every crossing used
 // to reissue the React/virtualizer key of the SAME visible row: measured
 // heights were dropped, the bottom of the transcript remounted at estimate
 // heights, and the pinned view corrected itself frame over frame (user:
@@ -89,6 +88,16 @@ export function adoptTranscriptIdentity(
 ): { items?: TranscriptItem[]; tail?: TranscriptItem; offset?: number } {
   const prevItems = previous?.items;
   const identical = sameItems || incomingItems === prevItems;
+  // An id one of the incoming rows still carries is that row's own: the row
+  // that held it moved, it was not replaced. A group room's typing row sits
+  // below the message that just landed in its place; adopting its id for the
+  // message put one key on two rows, and the virtual list's rows fought over
+  // one measured size (the room shook up and down while members spoke).
+  let incomingIds: Set<string> | null = null;
+  const carriedByIncoming = (id: unknown) => {
+    incomingIds ??= new Set((incomingItems ?? []).filter(hasOwnId).map((item) => String(item.id)));
+    return incomingIds.has(String(id));
+  };
   let adoptedItems: TranscriptItem[] | undefined;
   let consumed = 0;
   // Whether ANY offset candidate was accepted. Without one the incoming list
@@ -118,7 +127,7 @@ export function adoptTranscriptIdentity(
       if (!prev) break;
       if (prev === inc) continue;
       if (!alignedRow(prev, inc)) break;
-      if (hasOwnId(prev) && !sameRowId(prev, inc)) {
+      if (hasOwnId(prev) && !sameRowId(prev, inc) && !carriedByIncoming(prev.id)) {
         out ||= incomingItems.slice();
         out[index] = { ...inc, id: prev.id };
       }
@@ -133,7 +142,12 @@ export function adoptTranscriptIdentity(
     const tailDonor = previous?.tail;
     if (acceptedAlignment && index < incomingItems.length && tailDonor && consumed >= prevItems.length) {
       const inc = incomingItems[index] as TranscriptItem;
-      if (alignedRow(tailDonor, inc) && hasOwnId(tailDonor) && !sameRowId(tailDonor, inc)) {
+      if (
+        alignedRow(tailDonor, inc) &&
+        hasOwnId(tailDonor) &&
+        !sameRowId(tailDonor, inc) &&
+        !carriedByIncoming(tailDonor.id)
+      ) {
         out ||= incomingItems.slice();
         out[index] = { ...inc, id: tailDonor.id };
       }
@@ -152,7 +166,7 @@ export function adoptTranscriptIdentity(
     let donor: TranscriptItem | undefined;
     if (previous?.tail && alignedRow(previous.tail, incomingTail)) donor = previous.tail;
     else if (leftover && alignedRow(leftover, incomingTail)) donor = leftover;
-    if (donor && hasOwnId(donor) && !sameRowId(donor, incomingTail)) {
+    if (donor && hasOwnId(donor) && !sameRowId(donor, incomingTail) && !carriedByIncoming(donor.id)) {
       adoptedTail = { ...incomingTail, id: donor.id };
     }
   }

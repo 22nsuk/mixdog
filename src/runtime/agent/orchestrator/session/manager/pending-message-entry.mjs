@@ -3,6 +3,7 @@ import { mergeNormalizedContentEntries } from '../loop/steering.mjs';
 import { isDeliveredCompletion, logDuplicateSkip } from './delivered-completions.mjs';
 import { promptContentText } from './prompt-utils.mjs';
 import { parseTaskNotification, taskNotificationId } from '../../../../shared/task-notification-envelope.mjs';
+import { hopOf } from '../../../../shared/bot-hops.mjs';
 
 const STALE_USER_INJECTION_TTL_MS = 30 * 60 * 1000;
 const PENDING_PROCESS_START_MS = Date.now();
@@ -95,20 +96,25 @@ function executionFromCompletionMeta(meta) {
 function completionEntryFields(entry) {
   const executionId = completionExecutionId(entry);
   const execution = normalizeExecution(entry?.execution, executionId);
+  const hop = hopOf(entry?.hop);
   return {
     notificationKind: COMPLETION_NOTIFICATION_KIND,
     mode: PENDING_MODE_TASK_NOTIFICATION,
     ...(executionId ? { executionId } : {}),
     ...(execution ? { execution } : {}),
+    ...(hop ? { hop } : {}),
   };
 }
 
-export function completionWasDelivered(entry, site) {
+/** True when this completion entry already reached the model (no log). */
+export function completionIsDelivered(entry) {
   if (!isCompletionNotificationEntry(entry)) return false;
-  const executionId = completionExecutionId(entry);
-  const text = pendingMessageText(entry);
-  if (!isDeliveredCompletion({ executionId, text })) return false;
-  logDuplicateSkip(site, { executionId, text });
+  return isDeliveredCompletion({ executionId: completionExecutionId(entry), text: pendingMessageText(entry) });
+}
+
+export function completionWasDelivered(entry, site) {
+  if (!completionIsDelivered(entry)) return false;
+  logDuplicateSkip(site, { executionId: completionExecutionId(entry), text: pendingMessageText(entry) });
   return true;
 }
 
@@ -138,6 +144,8 @@ export function markCompletionEntry(text, options = {}) {
     mode: PENDING_MODE_TASK_NOTIFICATION,
     ...(executionId ? { executionId } : {}),
     ...(execution ? { execution } : {}),
+    // The bot-chain hop of the turn that launched the work (bot-hops.mjs).
+    ...(hopOf(options?.meta?.hop) ? { hop: options.meta.hop } : {}),
     enqueuedAt: Date.now(),
   };
 }
@@ -166,7 +174,7 @@ function explicitModeField(entry) {
   return entry?.mode === PENDING_MODE_TASK_NOTIFICATION ? { mode: PENDING_MODE_TASK_NOTIFICATION } : {};
 }
 
-export function normalizePendingMessageEntry(entry) {
+function normalizePendingMessageEntry(entry) {
   if (typeof entry === 'string') {
     const text = entry.trim();
     return text ? { content: text, text } : null;
@@ -211,7 +219,7 @@ export function normalizePendingMessageEntry(entry) {
   return carryLifecycleToken(marker ? { ...out, ...identity, ...marker } : { ...out, ...identity }, entry);
 }
 
-export function pendingMessageText(entry) {
+function pendingMessageText(entry) {
   const normalized = normalizePendingMessageEntry(entry);
   return normalized ? String(normalized.text || promptContentText(normalized.content) || '').trim() : '';
 }
@@ -334,6 +342,7 @@ export function _groupPendingMessageEntries(entries) {
       ...merged,
       mode: PENDING_MODE_TASK_NOTIFICATION,
       ...(normalized.execution ? { execution: normalized.execution } : {}),
+      ...(normalized.hop ? { hop: normalized.hop } : {}),
       ids: idsOf([entry]),
       entries: [entry],
     });

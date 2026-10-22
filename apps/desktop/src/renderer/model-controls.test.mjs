@@ -127,6 +127,75 @@ test('a cold selected route never flashes its raw id or Select model while the f
   }
 });
 
+for (const [id, levels] of [
+  ['command-code/deepseek/deepseek-v4.1-flash', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['google-antigravity/gemini-3.8-flash', ['low', 'medium', 'high']],
+]) {
+  test(`full catalog controls survive reopening and remounting ${id}`, async () => {
+    const provider = 'custom-catalog-authority';
+    const fullModel = {
+      ...model,
+      provider,
+      model: id,
+      display: id,
+      fastCapable: false,
+      effortOptions: levels.map((value) => ({ value, label: value })),
+      contextWindow: 450000,
+    };
+    const quickModel = { ...fullModel, effortOptions: [], contextWindow: 0 };
+    const full = deferred();
+    const oldList = window.mixdogDesktop.listProviderModels;
+    window.mixdogDesktop.listProviderModels = ({ quick }) => (quick ? Promise.resolve([quickModel]) : full.promise);
+    providerSetup = { api: [{ id: provider, authenticated: true, custom: true }] };
+    const host = document.createElement('main');
+    document.body.append(host);
+    let root = createRoot(host);
+    const selector = () =>
+      React.createElement(ModelSelector, {
+        provider,
+        model: id,
+        effort: 'medium',
+        fast: false,
+        fastCapable: false,
+        modelDisabled: false,
+        tuningDisabled: false,
+        invokeResult: (work) => work(),
+        applySnapshot() {},
+        onOpenSettings() {},
+      });
+    const row = (label) =>
+      [...document.querySelectorAll('.route-sheet-row')].find((button) => button.textContent.includes(label));
+    try {
+      await act(async () => root.render(selector()));
+      await act(async () => host.querySelector('.model-trigger').click());
+      assert.equal(row('Reasoning effort'), undefined, 'quick rows may initially lack tuning metadata');
+      await act(async () => full.resolve([fullModel]));
+      assert.ok(row('Reasoning effort'));
+      assert.ok(row('Context'));
+
+      await act(async () => row('Model').click());
+      assert.ok(row('Reasoning effort'), 'reopening Model must not restore the thin quick answer');
+      assert.ok(row('Context'));
+      await act(async () => row('Reasoning effort').click());
+      assert.deepEqual(
+        [...document.querySelectorAll('[role="menuitemradio"]')].map((button) => button.textContent),
+        levels
+      );
+
+      await act(async () => root.unmount());
+      root = createRoot(host);
+      await act(async () => root.render(selector()));
+      await act(async () => host.querySelector('.model-trigger').click());
+      assert.ok(row('Reasoning effort'), 'a remount must retain the resolved full catalog');
+      assert.ok(row('Context'));
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      window.mixdogDesktop.listProviderModels = oldList;
+    }
+  });
+}
+
 test('fast mode stays optimistic until the authoritative snapshot paints', async () => {
   const host = document.createElement('main');
   document.body.append(host);
@@ -214,73 +283,95 @@ test('fast mode stays optimistic until the authoritative snapshot paints', async
   }
 });
 
-test('an installed Local Provider model appears without remounting the picker', async () => {
-  const host = document.createElement('main');
-  document.body.append(host);
-  const root = createRoot(host);
-  const localModel = {
-    provider: 'mixdog-local',
-    model: 'qwen3.8-27b-q4-k-m',
-    display: 'Qwen3.8 27B Q4_K_M',
-    effortOptions: [],
-    fastCapable: false,
-    modelParameterOptions: [],
-    parameterVariants: [],
-    defaultModelParameters: {},
-    savedModelParameters: {},
-  };
-
-  try {
-    await act(async () =>
-      root.render(
-        React.createElement(ModelSelector, {
-          provider: model.provider,
-          model: model.model,
-          effort: 'high',
-          fast: false,
-          fastCapable: true,
-          modelParameters: {},
-          contextPercent: 100,
-          modelDisabled: false,
-          tuningDisabled: false,
-          sessionId: 'session-local-provider-refresh',
-          invokeResult: async (action) => await action(),
-          applySnapshot() {},
-          onOpenSettings() {},
-          onRoutePreferenceApplied() {},
-        })
-      )
-    );
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    availableModels = [model, localModel];
-    providerSetup = {
-      api: [{ id: 'openai', authenticated: true }],
-      local: [{ id: 'mixdog-local', detected: true, enabled: true }],
+for (const recovery of ['local-install', 'desktop-reconnect', 'proxy-poll']) {
+  test(`a mounted picker refreshes its provider setup and models after ${recovery}`, async (t) => {
+    const host = document.createElement('main');
+    document.body.append(host);
+    const root = createRoot(host);
+    const localModel = {
+      provider: 'mixdog-local',
+      model: 'qwen3.8-27b-q4-k-m',
+      display: 'Qwen3.8 27B Q4_K_M',
+      effortOptions: [],
+      fastCapable: false,
+      modelParameterOptions: [],
+      parameterVariants: [],
+      defaultModelParameters: {},
+      savedModelParameters: {},
     };
-    await act(async () => {
-      invalidateSharedModelCatalogRequest();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
 
-    await act(async () => document.querySelector('.model-trigger').click());
-    const modelRow = [...document.querySelectorAll('.route-sheet-row')].find((button) =>
-      button.textContent.includes('Model')
-    );
-    assert.ok(modelRow);
-    await act(async () => modelRow.click());
-    const localOption = [...document.querySelectorAll('[role="option"]')].find((button) =>
-      button.textContent.includes('Qwen3.8 27B')
-    );
-    assert.ok(localOption);
-  } finally {
-    await act(async () => root.unmount());
-    host.remove();
-  }
-});
+    let retry;
+    if (recovery !== 'local-install') {
+      providerSetup = { managedByClient: true, unavailable: true, api: [], local: [] };
+    }
+    if (recovery === 'proxy-poll') {
+      const schedule = window.setInterval.bind(window);
+      t.mock.method(window, 'setInterval', (callback, ms, ...args) => {
+        if (ms === 7_000) {
+          retry = callback;
+          return 700007;
+        }
+        return schedule(callback, ms, ...args);
+      });
+    }
+    try {
+      await act(async () =>
+        root.render(
+          React.createElement(ModelSelector, {
+            provider: model.provider,
+            model: model.model,
+            effort: 'high',
+            fast: false,
+            fastCapable: true,
+            modelParameters: {},
+            contextPercent: 100,
+            modelDisabled: false,
+            tuningDisabled: false,
+            sessionId: 'session-local-provider-refresh',
+            invokeResult: async (action) => await action(),
+            applySnapshot() {},
+            onOpenSettings() {},
+            onRoutePreferenceApplied() {},
+          })
+        )
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      availableModels = [model, localModel];
+      providerSetup = {
+        managedByClient: recovery !== 'local-install',
+        api: [{ id: 'openai', authenticated: true, usable: true }],
+        local: [{ id: 'mixdog-local', detected: true, enabled: true, usable: true }],
+      };
+      await act(async () => {
+        if (recovery === 'local-install') invalidateSharedModelCatalogRequest();
+        else if (recovery === 'desktop-reconnect') window.dispatchEvent(new window.Event('mixdog:remote-reconnected'));
+        else {
+          assert.ok(retry, 'failed proxy setup schedules a retry');
+          retry();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      await act(async () => document.querySelector('.model-trigger').click());
+      const modelRow = [...document.querySelectorAll('.route-sheet-row')].find((button) =>
+        button.textContent.includes('Model')
+      );
+      assert.ok(modelRow);
+      await act(async () => modelRow.click());
+      const localOption = [...document.querySelectorAll('[role="option"]')].find((button) =>
+        button.textContent.includes('Qwen3.8 27B')
+      );
+      assert.ok(localOption);
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+}
 
 for (const outcome of ['success', 'failure']) {
   test(`model selection closes immediately and a late ${outcome} cannot disturb a newer menu or preference`, async () => {
@@ -590,6 +681,100 @@ for (const field of ['model', 'effort']) {
     }
   });
 }
+
+test('an explicit effort pick on an Auto route turns its Auto effort off, in a session and in a draft', async () => {
+  const { publishAutoEffort } = await import('./auto-effort-store.ts');
+  const autoModel = {
+    ...model,
+    model: 'gpt-auto-effort-pick-test',
+    display: 'Pick test model',
+    fastCapable: false,
+    autoEffortCapable: true,
+  };
+  availableModels = [autoModel];
+  window.mixdogDesktop.routeAutoEffort = true;
+  const master = { installed: true, enabled: true, supported: true };
+  publishAutoEffort({ autoEffort: master });
+  const oldInvoke = window.mixdogDesktop.invokeCapability;
+  let request;
+  const effortCalls = [];
+  window.mixdogDesktop.invokeCapability = (input) => {
+    if (input.capability === 'getToolModuleSettings') return Promise.resolve({ value: { autoEffort: master } });
+    if (input.capability !== 'setEffort') return oldInvoke(input);
+    effortCalls.push(input.args);
+    request = deferred();
+    return request.promise;
+  };
+  const applied = [];
+  const drafts = [];
+  const host = document.createElement('main');
+  document.body.append(host);
+  let root = createRoot(host);
+  const selector = (extra) =>
+    React.createElement(ModelSelector, {
+      provider: autoModel.provider,
+      model: autoModel.model,
+      effort: 'high',
+      fast: false,
+      fastCapable: false,
+      autoEffort: true,
+      modelParameters: {},
+      modelDisabled: false,
+      tuningDisabled: false,
+      invokeResult: (work) => work(),
+      applySnapshot() {},
+      onOpenSettings() {},
+      ...extra,
+    });
+  const pickLow = async () => {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(host.querySelector('.model-trigger').textContent, /Auto/);
+    await act(async () => host.querySelector('.model-trigger').click());
+    const row = [...document.querySelectorAll('.route-sheet-row')].find((button) =>
+      button.textContent.includes('Reasoning effort')
+    );
+    await act(async () => row.click());
+    await act(async () => option('Low').click());
+  };
+  try {
+    await act(async () =>
+      root.render(selector({ sessionId: 'session-auto-pick', onRoutePreferenceApplied: (s) => applied.push(s) }))
+    );
+    await pickLow();
+    assert.deepEqual(effortCalls, [['low']]);
+    assert.doesNotMatch(host.querySelector('.model-trigger').textContent, /Auto/, 'the picked level previews at once');
+    await act(async () =>
+      request.resolve({
+        value: 'low',
+        snapshot: {
+          provider: autoModel.provider,
+          model: autoModel.model,
+          effort: 'low',
+          fast: false,
+          autoEffort: false,
+        },
+      })
+    );
+    assert.equal(applied.at(-1).effort, 'low');
+    assert.equal(applied.at(-1).autoEffort, false, 'the remembered route keeps Auto off');
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => root.render(selector({ onDraftSelection: (s) => drafts.push(s) })));
+    await pickLow();
+    assert.equal(drafts.at(-1).effort, 'low');
+    assert.equal(drafts.at(-1).autoEffort, false, 'a new task started from the draft keeps the picked level');
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+    window.mixdogDesktop.invokeCapability = oldInvoke;
+    delete window.mixdogDesktop.routeAutoEffort;
+    publishAutoEffort({ autoEffort: { installed: false, enabled: false, supported: true } });
+  }
+});
 
 const ultraModel = {
   ...model,

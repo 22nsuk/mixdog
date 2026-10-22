@@ -2,11 +2,11 @@
  * Content-addressed prompt attachment store.
  *
  * Renderer/TUI inputs carry the bytes exactly once to the daemon intake. From
- * that boundary onward queues, checkpoints, session JSON, live-share frames,
- * and desktop snapshots carry only a sha256 reference plus byte-free metadata.
+ * that boundary onward queues, checkpoints, session JSON and desktop
+ * snapshots carry only a sha256 reference plus byte-free metadata.
  * Provider lowering resolves the reference at the last possible boundary.
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   existsSync,
@@ -15,18 +15,25 @@ import {
   openSync,
   readFileSync,
   readSync,
-  renameSync,
   statSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { mkdir, readdir, readFile as readFileAsync, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { readdir, readFile as readFileAsync, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import { writeFileAtomicSync, writeJsonAtomicAsync } from '../shared/atomic-file.mjs';
 import { resolvePluginData } from '../shared/plugin-paths.mjs';
+import {
+  convertLegacyOfficeBuffer,
+  isLegacyOfficeBuffer,
+  legacyOfficeLabelPackage,
+  OOXML_MIME_BY_PACKAGE,
+  ooxmlLabelPackage,
+} from './legacy-office.mjs';
 import { MAX_ATTACHMENT_BLOB_BYTES, MAX_PDF_BYTES, MAX_PDF_PAGES, isPdfBuffer } from './limits.mjs';
-import { inspectPdfBuffer } from './pdf-extract.mjs';
+import { inspectPdfBuffer, PDF_INTAKE_TIMEOUT_MS } from './pdf-extract.mjs';
 
 const ATTACHMENT_REF_RE = /^[a-f0-9]{64}$/;
 const TEXT_TOKEN_RE = /\[(?:Pasted text|File) #(\d+)[^\]\r\n]*\]/g;
@@ -140,17 +147,13 @@ function saveBuffer(buffer) {
   }
   if (!existingValid) {
     mkdirSync(join(attachmentsDir(), attachmentRef.slice(0, 2)), { recursive: true, mode: 0o700 });
-    const temp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
     try {
-      writeFileSync(temp, buffer, { mode: 0o600 });
-      renameSync(temp, target);
+      // Durable, so a crash cannot leave this content address holding NUL
+      // bytes (a read would then fail its digest check).
+      writeFileAtomicSync(target, buffer, { mode: 0o600 });
     } catch (error) {
       // A concurrent writer may have published the same content first.
       if (!storedMatches()) throw error;
-    } finally {
-      try {
-        unlinkSync(temp);
-      } catch {}
     }
   } else {
     // Reusing old content creates a fresh reference before its queue/session
@@ -166,8 +169,27 @@ function saveBuffer(buffer) {
   return { attachmentRef, sizeBytes: buffer.length };
 }
 
+/** Store `buffer` (a file a bot or agent hands on, session-runtime/
+ *  handoff-attachments.mjs) under its content address: `{ attachmentRef, sizeBytes }`. */
+export function storeAttachmentBuffer(buffer) {
+  return saveBuffer(buffer);
+}
+
+/** Where the store keeps the bytes of `ref` on this machine (no extension:
+ *  the read tool recognizes PDFs and images there by their content). */
+export function attachmentFilePath(ref) {
+  return attachmentPath(ref);
+}
+
 export function isAttachmentReference(value) {
   return Boolean(value && typeof value === 'object' && ATTACHMENT_REF_RE.test(String(value.attachmentRef || '')));
+}
+
+// The bytes of a base64 string, or null when they are empty or would not
+// re-encode to the same string (a stored reference could not replay it exactly).
+function canonicalBase64Buffer(data) {
+  const buffer = Buffer.from(data, 'base64');
+  return buffer.length === 0 || buffer.toString('base64') !== data ? null : buffer;
 }
 
 /**
@@ -194,8 +216,8 @@ export function storeInlineImagePart(part) {
   } else {
     return null;
   }
-  const buffer = Buffer.from(data, 'base64');
-  if (buffer.length === 0 || buffer.toString('base64') !== data) return null;
+  const buffer = canonicalBase64Buffer(data);
+  if (!buffer) return null;
   return { ...metadata, ...saveBuffer(buffer) };
 }
 
@@ -214,11 +236,13 @@ export function storeInlineDocumentPart(part) {
     if (source?.type !== 'base64' || typeof source.data !== 'string') return null;
     data = source.data;
     const { source: _source, type: _type, mimeType: _mimeType, mediaType: _mediaType, ...rest } = part;
-    const mimeType = String(source.media_type || source.mediaType || part.mimeType || part.mediaType || 'application/pdf')
-      .trim()
-      .toLowerCase() || 'application/pdf';
+    const mimeType =
+      String(source.media_type || source.mediaType || part.mimeType || part.mediaType || 'application/pdf')
+        .trim()
+        .toLowerCase() || 'application/pdf';
     metadata = { ...rest, type: 'file', mimeType };
-    const filename = (typeof part.title === 'string' && part.title) || (typeof part.filename === 'string' && part.filename) || '';
+    const filename =
+      (typeof part.title === 'string' && part.title) || (typeof part.filename === 'string' && part.filename) || '';
     if (filename) metadata.filename = filename;
   } else if (part.type === 'file' && typeof part.data === 'string') {
     const { data: inline, ...rest } = part;
@@ -227,8 +251,8 @@ export function storeInlineDocumentPart(part) {
   } else {
     return null;
   }
-  const buffer = Buffer.from(data, 'base64');
-  if (buffer.length === 0 || buffer.toString('base64') !== data) return null;
+  const buffer = canonicalBase64Buffer(data);
+  if (!buffer) return null;
   // The magic header decides the kind before the label does (inlineFileKind),
   // so a mislabelled PDF is stored under its real type: the reloaded part then
   // estimates and lowers exactly like the live one.
@@ -282,9 +306,7 @@ export function isMissingAttachmentError(error) {
 // never become readable. EBUSY/EPERM/EACCES/EMFILE and friends are transient:
 // callers must let them propagate rather than rewrite history around them.
 export function isPermanentAttachmentError(error) {
-  return (
-    isMissingAttachmentError(error) || error?.code === ATTACHMENT_INVALID || error?.code === ATTACHMENT_INTEGRITY
-  );
+  return isMissingAttachmentError(error) || error?.code === ATTACHMENT_INVALID || error?.code === ATTACHMENT_INTEGRITY;
 }
 
 export function readAttachmentBase64(value) {
@@ -374,7 +396,7 @@ function materializePastedTexts(pastedTexts) {
         type: 'text',
         attachmentRef: raw.attachmentRef,
         sizeBytes: attachmentBlobSize(raw, raw.sizeBytes),
-        ...(raw.source === 'file' ? { textKind: 'file' } : {}),
+        textKind: raw.source === 'file' ? 'file' : 'paste',
         ...(raw.filename ? { filename: raw.filename } : {}),
         ...(raw.mimeType ? { mimeType: raw.mimeType } : {}),
       };
@@ -534,6 +556,77 @@ export function materializePromptSubmission(prompt, options = {}) {
   };
 }
 
+const MAX_MESSAGE_ATTACHMENTS = 64;
+
+/**
+ * The user-attachment records of one materialized submission, for the message
+ * metadata (`meta.transcript.attachments`): every image, file and
+ * pasted/attached text that lives in the store, by its content hash. The id IS
+ * the `attachmentRef`; the record repeats it under that key so the store's
+ * mark-and-sweep census (which scans persisted sessions for `"attachmentRef"`)
+ * keeps the blob for as long as the message exists, even after compaction
+ * dropped the content part. Plain long prompt text (no `textKind`) is not an
+ * attachment.
+ */
+export function attachmentsForIntake(prompt, options = {}) {
+  const found = new Map();
+  const add = (ref, info) => {
+    if (!ATTACHMENT_REF_RE.test(String(ref || '')) || found.has(ref) || found.size >= MAX_MESSAGE_ATTACHMENTS) return;
+    found.set(ref, info);
+  };
+  const named = (raw, fallback) => String(raw?.filename || raw?.name || fallback).slice(0, 200);
+  const pastedImages = Object.values(options?.pastedImages || {}).filter((raw) => raw && typeof raw === 'object');
+  const pastedTexts = Object.values(options?.pastedTexts || {}).filter((raw) => raw && typeof raw === 'object');
+  const parts = Array.isArray(prompt) ? prompt : [];
+  for (const part of parts) {
+    if (!isAttachmentReference(part)) continue;
+    const mimeType = String(part.mimeType || part.mediaType || '').slice(0, 100);
+    if (part.type === 'image') {
+      const meta = pastedImages.find((raw) => raw.attachmentRef === part.attachmentRef);
+      add(part.attachmentRef, {
+        kind: 'image',
+        name: named(meta || part, 'image'),
+        mimeType: mimeType || String(meta?.mediaType || 'image/png'),
+        size: attachmentBlobSize(part, part.sizeBytes),
+      });
+    } else if (part.type === 'file') {
+      add(part.attachmentRef, {
+        kind: 'file',
+        name: named(part, 'attachment'),
+        mimeType: mimeType || 'application/octet-stream',
+        size: attachmentBlobSize(part, part.sizeBytes),
+      });
+    } else if (part.type === 'text' && (part.textKind === 'paste' || part.textKind === 'file')) {
+      add(part.attachmentRef, {
+        kind: 'text',
+        name: named(part, part.textKind === 'paste' ? 'pasted-text.txt' : 'attachment.txt'),
+        mimeType: mimeType || 'text/plain',
+        size: attachmentBlobSize(part, part.sizeBytes),
+      });
+    }
+  }
+  // Images the prompt carries only by side table (no matching content part).
+  for (const raw of pastedImages) {
+    if (!isAttachmentReference(raw)) continue;
+    add(raw.attachmentRef, {
+      kind: 'image',
+      name: named(raw, 'image'),
+      mimeType: String(raw.mediaType || 'image/png').slice(0, 100),
+      size: attachmentBlobSize(raw, raw.sizeBytes),
+    });
+  }
+  for (const raw of pastedTexts) {
+    if (!isAttachmentReference(raw)) continue;
+    add(raw.attachmentRef, {
+      kind: 'text',
+      name: named(raw, raw.source === 'file' ? 'attachment.txt' : 'pasted-text.txt'),
+      mimeType: String(raw.mimeType || 'text/plain').slice(0, 100),
+      size: attachmentBlobSize(raw, raw.sizeBytes),
+    });
+  }
+  return [...found].map(([ref, info]) => ({ id: ref, attachmentRef: ref, ...info }));
+}
+
 /**
  * Whether a provider takes a PDF as a native document block. Decided by the
  * provider's wire protocol: each adapter class declares `nativePdf`; a provider
@@ -545,6 +638,50 @@ export function providerTakesNativePdf(provider) {
 }
 
 /**
+ * A legacy Office attachment (.doc/.xls/.ppt: by label, or an OLE file renamed
+ * to an OOXML name) as the OOXML package LibreOffice saves it as, stored under
+ * its own reference, so text extraction and every later lowering see an
+ * ordinary package. A conversion that cannot run (LibreOffice missing, damaged
+ * file, or bytes that are not a legacy file under a legacy label) becomes a text
+ * part carrying the converter's message, so the model and the user are told
+ * instead of the file vanishing. A cancellation (`signal`) is rethrown, never
+ * turned into text. Any other part is returned as is.
+ */
+async function packageLegacyOfficePart(part, { convertLegacy, signal }) {
+  if (part?.type !== 'file' || !isAttachmentReference(part)) return part;
+  const mimeType = part.mimeType || part.mediaType;
+  const legacyKind = legacyOfficeLabelPackage(mimeType, part.filename);
+  const kind = legacyKind || ooxmlLabelPackage(mimeType, part.filename);
+  if (!kind) return part;
+  const buffer = readAttachmentBuffer(part);
+  // An OOXML-labelled part converts only when its bytes are legacy; a legacy
+  // label is always converted (or explained).
+  if (!legacyKind && !isLegacyOfficeBuffer(buffer)) return part;
+  const name = String(part.filename || '')
+    .split(/[\\/]/)
+    .pop();
+  try {
+    const converted = await convertLegacyOfficeBuffer(buffer, part.filename, kind, {
+      signal,
+      ...(convertLegacy ? { convert: convertLegacy } : {}),
+    });
+    const { mediaType: _mediaType, ...rest } = part;
+    return {
+      ...rest,
+      ...saveBuffer(converted.buffer),
+      mimeType: OOXML_MIME_BY_PACKAGE[kind],
+      filename: converted.filename,
+    };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return {
+      type: 'text',
+      text: `--- ${name || 'attachment'} ---\n${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
  * PDF intake validation. Every PDF keeps its content-addressed reference — the
  * one conversion to text happens at provider lowering — so this only checks what
  * would make the PDF unusable later: the real blob size, readability, and (for a
@@ -552,13 +689,19 @@ export function providerTakesNativePdf(provider) {
  * PDF as text reads its first MAX_PDF_PAGES pages, so a longer PDF is accepted.
  * The page count is recorded on the part for estimates.
  */
-export async function preparePromptSubmissionForProvider(intake, provider) {
+export async function preparePromptSubmissionForProvider(
+  intake,
+  provider,
+  { convertLegacy = undefined, signal = null } = {}
+) {
   const prompt = intake?.prompt;
   if (!Array.isArray(prompt)) return intake;
   const nativePdf = providerTakesNativePdf(provider);
   let changed = false;
   const prepared = [];
-  for (const part of prompt) {
+  for (const candidate of prompt) {
+    const part = await packageLegacyOfficePart(candidate, { convertLegacy, signal });
+    if (part !== candidate) changed = true;
     const mimeType = String(part?.mimeType || part?.mediaType || '').toLowerCase();
     if (part?.type !== 'file' || mimeType !== 'application/pdf' || !isAttachmentReference(part)) {
       prepared.push(part);
@@ -568,11 +711,21 @@ export async function preparePromptSubmissionForProvider(intake, provider) {
     if (bytes > MAX_PDF_BYTES) {
       throw new RangeError(`PDF exceeds the ${MAX_PDF_BYTES / 1024 / 1024} MiB input limit`);
     }
+    // The text-layer counts price the PDF (a scanned page costs its page image,
+    // a text page its text as well) and tell the model, when the PDF is sent
+    // as a reference, which pages read as text.
     const inspected = await inspectPdfBuffer(readAttachmentBuffer(part), {
       maxPages: nativePdf ? MAX_PDF_PAGES : Infinity,
+      measureText: true,
+      timeoutMs: PDF_INTAKE_TIMEOUT_MS,
     });
     changed = true;
-    prepared.push({ ...part, pageCount: inspected.pageCount });
+    prepared.push({
+      ...part,
+      pageCount: inspected.pageCount,
+      textPages: inspected.textPages,
+      textChars: inspected.textChars,
+    });
   }
   if (!changed) return intake;
   return { ...intake, prompt: prepared };
@@ -662,8 +815,8 @@ function dropCachedAttachment(path) {
 async function persistedAttachmentReferencePaths() {
   const root = resolvePluginData();
   const paths = [];
-  for (const dirname of ['sessions', 'turn-checkpoints', 'session-pending']) {
-    const dir = join(root, dirname);
+  for (const subdir of ['sessions', 'turn-checkpoints', 'session-pending']) {
+    const dir = join(root, subdir);
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -675,7 +828,7 @@ async function persistedAttachmentReferencePaths() {
       if (!entry.isFile()) continue;
       // The turn-checkpoint journal appends `<session>.jsonl` records that
       // carry attachment refs of in-flight turns.
-      if (entry.name.endsWith('.json') || (dirname === 'turn-checkpoints' && entry.name.endsWith('.jsonl'))) {
+      if (entry.name.endsWith('.json') || (subdir === 'turn-checkpoints' && entry.name.endsWith('.jsonl'))) {
         paths.push(join(dir, entry.name));
       }
     }
@@ -742,16 +895,14 @@ async function loadReferenceCache(root) {
 async function saveReferenceCache(root, files) {
   referenceCache = { root, files };
   const target = attachmentReferenceCachePath();
-  const temp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   try {
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(temp, JSON.stringify({ version: 1, files: Object.fromEntries(files) }));
-    await rename(temp, target);
-  } catch {
-    try {
-      await unlink(temp);
-    } catch {}
-  }
+    // An unusable cache only costs a full re-read (loadReferenceCache), so no fsync.
+    await writeJsonAtomicAsync(
+      target,
+      { version: 1, files: Object.fromEntries(files) },
+      { compact: true, fsync: false }
+    );
+  } catch {}
 }
 
 export async function collectPromptAttachments({ now = Date.now(), minAgeMs = ATTACHMENT_GC_MIN_AGE_MS } = {}) {
@@ -808,8 +959,10 @@ export async function collectPromptAttachments({ now = Date.now(), minAgeMs = AT
       continue;
     }
     for (const entry of entries) {
-      // A writer that died between create and rename leaves `<ref>.<pid>.<rand>.tmp`.
-      if (entry.isFile() && /^[a-f0-9]{64}\..+\.tmp$/.test(entry.name)) {
+      // A writer that died between create and rename leaves
+      // `<ref>.mixdog-tmp-<rand>` (atomic writer), or the older
+      // `.<ref>.<rand>.tmp` / `<ref>.<pid>.<rand>.tmp`.
+      if (entry.isFile() && /^(?:\.?[a-f0-9]{64}\..+\.tmp|[a-f0-9]{64}\.mixdog-tmp-[0-9a-f]+)$/.test(entry.name)) {
         const tempPath = join(dir, entry.name);
         try {
           if ((await stat(tempPath)).mtimeMs <= cutoff) await unlink(tempPath);

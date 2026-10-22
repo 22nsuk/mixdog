@@ -11,7 +11,7 @@
   bottom: var(--rail-usage-popup-bottom, 48px);
   /* ActivityRail supplies the popup width inline (sidebar default + 88),
      so PC and phone open the same widened flyout with room for the meter. */
-  max-height: min(560px, calc(100vh - var(--rail-usage-popup-bottom, 48px) - 52px));
+  max-height: min(560px, calc(var(--vvh, 100dvh) - var(--rail-usage-popup-bottom, 48px) - 52px));
   overflow-y: auto;
   overscroll-behavior: contain;
   /* ONE frame (user: 사용량프레임도 원프레임으로): the popup's own border is
@@ -305,6 +305,91 @@
 .sidebar-usage-meter-empty > small {
   color: var(--mx-text-faint);
 }
+/* "N accounts" beside a collapsed multi-account provider's name. */
+.sidebar-usage-line > small.sidebar-usage-account-count {
+  flex: none;
+}
+/* Expanded accounts: one block per account in roster order, a hairline
+   between blocks, the account's meters on the provider's subgrid columns. */
+.sidebar-usage-account {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: subgrid;
+  row-gap: 6px;
+}
+.sidebar-usage-account + .sidebar-usage-account {
+  padding-top: 8px;
+  border-top: 0.5px solid var(--mx-border-muted);
+}
+.sidebar-usage-account-line {
+  grid-column: 1 / -1;
+  min-width: 0;
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sidebar-usage-account-index {
+  flex: none;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--mx-hover, rgb(255 255 255 / 8%));
+  color: var(--mx-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.sidebar-usage-account-name {
+  min-width: 24px;
+  min-height: 24px;
+  margin: -2px 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  color: var(--mx-text-soft);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sidebar-usage-account-name:disabled {
+  cursor: default;
+}
+.sidebar-usage-account-name:hover:not(:disabled),
+.sidebar-usage-account-name:focus-visible {
+  color: var(--mx-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  outline: 0;
+}
+.sidebar-usage-account-inuse {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--mx-text-muted);
+  font-size: 12px;
+}
+.sidebar-usage-account-inuse::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mx-success);
+}
+.sidebar-usage-account-limit {
+  margin-left: auto;
+  flex: none;
+  color: var(--mx-danger);
+  font-size: 12px;
+}
 /* A provider name or meter opens that subscription's usage over time. */
 .sidebar-usage-line > b[role="button"],
 .sidebar-usage-meter[role="button"] {
@@ -520,20 +605,6 @@
   margin: 0;
   padding: 8px 12px;
 }
-.sidebar-update-loader {
-  position: relative;
-  z-index: 1;
-  width: 10px;
-  height: 10px;
-  display: block;
-  color: currentColor;
-  animation: var(--mx-motion-spin);
-}
-@media (prefers-reduced-motion: reduce) {
-  .sidebar-update-loader {
-    animation: none;
-  }
-}
 /* Collapsed section heading keeps the unread signal visible. */
 .sidebar-heading-dot {
   position: absolute;
@@ -599,6 +670,11 @@
   width: 16px;
   height: 16px;
   color: var(--mx-icon-muted);
+}
+/* A deleted bot's archived chat leads with the face the bot left. */
+.session-row-bot-face {
+  width: 16px;
+  height: 16px;
 }
 .session-row-fork-icon[data-fork="root"] {
   color: var(--mx-text-accent);

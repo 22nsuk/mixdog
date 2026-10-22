@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  AGENT_ACTIVITY_REFRESH_MS,
   COLD_VIEW_REFRESH_MS,
   STORE_REFRESH_DEBOUNCE_MS,
   STORE_REFRESH_MIN_GAP_MS,
@@ -121,6 +122,48 @@ test('failed listings keep the last catalog and still publish a successful agent
   assert.deepEqual(lane.published.agents, [[{ id: 'worker' }]]);
 });
 
+test('a session listing publishes when it lands, never after a newer catalog during a slow pool read', async () => {
+  const lane = catalogOwner();
+  const pool = Promise.withResolvers();
+  lane.listAgentPool = () => pool.promise;
+  const catalog = new SessionHostCatalog(lane, { directory: () => 'data' });
+  // Listed while the new task was still hidden from the catalog.
+  lane.setSessions([{ id: 'lead' }]);
+  const refresh = catalog.publishCatalogs();
+  await new Promise((resolve) => setImmediate(resolve));
+  // The task is accepted and its row is republished from the resident rows.
+  lane.publishSessions([{ id: 'new-task' }, { id: 'lead' }]);
+  pool.resolve([{ id: 'worker' }]);
+  await refresh;
+  assert.deepEqual(
+    lane.published.sessions.at(-1).map((row) => row.id),
+    ['new-task', 'lead'],
+    'the older listing never overwrites the catalog that already holds the new task'
+  );
+  assert.deepEqual(lane.published.agents, [[{ id: 'worker' }]]);
+});
+
+test('an older session listing that lands after a newer one is dropped', async () => {
+  const lane = catalogOwner();
+  const reads = [];
+  lane.listSessions = () => {
+    const read = Promise.withResolvers();
+    reads.push(read);
+    return read.promise;
+  };
+  const catalog = new SessionHostCatalog(lane, { directory: () => 'data' });
+  const older = catalog.publishCatalogs();
+  const newer = catalog.publishCatalogs();
+  reads[1].resolve([{ id: 'new-task' }, { id: 'lead' }]);
+  await newer;
+  reads[0].resolve([{ id: 'lead' }]);
+  await older;
+  assert.deepEqual(
+    lane.published.sessions.map((rows) => rows.map((row) => row.id)),
+    [['new-task', 'lead']]
+  );
+});
+
 test('store events coalesce and never refresh more often than the minimum gap', async (t) => {
   t.mock.timers.enable({
     apis: ['Date', 'setInterval', 'setTimeout'],
@@ -224,6 +267,79 @@ test('a store-side catalog correction schedules a refresh; close unsubscribes', 
   assert.equal(lane.published.sessions.length, 1, 'the correction republished the catalog');
   catalog.close();
   assert.equal(unsubscribed, 1);
+});
+
+test('an agent-activity change republishes only the Agents pool, within the short window', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 1_800_000_000_000 });
+  const lane = catalogOwner();
+  let changed = null;
+  const catalog = new SessionHostCatalog(lane, {
+    directory: () => 'data',
+    watch: fakeWatch().watch,
+    subscribeStoreChanges: async (listener) => {
+      changed = listener;
+      return () => {};
+    },
+  });
+  catalog.ensureStoreWatcher();
+  await Promise.resolve();
+  await Promise.resolve();
+  changed('agent-activity');
+  changed('agent-activity');
+  t.mock.timers.tick(AGENT_ACTIVITY_REFRESH_MS);
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.equal(lane.published.agents.length, 1, 'one coalesced pool publish');
+  assert.equal(lane.published.sessions.length, 0, 'the session catalog is not re-listed');
+  assert.ok(AGENT_ACTIVITY_REFRESH_MS < STORE_REFRESH_DEBOUNCE_MS);
+  catalog.close();
+});
+
+test('agent-activity reads never overlap: changes during a slow read queue one trailing read', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 1_800_000_000_000 });
+  const lane = catalogOwner();
+  const reads = [];
+  lane.listAgentPool = () => {
+    const read = Promise.withResolvers();
+    reads.push(read);
+    return read.promise;
+  };
+  let changed = null;
+  const catalog = new SessionHostCatalog(lane, {
+    directory: () => 'data',
+    watch: fakeWatch().watch,
+    subscribeStoreChanges: async (listener) => {
+      changed = listener;
+      return () => {};
+    },
+  });
+  const flush = async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  };
+  catalog.ensureStoreWatcher();
+  await flush();
+  changed('agent-activity');
+  t.mock.timers.tick(AGENT_ACTIVITY_REFRESH_MS);
+  assert.equal(reads.length, 1);
+  // The read takes 3 s while every transition keeps signalling.
+  for (let elapsed = 0; elapsed < 3000; elapsed += AGENT_ACTIVITY_REFRESH_MS) {
+    changed('agent-activity');
+    t.mock.timers.tick(AGENT_ACTIVITY_REFRESH_MS);
+  }
+  assert.equal(reads.length, 1, 'no second read beside the running one');
+  reads[0].resolve([{ id: 'worker' }]);
+  await flush();
+  assert.equal(lane.published.agents.length, 1);
+  // One trailing read, spaced by the last read's duration.
+  t.mock.timers.tick(3000 - 1);
+  assert.equal(reads.length, 1);
+  t.mock.timers.tick(1);
+  assert.equal(reads.length, 2);
+  reads[1].resolve([{ id: 'worker' }]);
+  await flush();
+  assert.equal(lane.published.agents.length, 2);
+  t.mock.timers.tick(10_000);
+  assert.equal(reads.length, 2, 'nothing changed since: no further read');
+  catalog.close();
 });
 
 test('dispose closes the watcher and pending refresh timers', async (t) => {

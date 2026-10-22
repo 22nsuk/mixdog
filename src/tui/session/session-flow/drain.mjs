@@ -52,12 +52,24 @@ function renderBatchItems(batch, pushUserOrSyntheticItem) {
       }
       continue;
     }
+    // A routine fire paints as the routine's marker row, not a user bubble.
+    if (entry.mode === 'routine') {
+      pushUserOrSyntheticItem(entry.text, entry.id, 'routine', {
+        routineTrigger: entry.transcriptMeta?.routineTrigger,
+      });
+      continue;
+    }
     const sender = String(entry.transcriptMeta?.sender || '')
       .trim()
       .toLowerCase();
     const device = typeof entry.transcriptMeta?.device === 'string' ? entry.transcriptMeta.device : '';
-    const attribution = { ...(sender ? { sender } : {}), ...(device ? { device } : {}) };
-    let itemExtras = sender || device ? attribution : null;
+    const fromAgent = typeof entry.transcriptMeta?.fromAgent === 'string' ? entry.transcriptMeta.fromAgent : '';
+    const attribution = {
+      ...(sender ? { sender } : {}),
+      ...(device ? { device } : {}),
+      ...(fromAgent ? { fromAgent } : {}),
+    };
+    let itemExtras = sender || device || fromAgent ? attribution : null;
     if (Array.isArray(entry.images) && entry.images.length) {
       itemExtras = { images: entry.images, ...attribution };
     }
@@ -77,6 +89,23 @@ function batchPromptSource(batch) {
   return undefined;
 }
 
+/** The batch's transcript metadata; a batch of completion wakes also records
+ *  the execution ids it delivers (`consumedExecutionIds`, from each entry's
+ *  execution or resume keys; null for one with neither), the structured
+ *  provenance a task session's report follows (agent-task-sessions.mjs). */
+function completionWakeTranscriptMeta(batch) {
+  const meta = batch[0]?.transcriptMeta || null;
+  if (batchPromptSource(batch) !== 'task-notification') return meta;
+  const consumed = batch.flatMap((entry) => {
+    if (entry?.execution?.id) return [String(entry.execution.id)];
+    const keys = (Array.isArray(entry?.resumeCompletionKeys) ? entry.resumeCompletionKeys : []).map(String);
+    return keys.length
+      ? keys.map((key) => (key.startsWith('execution:') ? key.slice('execution:'.length) : null))
+      : [null];
+  });
+  return { ...(meta || {}), consumedExecutionIds: consumed };
+}
+
 export function turnOptionsForBatch(batch, steering) {
   const nonEditable = batch.filter((entry) => !isQueuedEntryEditable(entry));
   // A completion resume is owned by the completion that woke it. Esc
@@ -89,6 +118,8 @@ export function turnOptionsForBatch(batch, steering) {
   return {
     promptSource: batchPromptSource(batch),
     retryFailedTurn: batch[0]?.retryFailedTurn === true,
+    retryTurnId: batch[0]?.retryTurnId || null,
+    retryAttemptId: batch[0]?.retryAttemptId || null,
     displayText: batch
       .map((entry) => entry.text)
       .filter((text) => String(text || '').trim())
@@ -97,13 +128,20 @@ export function turnOptionsForBatch(batch, steering) {
     pastedTexts: mergePastedTexts(batch),
     submittedAt: earliestSubmittedAt(batch),
     onCommitted: () => steering.commitSteeringQueueEntries(batch),
+    // Cancelling typed input consumes its queue copy with or without draft
+    // restoration, without signalling successful delivery to onCommitted.
+    onAborted: () => steering.releaseSteeringQueueEntries(batch),
     submittedIds: [...new Set(batch.map((e) => e.id))],
     restorable: nonEditable.length === 0,
     requeueOnAbort: nonEditable.filter((entry) => !discardOnAbort.includes(entry)),
     discardExecutionPendingResumeKeys: discardOnAbort.flatMap((entry) =>
       Array.isArray(entry?.resumeCompletionKeys) ? entry.resumeCompletionKeys : []
     ),
-    transcriptMeta: batch[0]?.transcriptMeta || null,
+    transcriptMeta: completionWakeTranscriptMeta(batch),
+    // Only a routine turn names its selection text (never its payload).
+    ...(batch[0]?.mode === 'routine' && typeof batch[0].skillSelection === 'string'
+      ? { skillSelection: batch[0].skillSelection }
+      : {}),
     context:
       batch
         .map((entry) => String(entry.context || '').trim())
@@ -148,7 +186,7 @@ export function createDrainLoop(
   // matching message under its own lock).
   function rewindFailedTurnRows(batch) {
     const entry = batch[0];
-    if (entry?.retryFailedTurn !== true) return;
+    if (entry?.retryFailedTurn !== true || entry.retryTurnId) return;
     const rewound = rewoundFailedTurnItems(getState().items, entry.text);
     if (!rewound) return;
     set({
@@ -189,9 +227,7 @@ export function createDrainLoop(
     clearBlockedDrainRetry();
     if (entries.length === 0) return;
     queue.removeQueuedEntries(entries);
-    const mirrored = entries.filter(
-      (entry) => steering.shouldMirrorSteeringEntry(entry) && !entry.steeringPersistRestored
-    );
+    const mirrored = entries.filter((entry) => steering.shouldMirrorSteeringEntry(entry) && entry.steeringPersistId);
     if (mirrored.length > 0) {
       void Promise.resolve(dropTuiSteeringPersist(steering.leadSessionId(), mirrored)).catch(() => {});
     }
@@ -217,7 +253,7 @@ export function createDrainLoop(
     // but so do setModel/newSession/resume/etc). Running a turn concurrently
     // with a command that swaps or reroutes the live session is a race; the
     // commandBusy-release hook re-kicks drain once the command finishes.
-    if (flags.autoClearRunning || getState().commandBusy) {
+    if (flags.autoClearRunning || flags.quotaResumePending || getState().commandBusy) {
       scheduleBlockedDrainRetry();
       return;
     }
@@ -253,7 +289,7 @@ export function createDrainLoop(
         // its pre-compaction, a reset) runs before the next turn starts. The
         // finally below re-enters drain(), which waits on the same gate, and
         // the commandBusy release re-kicks the queue.
-        if (flags.autoClearRunning || getState().commandBusy) return;
+        if (flags.autoClearRunning || flags.quotaResumePending || getState().commandBusy) return;
         // Drain one priority/mode bucket at a time (unified command queue):
         // prompt steering stays editable and task notifications stay
         // non-editable but model-visible.
@@ -330,8 +366,16 @@ export function createDrainLoop(
     }
     submissions.remember(submissionId);
     pending.push(entry);
+    // Typed input or a deliverable notification ends a passive task wait or
+    // shell hold so the next boundary hands it to the model now.
+    const wake = steering.taskWaitWakeForEntry(entry);
+    if (wake) {
+      try {
+        bag.runtime?.interruptTaskWait?.(wake, wake === 'notification' ? entry.execution?.id || null : null);
+      } catch {}
+    }
     const needsDurableSteering =
-      (getState().busy || getState().commandBusy || flags.autoClearRunning) &&
+      (getState().busy || getState().commandBusy || flags.autoClearRunning || flags.quotaResumePending) &&
       steering.shouldMirrorSteeringEntry(entry);
     const persistence = needsDurableSteering ? appendTuiSteeringPersist(steering.leadSessionId(), entry) : null;
     if (isQueuedEntryVisible(entry)) {

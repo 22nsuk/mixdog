@@ -2,47 +2,38 @@
 // Chrome-parity layout/animation model and the drag gestures (reorder inside
 // the strip, drag below it to split/move) all live here. Class names are
 // contract for the strip-contract dom tests and the shared CSS.
-import React, {
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useReducer,
-  useRef,
-  useState,
-} from 'react';
+import React, { type KeyboardEvent, memo, useCallback, useEffect, useRef, useState } from 'react';
+import { useStableEvent } from './use-stable-event';
 import { createPortal } from 'react-dom';
-import { clampOverlayIntoView } from './anchored-panel';
 import { explorerAbsolutePath } from './explorer-tree-model';
 import { isRemoteHostRenderer } from './remote-ui-projection';
 import { FileText, FileDiff, Folder, Globe, MessageCircle, Plus, Sparkles, Terminal, X } from 'lucide-react';
 
 import type { DesktopSessionSummary } from '../shared/contract';
+import { sessionAttention, type SessionAttention } from '../shared/session-attention';
 import type { WorkspaceTab } from './nav-types';
+import { sessionAttentionOf, useSessionAttentionIndex } from './session-attention-index';
+import { SessionAttentionGlyph } from './session-status-mark';
 import { t } from './i18n';
 import { revealFileFromWindow } from './server-transfers';
 import { prefetchSurfaceForSelection } from './lazy-widgets';
 import { useMobileRemoteSurface } from './mobile-surface';
-import { useMobileBack } from './mobile-back';
 import { ProgressSpinner } from './ProgressSpinner';
 import { RemotePcBrandDot } from './RemotePcSwitcher';
+import { MixdogMark } from './mixdog-mark';
+import { isAgentChatSession } from './agent-chat-mode';
+import { AgentChatTabFace } from './agent-chat-header';
 import { useTabStripReveal } from './use-tab-strip-reveal';
+import { calculateChromeTabWidths, type TabMenuAnchor, type SetTabMenu, tabMenuAnchorAt } from './workspace-tab-layout';
 import {
-  acceptPaneDrag,
-  beginPaneDrag,
-  currentPaneDrag,
-  finishPaneDrag,
-  type PaneDragSession,
-} from './pane-drag-session';
-import {
-  TAB_MOTION_SETTLE_MS,
-  calculateChromeTabWidths,
-  type TabMenuAnchor,
-  type SetTabMenu,
-  tabMenuAnchorAt,
-  tabsWithClosingGhosts,
-  tabDropIndex,
-} from './workspace-tab-layout';
+  type TabRename,
+  useNewTaskTap,
+  useTabMenuDismiss,
+  useTabMotion,
+  useTabRename,
+  useTabRunWidth,
+  useTabStripDrag,
+} from './workspace-tab-strip-state';
 
 interface WorkspaceTabStripProps {
   tabs: WorkspaceTab[];
@@ -64,6 +55,8 @@ interface WorkspaceTabStripProps {
   /** Numeric target is the drop index (tab half rule, container = end). */
   onReorderTab(sourceKey: string, target: string | number): void;
   onPinTab?(tab: WorkspaceTab): void;
+  /** Session tabs rename in place on double-click (same commit rules as the sidebar row). */
+  onRenameSession?(sessionId: string, title: string): unknown;
   onNewTask(): void;
 }
 
@@ -105,6 +98,10 @@ function tabGlyph(tab: WorkspaceTab, size = 14) {
       return <Terminal size={size} />;
     case 'browser':
       return <Globe size={15} />;
+    case 'session':
+      // A bot chat's tab carries the bot's face.
+      if (isAgentChatSession(tab.selection.id)) return <AgentChatTabFace sessionId={tab.selection.id} />;
+      return <MessageCircle size={size} />;
     default:
       // Chat/new-task tabs keep the bubble icon (user: 탭 앞 아이콘은 롤백).
       return <MessageCircle size={size} />;
@@ -131,14 +128,7 @@ function workspaceTabHomeButton() {
       aria-label={t('Toggle session sidebar')}
       onClick={() => window.dispatchEvent(new Event('mixdog:mobile-home'))}
     >
-      <svg className="workspace-tab-home-mark" viewBox="44 44 168 168" aria-hidden="true">
-        <g fill="none" stroke="currentColor" strokeWidth="22" strokeLinecap="round">
-          <path d="M116.2 61A68 68 0 0 1 191.9 104.7" />
-          <path d="M116.2 61A68 68 0 0 1 191.9 104.7" transform="rotate(120 128 128)" />
-          <path d="M116.2 61A68 68 0 0 1 191.9 104.7" transform="rotate(240 128 128)" />
-        </g>
-        <polygon points="128,112 133,123 144,128 133,133 128,144 123,133 112,128 123,123" fill="currentColor" />
-      </svg>
+      <MixdogMark className="workspace-tab-home-mark" />
       <RemotePcBrandDot />
     </button>
   );
@@ -146,28 +136,38 @@ function workspaceTabHomeButton() {
 
 /** Phone title pill (user decision (a): 제목 알약은 그대로): the run of tabs
  *  has no room on a phone, so ONE label names the active tab — sessions live
- *  in the left drawer. Tapping does nothing; long-press keeps the tab menu
- *  for closing. The + and the dock toggles beside it are the desktop's. */
+ *  in the left drawer. Tapping re-selects the active tab (on an agent's home
+ *  thread that opens its profile); long-press keeps the tab menu for
+ *  closing. The + and the dock toggles beside it are the desktop's. */
 function workspaceMobileTabPill({
   tabs,
   activeKey,
   activeBusy,
   workingSessionIds,
+  pendingNewTask,
   setTabMenu,
+  onSelectTab,
 }: {
+  onSelectTab(tab: WorkspaceTab): void;
   tabs: WorkspaceTab[];
   activeKey: string;
   activeBusy: boolean;
   workingSessionIds: ReadonlySet<string> | undefined;
+  /** The + was just tapped: name the new task now, before the navigation commits. */
+  pendingNewTask: boolean;
   setTabMenu: SetTabMenu;
 }) {
-  const activeTab = tabs.find((tab) => tab.key === activeKey) ?? tabs[0];
-  const working = tabIsWorking(activeTab, true, activeBusy, workingSessionIds);
+  const pendingTab: WorkspaceTab = { key: '', title: t('New task'), selection: { kind: 'new' } };
+  const activeTab = pendingNewTask ? pendingTab : (tabs.find((tab) => tab.key === activeKey) ?? tabs[0]);
+  const working = !pendingNewTask && tabIsWorking(activeTab, true, activeBusy, workingSessionIds);
   return (
     <button
       type="button"
       className="workspace-tab-compact-current"
       data-tooltip={activeTab?.title}
+      onClick={() => {
+        if (activeTab && !pendingNewTask && activeTab.key === activeKey) onSelectTab(activeTab);
+      }}
       onContextMenu={(event) => {
         if (!activeTab) return;
         event.preventDefault();
@@ -202,7 +202,7 @@ function closingTabGhost(tab: WorkspaceTab, active: boolean) {
     >
       <button type="button" className="workspace-tab-main" tabIndex={-1}>
         {tabGlyph(tab)}
-        <span>{tab.title}</span>
+        <span className="workspace-tab-title">{tab.title}</span>
       </button>
       <button type="button" className="workspace-tab-close" tabIndex={-1}>
         <X size={18} aria-hidden="true" />
@@ -211,13 +211,56 @@ function closingTabGhost(tab: WorkspaceTab, active: boolean) {
   );
 }
 
-/** One live tab cell: selection, its working/unread readout, the drag source,
- *  the middle-click and context gestures, and the close control. */
+type WorkspaceTabCellProps = Parameters<typeof workspaceTabNode>[0];
+
+/** Equal when the cell would draw the same: the strip rebuilds every tab
+ *  object per commit, so a tab compares by its fields; its handlers are the
+ *  strip's stable events, and a rename by its draft (renameActions). */
+function sameTabCell(previous: WorkspaceTabCellProps, next: WorkspaceTabCellProps): boolean {
+  const a = previous.tab;
+  const b = next.tab;
+  return (
+    a.key === b.key &&
+    a.title === b.title &&
+    a.selection === b.selection &&
+    Boolean(a.preview) === Boolean(b.preview) &&
+    Boolean(a.pinned) === Boolean(b.pinned) &&
+    Boolean(a.dirty) === Boolean(b.dirty) &&
+    previous.active === next.active &&
+    previous.working === next.working &&
+    previous.attention === next.attention &&
+    previous.dragging === next.dragging &&
+    previous.entering === next.entering &&
+    previous.dropLeft === next.dropLeft &&
+    previous.dropRight === next.dropRight &&
+    previous.pinnedTabWidth === next.pinnedTabWidth &&
+    previous.suppressTabClick === next.suppressTabClick &&
+    previous.setTabNode === next.setTabNode &&
+    previous.selectTab === next.selectTab &&
+    previous.startNativeDrag === next.startNativeDrag &&
+    previous.setTabMenu === next.setTabMenu &&
+    previous.onCloseTab === next.onCloseTab &&
+    previous.onPinTab === next.onPinTab &&
+    Boolean(previous.rename) === Boolean(next.rename) &&
+    previous.rename?.draft === next.rename?.draft &&
+    previous.rename?.commit === next.rename?.commit
+  );
+}
+
+/** One tab of the strip, rendered only when that tab changed: the strip
+ *  itself renders on every App commit (a session switch is several). */
+const WorkspaceTabCell = memo(function WorkspaceTabCell(props: WorkspaceTabCellProps) {
+  return workspaceTabNode(props);
+}, sameTabCell);
+
+/** One live tab cell: selection, its status readout (the strongest of needs
+ *  you, failed, working and unread), the drag source, the middle-click and
+ *  context gestures, and the close control. */
 function workspaceTabNode({
   tab,
   active,
   working,
-  unread,
+  attention,
   dragging,
   entering,
   dropLeft,
@@ -230,11 +273,13 @@ function workspaceTabNode({
   setTabMenu,
   onCloseTab,
   onPinTab,
+  rename,
 }: {
   tab: WorkspaceTab;
   active: boolean;
   working: boolean;
-  unread: boolean;
+  attention: SessionAttention | '';
+  rename: TabRename | null;
   dragging: boolean;
   entering: boolean;
   dropLeft: boolean;
@@ -252,17 +297,19 @@ function workspaceTabNode({
   onCloseTab(tab: WorkspaceTab): void;
   onPinTab?(tab: WorkspaceTab): void;
 }) {
+  const editing = rename?.draft != null;
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the tab wrapper only carries drag, middle-click and context menu; its inner button is the control.
     <div
       key={tab.key}
       ref={(node) => setTabNode(tab.key, node)}
-      className={`workspace-tab ${active ? 'active' : ''} ${tab.preview ? 'preview' : ''} ${tab.dirty ? 'dirty' : ''} ${dragging ? 'dragging' : ''} ${dropLeft ? 'drop-target-left' : ''} ${dropRight ? 'drop-target-right' : ''} ${entering ? 'entering' : ''}`}
+      className={`workspace-tab ${active ? 'active' : ''} ${tab.preview ? 'preview' : ''} ${tab.dirty ? 'dirty' : ''} ${dragging ? 'dragging' : ''} ${dropLeft ? 'drop-target-left' : ''} ${dropRight ? 'drop-target-right' : ''} ${entering ? 'entering' : ''} ${editing ? 'editing' : ''}`}
       data-tab-key={tab.key}
       data-active={active}
       data-working={working || undefined}
+      data-attention={attention || undefined}
       aria-grabbed={dragging}
-      draggable
+      draggable={!editing}
       style={
         pinnedTabWidth
           ? ({
@@ -286,12 +333,43 @@ function workspaceTabNode({
         event.preventDefault();
         onCloseTab(tab);
       }}
-      onDoubleClick={() => onPinTab?.(tab)}
+      onDoubleClick={(event) => {
+        if (editing || (event.target as Element | null)?.closest?.('.workspace-tab-close')) return;
+        onPinTab?.(tab);
+        rename?.start(tab);
+      }}
       onContextMenu={(event) => {
+        if (editing) return;
         event.preventDefault();
         setTabMenu(tabMenuAnchorAt(tab.key, event));
       }}
     >
+      {editing && rename && (
+        <input
+          // biome-ignore lint/a11y/noAutofocus: the rename field opens from an explicit double-click and must take the caret.
+          autoFocus
+          className="workspace-tab-title-input"
+          value={rename.draft ?? ''}
+          maxLength={100}
+          aria-label={t('Rename {{name}}', { name: tab.title })}
+          onFocus={(event) => event.currentTarget.select()}
+          onInput={(event) => rename.change(event.currentTarget.value)}
+          onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              rename.commit(tab);
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              rename.cancel();
+            }
+          }}
+          onBlur={() => rename.commit(tab)}
+        />
+      )}
       <button
         type="button"
         className="workspace-tab-main"
@@ -307,9 +385,12 @@ function workspaceTabNode({
         aria-label={tab.title}
         data-tooltip={tab.title}
       >
-        {/* While the session works, the tab GLYPH becomes the
-              progress spinner (user decision) — no extra dot. */}
-        {working ? (
+        {/* The tab GLYPH carries the strongest status: the needs-you or
+              failure mark, else the progress spinner while the session works
+              (user decision) — no extra dot. */}
+        {attention === 'needs-you' || attention === 'failed' || attention === 'waiting' ? (
+          <SessionAttentionGlyph status={attention} name={tab.title} size={14} className="workspace-tab-attention" />
+        ) : working ? (
           <ProgressSpinner
             size={14}
             className="workspace-tab-status"
@@ -319,8 +400,8 @@ function workspaceTabNode({
         ) : (
           tabGlyph(tab)
         )}
-        <span>{tab.title}</span>
-        {unread && !working && (
+        <span className="workspace-tab-title">{tab.title}</span>
+        {attention === 'unread' && (
           <i
             className="workspace-tab-unread-dot"
             role="status"
@@ -458,15 +539,22 @@ export function WorkspaceTabStrip({
   onCloseTab,
   onReorderTab,
   onPinTab,
+  onRenameSession,
   onNewTask,
 }: WorkspaceTabStripProps) {
+  const tabRename = useTabRename(onRenameSession);
+  // The strip's owner hands fresh handlers on every App commit; the cells
+  // call them through these, so an unchanged tab skips the commit.
+  const selectTabEvent = useStableEvent(onSelectTab);
+  const closeTabEvent = useStableEvent(onCloseTab);
+  const pinTabEvent = useStableEvent((tab: WorkspaceTab) => onPinTab?.(tab));
   // The mobile root marker + device-scale factor install in main.tsx BEFORE
   // the first render (user: 첫 진입 레이아웃 시프트) — nothing to do here.
   const selectTab = useCallback(
     (tab: WorkspaceTab) => {
       prefetchTabSurface(tab);
       const startedAt = performance.now();
-      onSelectTab(tab);
+      selectTabEvent(tab);
       if (!window.mixdogDesktop?.perfLog) return;
       window.requestAnimationFrame(() =>
         window.requestAnimationFrame(() => {
@@ -476,127 +564,26 @@ export function WorkspaceTabStrip({
         })
       );
     },
-    [onSelectTab]
+    [selectTabEvent]
   );
   const tabNodes = useRef(new Map<string, HTMLDivElement>());
   const tabStrip = useRef<HTMLElement>(null);
-  const nativeDrag = useRef<PaneDragSession | null>(null);
-  const dragSourceMounted = useRef(true);
-  const suppressTabClick = useRef('');
-  const [draggingKey, setDraggingKey] = useState('');
-  const [dropIndex, setDropIndex] = useState<number | null>(null);
-  const [draggingGroup, setDraggingGroup] = useState(false);
-  const [dragScroll, setDragScroll] = useState(false);
   const [tabMenu, setTabMenu] = useState<TabMenuAnchor | null>(null);
   const tabMenuNode = useRef<HTMLDivElement>(null);
   // Every renderer follows ONE tab-strip layout —
   // tabs shrink to sliver floors and never switch to a device-specific mode.
   const shellNode = useRef<HTMLDivElement>(null);
-  const [, setShellWidth] = useState(0);
-  const [stripAvailable, setStripAvailable] = useState(0);
   // The phone draws the SAME strip as the desktop (user: PC에 최대한 맞춰서 —
   // 헤더가 완전 다르다): real tabs, X, + and the dock toggles. Its only
   // addition is the brand mark at the front, which opens the session drawer
   // the desktop reaches through its activity rail.
   const mobile = useMobileRemoteSurface();
-  // Layout INPUT: the width the tab run may spend — the shell minus the
-  // home slot, the fixed + slot and the three-control trailing safe zone.
-  const measureWidths = useCallback(() => {
-    const shell = shellNode.current;
-    if (!shell) return;
-    const width = shell.clientWidth;
-    setShellWidth((previous) => (previous === width ? previous : width));
-    const homeButton = shell.querySelector<HTMLElement>(':scope > .workspace-tab-home');
-    const newButton = shell.querySelector<HTMLElement>(':scope > .workspace-tab-new');
-    const trailingBox = shell.querySelector<HTMLElement>(':scope > .workspace-tabs-trailing');
-    const available =
-      width - (homeButton?.offsetWidth ?? 0) - (newButton?.offsetWidth ?? 0) - (trailingBox?.offsetWidth ?? 0);
-    setStripAvailable((previous) => (previous === available ? previous : available));
-  }, []);
-  // Tab context menu (Close / Close Others / Close to the
-  // Right / Keep Open) with standard outside-click dismissal.
-  useEffect(() => {
-    if (!tabMenu) return undefined;
-    const closeOutside = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target && tabMenuNode.current?.contains(target)) return;
-      setTabMenu(null);
-    };
-    const closeMenu = () => setTabMenu(null);
-    document.addEventListener('pointerdown', closeOutside);
-    window.addEventListener('resize', closeMenu);
-    window.addEventListener('scroll', closeMenu, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOutside);
-      window.removeEventListener('resize', closeMenu);
-      window.removeEventListener('scroll', closeMenu, true);
-    };
-  }, [tabMenu]);
-  // ABB: the context menu closes on hardware back like every other layer.
-  useMobileBack(Boolean(tabMenu), () => setTabMenu(null));
-  // Shell width drives the Chrome tab-width ladder.
-  const hasTrailing = Boolean(trailing);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: hasTrailing re-attaches the observer when the trailing box mounts or unmounts
-  useLayoutEffect(() => {
-    const shell = shellNode.current;
-    if (!shell || typeof ResizeObserver === 'undefined') return undefined;
-    measureWidths();
-    const observer = new ResizeObserver(measureWidths);
-    observer.observe(shell);
-    // The trailing controls resize WITHOUT resizing the shell (a dock toggle
-    // appears, a status chip grows); observing the box itself replaces the
-    // old re-measure on every render that handed a fresh `trailing` node —
-    // which was every App render, each a forced layout inside the commit.
-    const trailingBox = shell.querySelector<HTMLElement>(':scope > .workspace-tabs-trailing');
-    if (trailingBox) observer.observe(trailingBox);
-    return () => observer.disconnect();
-  }, [measureWidths, hasTrailing]);
-  // Tab-count changes move the available width without resizing the shell —
-  // re-measure on those renders too.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: tab count and trailing presence move the available width without resizing the shell
-  useLayoutEffect(() => {
-    measureWidths();
-  }, [tabs.length, hasTrailing, measureWidths]);
-  // Menus can anchor hard against the window's right edge; the measured box
-  // is what keeps them on screen.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the menu box is re-clamped whenever a menu opens or moves
-  useLayoutEffect(() => {
-    clampOverlayIntoView(tabMenuNode.current);
-  }, [tabMenu]);
-  // Survivor widths follow the recalculated run immediately; the CSS width
-  // transition glides them instead of holding then jumping.
-  // A tab the strip has just lost stays mounted as a ghost for one motion beat,
-  // collapsing to nothing so its neighbours slide into the released space
-  // instead of jumping across it; a tab the strip has just gained grows in
-  // from nothing over the same beat (CSS @starting-style), so the run never
-  // overflows the strip and the leading tab is never clipped and scrolled
-  // back. Both are derived during render from the previous tab list: the
-  // closing element is the very node that was open (its width transition
-  // starts from where it stands), and the entering mark is on the node when
-  // it is inserted. A same-length change (a draft promoted to its session)
-  // animates nothing — that is a replacement, not an add or a close.
-  const previousTabs = useRef(tabs);
-  const previousActiveKey = useRef(activeKey);
-  const closingTabs = useRef(new Map<string, { tab: WorkspaceTab; index: number; active: boolean }>());
-  const enteringKeys = useRef(new Set<string>());
-  const [, settleTabMotion] = useReducer((count: number) => count + 1, 0);
-  const displayTabs = tabsWithClosingGhosts(tabs, previousTabs, closingTabs, enteringKeys, previousActiveKey.current);
-  useLayoutEffect(() => {
-    previousTabs.current = tabs;
-    previousActiveKey.current = activeKey;
-  }, [tabs, activeKey]);
-  // One beat after the last change the ghosts unmount and the entering marks
-  // drop; a change inside the beat restarts it so every tab settles together.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a tab list change restarts the settle beat
-  useEffect(() => {
-    if (!closingTabs.current.size && !enteringKeys.current.size) return undefined;
-    const timer = window.setTimeout(() => {
-      closingTabs.current.clear();
-      enteringKeys.current.clear();
-      settleTabMotion();
-    }, TAB_MOTION_SETTLE_MS);
-    return () => window.clearTimeout(timer);
-  }, [tabs]);
+  const [newTaskPending, tapNewTask] = useNewTaskTap(mobile, activeKey, onNewTask);
+  // Needs-you and failure signals; working and unread come in as props.
+  const attentionIndex = useSessionAttentionIndex();
+  const stripAvailable = useTabRunWidth(shellNode, tabs.length, Boolean(trailing));
+  useTabMenuDismiss(tabMenu, tabMenuNode, setTabMenu);
+  const { displayTabs, enteringKeys } = useTabMotion(tabs, activeKey);
   const setTabNode = useCallback((key: string, node: HTMLDivElement | null) => {
     if (node) tabNodes.current.set(key, node);
     else tabNodes.current.delete(key);
@@ -620,91 +607,19 @@ export function WorkspaceTabStrip({
     return () => window.removeEventListener('mixdog:close-active-tab', closeActive);
   }, [activeKey, focused, onCloseTab, tabs]);
 
-  const clearNativeDrag = useCallback(() => {
-    const drag = nativeDrag.current;
-    nativeDrag.current = null;
-    delete document.body.dataset.tabDragging;
-    if (!dragSourceMounted.current) return;
-    setDraggingKey('');
-    setDraggingGroup(false);
-    setDragScroll(false);
-    setDropIndex(null);
-    if (drag?.kind === 'tab') {
-      suppressTabClick.current = drag.key;
-      window.setTimeout(() => {
-        if (suppressTabClick.current === drag.key) suppressTabClick.current = '';
-      }, 0);
-    }
-  }, []);
-  const finishNativeDrag = useCallback(() => finishPaneDrag(), []);
-  useEffect(() => {
-    dragSourceMounted.current = true;
-    return () => {
-      dragSourceMounted.current = false;
-      if (nativeDrag.current) finishPaneDrag();
-      nativeDrag.current = null;
-      delete document.body.dataset.tabDragging;
-    };
-  }, []);
-
-  const startNativeDrag = useCallback(
-    (event: React.DragEvent<HTMLElement>, kind: 'tab' | 'group', sourceTab: WorkspaceTab | undefined) => {
-      if (!sourceTab) {
-        event.preventDefault();
-        return;
-      }
-      const drag: PaneDragSession = {
-        kind,
-        key: sourceTab.key,
-        title: sourceTab.title,
-        selection: sourceTab.selection,
-        sourceLeafId: paneId,
-      };
-      beginPaneDrag(event.nativeEvent, drag, event.currentTarget, clearNativeDrag);
-      nativeDrag.current = drag;
-      if (kind === 'group') setDraggingGroup(true);
-      else setDraggingKey(sourceTab.key);
-      document.body.dataset.tabDragging = '1';
-    },
-    [clearNativeDrag, paneId]
-  );
-
-  const dropIndexAt = useCallback(
-    (clientX: number, target: EventTarget | null): number | null => {
-      const strip = tabStrip.current;
-      if (!strip) return null;
-      return tabDropIndex({ tabs, tabNodes: tabNodes.current, strip, clientX, target });
-    },
-    [tabs]
-  );
-
-  const handleNativeDragOver = useCallback(
-    (event: React.DragEvent<HTMLElement>) => {
-      const drag = currentPaneDrag();
-      if (!drag) return;
-      setDragScroll(true);
-      if (drag.kind !== 'tab' || drag.sourceLeafId !== paneId) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-      setDropIndex(dropIndexAt(event.clientX, event.target));
-    },
-    [dropIndexAt, paneId]
-  );
-
-  const handleNativeDrop = useCallback(
-    (event: React.DragEvent<HTMLElement>) => {
-      const drag = currentPaneDrag();
-      if (drag?.kind !== 'tab' || drag.sourceLeafId !== paneId) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const index = dropIndexAt(event.clientX, event.target);
-      if (index !== null) onReorderTab(drag.key, index);
-      acceptPaneDrag();
-      setDropIndex(null);
-    },
-    [dropIndexAt, onReorderTab, paneId]
-  );
+  const {
+    draggingKey,
+    dropIndex,
+    draggingGroup,
+    dragScroll,
+    suppressTabClick,
+    startNativeDrag,
+    finishNativeDrag,
+    handleNativeDragOver,
+    handleNativeDrop,
+    enterStrip,
+    leaveStrip,
+  } = useTabStripDrag({ tabs, paneId, tabStrip, tabNodes, onReorderTab });
 
   // Chromium CalculateTabBounds output for the current strip input; the
   // per-tab width variable pins basis/min/max exactly like gfx::Rect bounds.
@@ -743,7 +658,9 @@ export function WorkspaceTabStrip({
           activeKey,
           activeBusy,
           workingSessionIds,
+          pendingNewTask: newTaskPending,
           setTabMenu,
+          onSelectTab: selectTab,
         })}
       {!mobile && (
         <nav
@@ -765,13 +682,9 @@ export function WorkspaceTabStrip({
             if (event.target !== event.currentTarget) return;
             startNativeDrag(event, 'group', tabs.find((tab) => tab.key === activeKey) ?? tabs[0]);
           }}
-          onDragEnter={() => setDragScroll(true)}
+          onDragEnter={enterStrip}
           onDragOver={handleNativeDragOver}
-          onDragLeave={(event) => {
-            if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-            setDragScroll(false);
-            setDropIndex(null);
-          }}
+          onDragLeave={leaveStrip}
           onDrop={handleNativeDrop}
           onDragEnd={finishNativeDrag}
         >
@@ -783,25 +696,33 @@ export function WorkspaceTabStrip({
             const dropRight = draggingKey && dropIndex !== null && tabs[dropIndex]?.key === tab.key;
             const working = tabIsWorking(tab, active, activeBusy, workingSessionIds);
             const unread = tab.selection.kind === 'session' && unreadSessionIds?.has(tab.selection.id) === true;
+            const attention =
+              tab.selection.kind === 'session'
+                ? sessionAttentionOf(attentionIndex, tab.selection.id, { running: working, unread })
+                : sessionAttention({ running: working });
             const pinnedTabWidth = chromeWidths?.[index];
-            return workspaceTabNode({
-              tab,
-              active,
-              working,
-              unread,
-              dragging: draggingKey === tab.key,
-              entering: enteringKeys.current.has(tab.key),
-              dropLeft: Boolean(dropLeft),
-              dropRight: Boolean(dropRight),
-              pinnedTabWidth,
-              suppressTabClick,
-              setTabNode,
-              selectTab,
-              startNativeDrag,
-              setTabMenu,
-              onCloseTab,
-              onPinTab,
-            });
+            return (
+              <WorkspaceTabCell
+                key={tab.key}
+                tab={tab}
+                active={active}
+                working={working}
+                attention={attention}
+                dragging={draggingKey === tab.key}
+                entering={enteringKeys.current.has(tab.key)}
+                dropLeft={Boolean(dropLeft)}
+                dropRight={Boolean(dropRight)}
+                pinnedTabWidth={pinnedTabWidth}
+                suppressTabClick={suppressTabClick}
+                setTabNode={setTabNode}
+                selectTab={selectTab}
+                startNativeDrag={startNativeDrag}
+                setTabMenu={setTabMenu}
+                onCloseTab={closeTabEvent}
+                onPinTab={onPinTab ? pinTabEvent : undefined}
+                rename={tabRename(tab)}
+              />
+            );
           })}
         </nav>
       )}
@@ -813,7 +734,7 @@ export function WorkspaceTabStrip({
         className="workspace-tab-new"
         aria-label={t('New task')}
         data-tooltip={t('New task')}
-        onClick={onNewTask}
+        onClick={tapNewTask}
       >
         {/* Same lucide family and weight as the tab glyphs and dock toggles
               beside it; the codicon + read as a foreign mark (user: + 버튼이

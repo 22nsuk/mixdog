@@ -11,11 +11,14 @@ import { SessionLaneCache } from './session-lane-cache';
 import { reportSessionReadFrame } from './session-read-diagnostics';
 import { sharedTranscriptSnapshotDecorator, type TranscriptSnapshotDecorator } from './snapshot-transcript-decoration';
 import { cancelLayoutFrame, scheduleLayoutFrame } from './interaction-frame-scheduler';
+import { noteStreamLaneFrame, noteStreamPublish } from './transcript-stream-metrics';
 
 type SessionLaneSource = (listener: (update: DesktopSessionStateUpdate) => void) => () => void;
 
 interface SessionLaneStore {
   get(sessionId: string): Snapshot | null;
+  /** The authoritative content revision the cached lane was accepted at. */
+  revision(sessionId: string): number | null;
   subscribe(sessionId: string, listener: () => void): () => void;
   /** Wire the preload lane once; returns a stop function. Idempotent — a
    *  second start while wired returns the existing stop. */
@@ -30,6 +33,10 @@ interface SessionLaneStore {
   };
   /** Session ids at least one mounted pane is currently subscribed to. */
   subscribedSessionIds(): string[];
+  /** Sessions whose cached lane carries a pending tool approval; a new set
+   *  identity only when membership changes. */
+  approvalSessionIds(): ReadonlySet<string>;
+  subscribeApprovals(listener: () => void): () => void;
   /** Drop cached lanes with no subscribers (remote sync-gap recovery: an
    *  emptied lane re-reads through session.read on its next open). */
   evictInactive(): void;
@@ -459,6 +466,23 @@ export function createSessionLaneStore({
   });
   const notificationKeys = new Map<string, object>();
   let stop: (() => void) | null = null;
+  let approvals: ReadonlySet<string> = new Set();
+  const approvalListeners = new Set<() => void>();
+  // Membership follows the lane's own toolApproval, so it costs one check per
+  // frame and notifies only when a session starts or stops waiting.
+  // A lane that left the cache (eviction, pruning, release) no longer carries
+  // its approval, so every path that can drop one reconciles here too.
+  const syncApprovals = (sessionId?: string): void => {
+    const next = new Set(approvals);
+    for (const id of approvals) if (!snapshots.get(id)) next.delete(id);
+    if (sessionId !== undefined) {
+      if (snapshots.get(sessionId)?.snapshot.toolApproval) next.add(sessionId);
+      else next.delete(sessionId);
+    }
+    if (next.size === approvals.size && [...next].every((id) => approvals.has(id))) return;
+    approvals = next;
+    for (const listener of [...approvalListeners]) listener();
+  };
   const notificationKey = (sessionId: string): object => {
     let key = notificationKeys.get(sessionId);
     if (!key) {
@@ -470,6 +494,7 @@ export function createSessionLaneStore({
   const notify = (sessionId: string): void => {
     const bucket = listeners.get(sessionId);
     if (!bucket) return;
+    noteStreamPublish();
     for (const listener of [...bucket]) listener();
   };
   const apply = (update: DesktopSessionStateUpdate): void => {
@@ -540,7 +565,9 @@ export function createSessionLaneStore({
     }
     snapshots.prune();
     const nextSnapshot = snapshots.get(sessionId)?.snapshot ?? null;
+    syncApprovals(sessionId);
     reportSessionReadFrame({ ...update, snapshot: nextSnapshot }, 'applied', performance.now() - readFrameStartedAt);
+    noteStreamLaneFrame(sessionId, nextSnapshot?.streamingTail);
     if ((listeners.get(sessionId)?.size || 0) === 0) {
       const key = notificationKeys.get(sessionId);
       if (key) cancelLayoutFrame(key);
@@ -562,6 +589,9 @@ export function createSessionLaneStore({
       snapshots.touch(sessionId);
       return entry.snapshot;
     },
+    revision(sessionId) {
+      return snapshots.get(sessionId)?.revision ?? null;
+    },
     subscribe(sessionId, listener) {
       let bucket = listeners.get(sessionId);
       if (!bucket) {
@@ -580,6 +610,7 @@ export function createSessionLaneStore({
           if (key) cancelLayoutFrame(key);
           notificationKeys.delete(sessionId);
           snapshots.release(sessionId);
+          syncApprovals();
           // An unmounted lane that is no longer cached has nothing displayed
           // to keep stable; a cached one keeps its baseline for re-entry.
           if (!snapshots.get(sessionId)) decorator.forget?.(sessionId);
@@ -587,8 +618,16 @@ export function createSessionLaneStore({
       };
     },
     subscribedSessionIds: () => [...listeners.keys()],
+    approvalSessionIds: () => approvals,
+    subscribeApprovals(listener) {
+      approvalListeners.add(listener);
+      return () => {
+        approvalListeners.delete(listener);
+      };
+    },
     evictInactive() {
       snapshots.evictInactive();
+      syncApprovals();
     },
     start(source = window.mixdogDesktop?.subscribeSessionState?.bind(window.mixdogDesktop)) {
       if (stop) return stop;
@@ -618,12 +657,30 @@ export function createSessionLaneStore({
       notificationKeys.clear();
       snapshots.clear();
       decorator.clear();
+      if (approvals.size > 0) {
+        approvals = new Set();
+        for (const listener of [...approvalListeners]) listener();
+      }
     },
   };
 }
 
 /** Shared store for the app renderer; components use the hook below. */
 export const defaultSessionLaneStore = createSessionLaneStore();
+
+/** The lane's authoritative content revision (the publication envelope's,
+ *  not anything inside the snapshot); re-renders only when it moves. */
+export function useSessionLaneRevision(
+  sessionId: string,
+  store: SessionLaneStore = defaultSessionLaneStore,
+  enabled = true
+): number | null {
+  const subscribe = useCallback(
+    (listener: () => void) => (enabled && sessionId ? store.subscribe(sessionId, listener) : () => {}),
+    [enabled, sessionId, store]
+  );
+  return useSyncExternalStore(subscribe, () => (enabled && sessionId ? store.revision(sessionId) : null));
+}
 
 export function useSessionLane(
   sessionId: string,

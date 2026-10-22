@@ -7,6 +7,7 @@ import { normalizeEffortInput } from './effort.mjs';
 import { isLikelyRawModelId } from './config-helpers.mjs';
 import { configuredAgentRouteCandidates } from '../../../shared/agent-route-config.mjs';
 import { normalizeContextTokens } from '../../../shared/llm/default-context-window.mjs';
+import { canonicalRouteProvider, normalizeRouteChain } from '../../../shared/model-route-chain.mjs';
 import { normalizeAgentId, normalizeWorkflowId } from './workflow-ids.mjs';
 import { createWorkflowPacks } from './workflow/packs.mjs';
 import { createWorkflowAgents } from './workflow/agents.mjs';
@@ -38,12 +39,6 @@ const WEB_SEARCH_PROVIDER_FAMILIES = new Map([
 ]);
 export const WEB_SEARCH_DEFAULT_PROVIDER = 'default';
 export const WEB_SEARCH_DEFAULT_MODEL = 'default';
-const WEB_SEARCH_PROVIDER_ALIASES = Object.freeze({
-  'openai-api': 'openai',
-  'xai-api': 'xai',
-  'gemini-api': 'gemini',
-  'anthropic-api': 'anthropic',
-});
 
 export function workflowPresetId(slot) {
   return `workflow-${slot}`;
@@ -69,10 +64,13 @@ export function toSessionWorkflowMeta(workflow) {
 }
 
 // Older sessions stored delegation policy here. Current summaries retain the
-// effective capability so an empty agent catalog still removes the tool.
-export function workflowDisallowsAgentTool(workflow) {
+// effective capability: an empty agent catalog removes the tool from an
+// agent-mode Lead only. A coding Lead keeps `agent` whichever agents exist;
+// the agents it may delegate to reach it as a listing reminder
+// (manager/agent-listing-notice.mjs) and a spawn of one switched off is refused.
+export function workflowDisallowsAgentTool(workflow, { agentMode = false } = {}) {
   if (!workflow || typeof workflow !== 'object') return false;
-  if (workflow.delegatesAgents === false) return true;
+  if (agentMode && workflow.delegatesAgents === false) return true;
   return Boolean(workflow.agentsConfigured === true && Array.isArray(workflow.agents) && workflow.agents.length === 0);
 }
 
@@ -121,8 +119,7 @@ export function createWorkflowHelpers({ rootDir, dataDir, readMarkdownDocument, 
 }
 
 export function normalizeWebSearchProviderId(provider) {
-  const id = clean(provider);
-  return WEB_SEARCH_PROVIDER_ALIASES[id] || id;
+  return canonicalRouteProvider(provider);
 }
 
 export function isDefaultWebSearchRouteConfig(routeLike = {}) {
@@ -141,6 +138,10 @@ export function isWebSearchCapableProvider(provider) {
 }
 
 export function normalizeWebSearchRouteConfig(routeLike, fallback = {}) {
+  return normalizeRouteChain(routeLike, normalizeWebSearchRouteLeaf, fallback);
+}
+
+function normalizeWebSearchRouteLeaf(routeLike, fallback = {}) {
   const provider = normalizeWebSearchProviderId(routeLike?.provider || fallback.provider);
   const model = clean(routeLike?.model || fallback.model);
   if (!provider || !model) return null;
@@ -178,6 +179,10 @@ export function webSearchRouteOrDefault(...routeLikes) {
 }
 
 export function normalizeWorkflowRoute(routeLike, fallback = {}) {
+  return normalizeRouteChain(routeLike, normalizeWorkflowRouteLeaf, fallback);
+}
+
+function normalizeWorkflowRouteLeaf(routeLike, fallback = {}) {
   const provider = clean(routeLike?.provider) || clean(fallback.provider);
   const model = clean(routeLike?.model) || clean(fallback.model);
   if (!provider || !model) return null;
@@ -225,6 +230,8 @@ export function upsertWorkflowPreset(presets, slot, routeLike) {
     ...(route.fast === true ? { fast: true } : {}),
     ...(route.autoEffort === false ? { autoEffort: false } : {}),
     ...(route.modelParameters ? { modelParameters: route.modelParameters } : {}),
+    // The Lead's fallback models (absent = none); see session/owner-route-fallbacks.mjs.
+    ...(route.fallbacks?.length ? { fallbacks: route.fallbacks } : {}),
     tools: 'full',
   };
   const next = (Array.isArray(presets) ? presets : []).filter(

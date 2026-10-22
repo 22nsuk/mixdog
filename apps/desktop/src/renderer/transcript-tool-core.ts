@@ -1,13 +1,16 @@
 import type { TranscriptItem } from './desktop-types';
+import type { PatchSectionDigest } from './renderer-logic.mjs';
 import { t, uiFormatLocale } from './i18n';
 import { asRecord, oneLine } from './text-format';
 // biome-ignore format: @ts-expect-error must precede the specifier
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
 import { aggregateToolCategoryEntry, classifyToolCategory, formatToolSurface, toolLoadingTargets } from '../../../../src/runtime/shared/tool-surface.mjs';
+// biome-ignore format: @ts-expect-error must precede the specifier
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
-import { parseMcpToolName, titleCaseMcpServer } from '../../../../src/runtime/shared/tool-primitives.mjs';
+import { parseMcpToolName, titleCaseMcpServer, toolCallDisplayIdentity } from '../../../../src/runtime/shared/tool-primitives.mjs';
+// biome-ignore format: @ts-expect-error must precede the specifier
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
-import { deriveToolOutcomeTone, resultTerminalStatus } from '../../../../src/runtime/shared/tool-card-model.mjs';
+import { bridgeDescribeResult, deriveToolOutcomeTone, resultTerminalStatus } from '../../../../src/runtime/shared/tool-card-model.mjs';
 
 export interface ToolCardModel {
   pending: boolean;
@@ -52,7 +55,7 @@ export function isHookApprovalDenialToolItem(item: TranscriptItem) {
   if (!item.isError) return false;
   const text = toolResultText(item);
   return (
-    /^Error:\s*tool\s*"[^"]*"\s*denied by hook\b/im.test(text) ||
+    /^Error:\s*tool\s*"[^"]*"\s*(?:denied by hook|was not approved)\b/im.test(text) ||
     /denied by hook:\s*approval required but no approval UI is available/i.test(text)
   );
 }
@@ -71,6 +74,57 @@ export function shouldSuppressFullyFailedToolItem(item: TranscriptItem) {
   return completed >= count && errors >= count && !isHookApprovalDenialToolItem(item) && !toolResultText(item);
 }
 
+/** The diff a phone's copy of a call carries instead of its text: one digest
+ *  per file section, computed by the host with `patchSectionDigests`
+ *  (`remote-transcript.ts`). Null on a row that holds its diff, or has none. */
+export interface UiDiffSummary {
+  sections: PatchSectionDigest[];
+}
+export function uiDiffDigest(item: TranscriptItem): UiDiffSummary | null {
+  const digest = item.uiDiffSummary as Partial<UiDiffSummary> | null | undefined;
+  return digest && typeof digest === 'object' && Array.isArray(digest.sections) ? (digest as UiDiffSummary) : null;
+}
+
+/** FNV-1a over the whole text: one linear pass, no allocation. */
+function textHash(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/** What a fetched full output or diff is bound to: the parts of a row that
+ *  change when its output or diff does. A text fetched for one revision is
+ *  never shown for another. */
+export function toolRowRevision(item: TranscriptItem): string {
+  const digest = uiDiffDigest(item);
+  const signature = digest
+    ? digest.sections
+        .map(
+          (section) =>
+            `${section.names.join('>')}:${section.counts.additions}/${section.counts.deletions}:${section.statuses.join('')}`
+        )
+        .join(';')
+    : '';
+  const identity = (value: unknown) => (typeof value === 'string' ? `${value.length}.${textHash(value)}` : '0');
+  return [
+    item.remoteOutputTruncated ?? 0,
+    item.completedAt ?? '',
+    item.count ?? '',
+    identity(item.result),
+    identity(item.rawResult),
+    identity(item.uiDiff),
+    signature,
+  ].join('|');
+}
+
+/** The call changed something: it holds a diff, or (on a phone) the digest of one. */
+export function toolItemHasDiff(item: TranscriptItem): boolean {
+  return (typeof item.uiDiff === 'string' && Boolean(item.uiDiff.trim())) || uiDiffDigest(item) !== null;
+}
+
 export function toolItemDone(item: TranscriptItem): boolean {
   return (
     item.completedAt != null ||
@@ -84,7 +138,7 @@ export function toolActivityItemTone(item: TranscriptItem): 'error' | 'warning' 
   const count = Math.max(1, Math.round(Number(item.count || 1)));
   const callFailedCount = Math.max(0, Number(item.callErrorCount || 0));
   const exitFailedCount = Math.max(0, Number(item.exitErrorCount || 0));
-  const partialMutation = callFailedCount > 0 && typeof item.uiDiff === 'string' && Boolean(item.uiDiff.trim());
+  const partialMutation = callFailedCount > 0 && toolItemHasDiff(item);
   let terminalStatus = '';
   if (isHookApprovalDenialToolItem(item)) terminalStatus = 'denied';
   else if (resultTerminalStatus(item.result ?? item.rawResult) === 'cancelled') terminalStatus = 'cancelled';
@@ -262,7 +316,9 @@ function namedToolActivityUnit(
     const skill = skills.join(', ');
     if (skill) return { unitKey: `Skill|${skill}`, label: `${t('Skill')} ${skill}` };
   }
-  if (category === 'Browser' || category === 'Computer') {
+  // One unit per step whatever the action (open, close, capture…), so the
+  // summary reads "Visualize 3" rather than one entry per action.
+  if (category === 'Browser' || category === 'Computer' || category === 'Visualize') {
     return { unitKey: category, label: localizedToolActivityCategory(category) };
   }
   // Repository, PR and issue calls are one unit, named apart from local Git.
@@ -313,16 +369,48 @@ export function desktopToolActivityModeledName(name: unknown, args: unknown): st
   return DESKTOP_TOOL_ACTIVITY_ALIASES.get(surface.normalizedName) ?? String(name || 'tool');
 }
 
+/** The tool a call shows as: a `call_tool` bridge request is the tool it runs
+ *  (its own arguments, `via: 'call_tool'`); every other call is itself. Every
+ *  desktop category, title and argument derivation starts from this. */
+export function desktopToolDisplayIdentity(
+  name: unknown,
+  args: unknown
+): { name: string; args: unknown; via?: 'call_tool' } {
+  const identity = toolCallDisplayIdentity(name, args) as { name: unknown; args: unknown; via?: 'call_tool' };
+  return {
+    name: String(identity.name || 'tool'),
+    args: identity.args,
+    ...(identity.via ? { via: identity.via } : {}),
+  };
+}
+
+/** A bridge load_tool result (described / missing / blocked), or null. */
+export function desktopToolDescribeResult(
+  name: unknown,
+  args: unknown,
+  result: unknown
+): { described: string[]; missing: string[]; blocked: string[] } | null {
+  if (result == null) return null;
+  const identity = desktopToolDisplayIdentity(name, args);
+  if (formatToolSurface(identity.name, identity.args).normalizedName !== 'load_tool') return null;
+  return bridgeDescribeResult(typeof result === 'string' ? result : boundedTextOf(result));
+}
+
 /** Canonical surface name and arguments after the desktop aliases (`write` → `edit`). */
 export function desktopToolActivitySurface(
   name: unknown,
   args: unknown
 ): { normalizedName: string; args: Record<string, unknown> } {
-  const surface = formatToolSurface(desktopToolActivityModeledName(name, args), args);
-  return { normalizedName: String(surface.normalizedName), args: asRecord(surface.args) ?? asRecord(args) ?? {} };
+  const identity = desktopToolDisplayIdentity(name, args);
+  const surface = formatToolSurface(desktopToolActivityModeledName(identity.name, identity.args), identity.args);
+  return {
+    normalizedName: String(surface.normalizedName),
+    args: asRecord(surface.args) ?? asRecord(identity.args) ?? {},
+  };
 }
 
-export function desktopToolActivityCategory(name: unknown, args: unknown): string {
+export function desktopToolActivityCategory(rawName: unknown, rawArgs: unknown): string {
+  const { name, args } = desktopToolDisplayIdentity(rawName, rawArgs);
   const modeledName = desktopToolActivityModeledName(name, args);
   const surface = formatToolSurface(modeledName, args);
   if (surface.normalizedName === 'browser' || surface.normalizedName === 'browser_devtools') return 'Browser';
@@ -340,8 +428,10 @@ function mediaGenerateArgs(surface: { normalizedName: string; args: unknown }): 
 }
 
 function desktopToolActivityUnit(
-  name: unknown,
-  args: unknown
+  rawName: unknown,
+  rawArgs: unknown,
+  /** The call's result: a bridge load_tool describes, it never loads. */
+  result?: unknown
 ): {
   category: string;
   done: string;
@@ -351,6 +441,7 @@ function desktopToolActivityUnit(
   /** How many of the unit one call covers (3 files in one read). */
   count: number;
 } {
+  const { name, args } = desktopToolDisplayIdentity(rawName, rawArgs);
   const modeledName = desktopToolActivityModeledName(name, args);
   const surface = formatToolSurface(modeledName, args);
   const category = desktopToolActivityCategory(modeledName, surface.args);
@@ -359,6 +450,16 @@ function desktopToolActivityUnit(
     noun?: string;
     count?: number;
   } | null;
+  if (category === 'Load' && desktopToolDescribeResult(name, args, result)) {
+    return {
+      category,
+      done: 'Described',
+      noun: 'tool',
+      unitKey: 'Load|Described|tool',
+      label: t('Tool description'),
+      count: Math.max(1, Math.round(Number(entry?.count || 1))),
+    };
+  }
   const done = String(entry?.done || '');
   const noun = String(entry?.noun || '');
   const named = namedToolActivityUnit(name, args, category, done, noun);
@@ -429,8 +530,8 @@ function toolActivityRowVerb(category: string, done: string, noun: string): stri
   }
 }
 
-export function desktopToolActivityRowVerb(name: unknown, args: unknown): string {
-  const unit = desktopToolActivityUnit(name, args);
+export function desktopToolActivityRowVerb(name: unknown, args: unknown, result?: unknown): string {
+  const unit = desktopToolActivityUnit(name, args, result);
   return toolActivityRowVerb(unit.category, unit.done, unit.noun) || unit.label;
 }
 
@@ -571,46 +672,108 @@ export function desktopToolComputerWindowSuccessAt(items: readonly TranscriptIte
   }
   return at;
 }
-function toolActivitySummaryPhrase(unit: { unitKey: string; label: string }, count: number): string {
+function toolActivitySummaryPhrase(unit: { unitKey: string; label: string }, count: number, past: boolean): string {
   switch (unit.unitKey) {
     case 'Read|Read|file':
     case 'Read|Read|image':
     case 'Read|Read|resource':
       return count === 1 ? t('Read file') : t('Read {{count}} files', { count });
     case 'Search|Searched|pattern':
-      return count === 1 ? t('Search code') : t('Search {{count}} patterns', { count });
+      return count === 1
+        ? past
+          ? t('Searched code')
+          : t('Search code')
+        : past
+          ? t('Searched {{count}} patterns', { count })
+          : t('Search {{count}} patterns', { count });
     case 'Search|Found|glob':
-      return count === 1 ? t('Find files') : t('Find {{count}} files', { count });
+      return count === 1
+        ? past
+          ? t('Found files')
+          : t('Find files')
+        : past
+          ? t('Found {{count}} files', { count })
+          : t('Find {{count}} files', { count });
     case 'Search|Found|query':
-      return count === 1 ? t('Find path') : t('Find {{count}} paths', { count });
+      return count === 1
+        ? past
+          ? t('Found path')
+          : t('Find path')
+        : past
+          ? t('Found {{count}} paths', { count })
+          : t('Find {{count}} paths', { count });
     case 'Search|Listed|directory':
-      return count === 1 ? t('List directory') : t('List {{count}} directories', { count });
+      return count === 1
+        ? past
+          ? t('Listed directory')
+          : t('List directory')
+        : past
+          ? t('Listed {{count}} directories', { count })
+          : t('List {{count}} directories', { count });
     case 'Search|Mapped|symbol':
-      return count === 1 ? t('Find symbol') : t('Find {{count}} symbols', { count });
+      return count === 1
+        ? past
+          ? t('Found symbol')
+          : t('Find symbol')
+        : past
+          ? t('Found {{count}} symbols', { count })
+          : t('Find {{count}} symbols', { count });
     // File changes always carry their count ("파일 1개 수정"), as commands do.
     case 'Patch|Created|file':
-      return t('Create {{count}} files', { count });
+      return past ? t('Created {{count}} files', { count }) : t('Create {{count}} files', { count });
     case 'Patch|Edited|file':
-      return t('Edit {{count}} files', { count });
+      return past ? t('Edited {{count}} files', { count }) : t('Edit {{count}} files', { count });
     case 'Patch|Changed|file':
-      return t('Change {{count}} files', { count });
+      return past ? t('Changed {{count}} files', { count }) : t('Change {{count}} files', { count });
     case 'Patch|Deleted|file':
-      return t('Delete {{count}} files', { count });
+      return past ? t('Deleted {{count}} files', { count }) : t('Delete {{count}} files', { count });
     case 'Web Research|Researched|query':
-      return count === 1 ? t('Search web') : t('Search web {{count}} times', { count });
+      return count === 1
+        ? past
+          ? t('Searched web')
+          : t('Search web')
+        : past
+          ? t('Searched web {{count}} times', { count })
+          : t('Search web {{count}} times', { count });
     case 'Web Research|Fetched|URL':
-      return count === 1 ? t('Fetch page') : t('Fetch {{count}} pages', { count });
+      return count === 1
+        ? past
+          ? t('Fetched page')
+          : t('Fetch page')
+        : past
+          ? t('Fetched {{count}} pages', { count })
+          : t('Fetch {{count}} pages', { count });
     case 'Web Research|Fetched|message':
-      return count === 1 ? t('Fetch message') : t('Fetch {{count}} messages', { count });
+      return count === 1
+        ? past
+          ? t('Fetched message')
+          : t('Fetch message')
+        : past
+          ? t('Fetched {{count}} messages', { count })
+          : t('Fetch {{count}} messages', { count });
     case 'Shell|Ran|command':
-      return t('Run {{count}} commands', { count });
+      return past ? t('Ran {{count}} commands', { count }) : t('Run {{count}} commands', { count });
     case 'Git|Ran|Git command':
-      return count === 1 ? t('Run Git command') : t('Run {{count}} Git commands', { count });
+      return count === 1
+        ? past
+          ? t('Ran Git command')
+          : t('Run Git command')
+        : past
+          ? t('Ran {{count}} Git commands', { count })
+          : t('Run {{count}} Git commands', { count });
     case 'Git|Staged|change':
-      return count === 1 ? t('Stage changes') : t('Stage {{count}} changes', { count });
-    case 'Browser|Browsed|action':
+      return count === 1
+        ? past
+          ? t('Staged changes')
+          : t('Stage changes')
+        : past
+          ? t('Staged {{count}} changes', { count })
+          : t('Stage {{count}} changes', { count });
+    // Browser and Computer calls are one unit keyed by the category itself
+    // (namedToolActivityUnit).
+    case 'Browser':
       return count === 1 ? t('Browser action') : t('Browser {{count}} actions', { count });
-    case 'Computer|Operated|action':
+    case 'Computer':
       return count === 1 ? t('Computer action') : t('Computer {{count}} actions', { count });
     case 'Office|Edited|document action':
       return count === 1 ? t('Office action') : t('Office {{count}} actions', { count });
@@ -640,12 +803,12 @@ function toolActivitySummaryPhrase(unit: { unitKey: string; label: string }, cou
  *  changes first, then the rest in call order, as one list ("Edit 2 files,
  *  Read 6 files, Run 4 commands"). A command that failed says so: a lone one
  *  as "Command failed", otherwise as a closing "N failed". */
-export function desktopToolActivitySummary(items: readonly TranscriptItem[]): string {
+export function desktopToolActivitySummary(items: readonly TranscriptItem[], settled = false): string {
   const groups = new Map<string, { unit: ReturnType<typeof desktopToolActivityUnit>; count: number }>();
   const calls = flattenedToolActivityItems(items);
   let failedCommands = 0;
   for (const item of calls) {
-    const unit = desktopToolActivityUnit(item.name, item.args);
+    const unit = desktopToolActivityUnit(item.name, item.args, item.result ?? item.rawResult);
     // A stopped command was not a failure: the stop is its own outcome.
     if (
       unit.category === 'Shell' &&
@@ -666,7 +829,7 @@ export function desktopToolActivitySummary(items: readonly TranscriptItem[]): st
   const changesFiles = (unitKey: string) => (unitKey.startsWith('Patch|') ? 0 : 1);
   const phrases = [...groups.values()]
     .sort((left, right) => changesFiles(left.unit.unitKey) - changesFiles(right.unit.unitKey))
-    .map(({ unit, count }) => toolActivitySummaryPhrase(unit, count))
+    .map(({ unit, count }) => toolActivitySummaryPhrase(unit, count, settled))
     .filter(Boolean);
   if (failedCommands > 0 && calls.length === 1) return t('Command failed');
   if (failedCommands > 0) phrases.push(t('{{count}} failed', { count: failedCommands }));
@@ -675,6 +838,6 @@ export function desktopToolActivitySummary(items: readonly TranscriptItem[]): st
 }
 
 /** The work-unit name a call is counted under. */
-export function desktopToolActivityUnitLabel(name: unknown, args: unknown): string {
-  return desktopToolActivityUnit(name, args).label;
+export function desktopToolActivityUnitLabel(name: unknown, args: unknown, result?: unknown): string {
+  return desktopToolActivityUnit(name, args, result).label;
 }

@@ -4,7 +4,9 @@
  * The host owns wiring; this owns what one command does once it runs.
  */
 import type { createBrowserActionApproval } from './action-approval';
+import type { createBrowserAutoSignIn } from './auto-sign-in';
 import { browserActionHandler, type BrowserActionServices } from './actions';
+import { adoptResolvedTargets } from './actions/target';
 import {
   type BrowserCommand,
   type BrowserCommandResult,
@@ -21,7 +23,9 @@ import { browserSessionId, type BrowserSessionRegistry } from './session-registr
 import { throwIfBrowserCancelled } from './settle';
 import type { createBrowserTabs } from './tabs';
 import type { createBrowserTaskLifecycle } from './task-lifecycle';
+import type { UserWait } from './user-wait';
 import type { WebContents } from 'electron';
+import { takeoverGate } from '../takeover-gate';
 
 interface BrowserCommandRunnerHost {
   state: BrowserGuestStateStore;
@@ -35,6 +39,10 @@ interface BrowserCommandRunnerHost {
   /** Runs a page unthrottled until the returned release is called. */
   drivePage: (guest: WebContents) => () => void;
   services: BrowserActionServices;
+  /** Throws while the user has taken over (default: the window's takeover gate). */
+  assertNoTakeover?: () => void;
+  /** Saved-login sign-in after a command (auto-sign-in.ts). */
+  autoSignIn?: ReturnType<typeof createBrowserAutoSignIn>;
 }
 
 /** Validate and normalize one command before any page work: the action and the
@@ -70,25 +78,37 @@ export function createBrowserCommandRunner(host: BrowserCommandRunnerHost) {
   const { state, approvals, browserSessions, lifecycle, tabs, downloads, taskLifecycle, retainGuest, services } = host;
   const { cdp, reply, settle } = services;
 
-  /** The page a command targets runs unthrottled for the command's duration. */
-  async function runCommand(command: BrowserCommand, signal?: AbortSignal): Promise<BrowserCommandResult> {
-    const releases: Array<() => void> = [];
+  /** The page a command targets runs unthrottled for the command's duration.
+   *  `userWait`: the command's clock, which stands still while the person is
+   *  asked to approve a step (the queue's ceiling does not count that time). */
+  async function runCommand(
+    command: BrowserCommand,
+    signal?: AbortSignal,
+    userWait?: UserWait
+  ): Promise<BrowserCommandResult> {
+    // A pending takeover hands the pages to the user (takeover-gate.ts).
+    // A takeover that starts meanwhile aborts this command and waits for it.
+    host.assertNoTakeover?.();
+    const operation = takeoverGate.beginOperation();
+    const releases: Array<() => void> = [operation.release];
     try {
-      return await runResolvedCommand(command, signal, (guest) => releases.push(host.drivePage(guest)));
+      const runSignal = signal ? AbortSignal.any([signal, operation.signal]) : operation.signal;
+      return await runResolvedCommand(command, runSignal, (guest) => releases.push(host.drivePage(guest)), userWait);
     } finally {
-      for (const release of releases) release();
+      for (const release of releases.reverse()) release();
     }
   }
 
   async function runResolvedCommand(
     command: BrowserCommand,
     signal: AbortSignal | undefined,
-    drive: (guest: WebContents) => void
+    drive: (guest: WebContents) => void,
+    userWait?: UserWait
   ): Promise<BrowserCommandResult> {
     const { action, ownerSessionId, hasScreenshotOptions, expected, background, tab } = prepareBrowserCommand(command);
     // Tab-less bookkeeping actions never open or create a page.
     if (TABLESS_ACTIONS.has(action)) {
-      await approvals.approve(command, () => ({ url: '', identity: ownerSessionId }), signal);
+      await approvals.approve(command, () => ({ url: '', identity: ownerSessionId }), signal, undefined, userWait);
     }
     if (!['hide', 'downloads'].includes(action)) await lifecycle.restoreSession(ownerSessionId);
     if (action === 'list_tabs') return tabs.listTabs(ownerSessionId);
@@ -111,22 +131,22 @@ export function createBrowserCommandRunner(host: BrowserCommandRunnerHost) {
     const guest = target?.guest ?? (await lifecycle.ensureGuest(ownerSessionId, { reveal: false }));
     drive(guest);
     const backgroundPage = browserSessions.backgroundPageForGuest(ownerSessionId, guest);
+    // The pane follows the page the agent works in; a hidden helper page it
+    // created with background:true is not one the user is meant to watch.
+    if (backgroundPage?.kind !== 'agent') {
+      browserSessions.setAgentPage(ownerSessionId, guest, turnId);
+      lifecycle.discardUntouchedBlank(ownerSessionId, guest);
+    }
     taskLifecycle.use(
       ownerSessionId,
       turnId,
       guest,
       backgroundPage ? backgroundPage.kind === 'agent' && !backgroundPage.keepAlive : !previousGuest
     );
-    if (action === 'open' && !targetIsBackground) {
-      retainGuest(guest);
-      lifecycle.requestBrowserSurface(ownerSessionId, true);
-    } else if (
-      !targetIsBackground &&
-      (action === 'navigate' || command.background === false) &&
-      !taskLifecycle.reveal(ownerSessionId, turnId, guest)
-    ) {
-      lifecycle.requestBrowserSurface(ownerSessionId, true);
-    }
+    // The panel never opens itself during a turn: the user opens it from the
+    // transcript, or a takeover hands the page over (openForTakeover). `open`
+    // keeps its page for the user.
+    if (action === 'open' && !targetIsBackground) retainGuest(guest);
     await lifecycle.recoverCrashedGuest(guest, signal);
     throwIfBrowserCancelled(signal);
     // Explicit navigation and dialog handling can release a blocked execution.
@@ -163,15 +183,30 @@ export function createBrowserCommandRunner(host: BrowserCommandRunnerHost) {
             reportBaseline,
           });
     try {
+      let approvedReceiver: string | undefined;
       if (!command.internalStep) {
-        await approvals.approve(
+        // An upload resolves its real target before the person is asked: a
+        // `target` spec becomes the ref the handler will then use, and the
+        // frame document that ref (or the open chooser) belongs to is bound.
+        const uploadReceiver = async () => {
+          if (!command.ref && command.target !== undefined && command.target !== null) {
+            const resolved = await services.targets.resolveTargetRefs(guest, [command.target], signal);
+            adoptResolvedTargets({ guest, services, refRecovery, effectBaseline }, resolved);
+            command.ref = resolved[0].ref;
+          }
+          return services.refActions.uploadReceiver(guest, command.ref ? String(command.ref) : undefined, signal);
+        };
+        const approved = await approvals.approve(
           command,
           () => ({
             url: guest.getURL(),
             identity: browserDocumentId(state, guest),
           }),
-          signal
+          signal,
+          action === 'upload' ? uploadReceiver : undefined,
+          userWait
         );
+        approvedReceiver = approved?.receiver;
       }
       const result = await handler({
         guest,
@@ -187,8 +222,24 @@ export function createBrowserCommandRunner(host: BrowserCommandRunnerHost) {
         effectBaseline,
         actionSnapshot,
         services,
+        approvedReceiver,
       });
-      return { ...result, text: state.redactText(guest, result.text) };
+      // A page that asks for a sign-in the profile has a saved login for.
+      const signedIn =
+        command.internalStep === true || typeof command.savedAccount === 'string'
+          ? null
+          : await host.autoSignIn?.afterCommand({
+              guest,
+              sessionId: ownerSessionId,
+              turnId,
+              signal,
+              observe: () =>
+                reply.snapshotResult(guest, { action: 'snapshot', maxChars: command.maxChars }, signal, {
+                  targetIsBackground,
+                }),
+            });
+      const final = signedIn ?? result;
+      return { ...final, text: state.redactText(guest, final.text) };
     } catch (error) {
       throw new Error(state.redactText(guest, (error as Error).message || String(error)));
     }

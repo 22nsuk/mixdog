@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import * as realChildProcess from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import * as realFsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { mock } from 'node:test';
@@ -12,6 +13,11 @@ const execCalls = [];
 let processRows = [];
 let execError = null;
 const EXEC_DELAY_MS = 40;
+// Hold the process list open until the test releases it, so "the loop keeps
+// turning while it is outstanding" does not depend on timer resolution
+// (Windows coalesces short timers to ~15.6 ms, more so under load).
+let holdExec = false;
+let execHeld = null;
 
 function rowsToStdout(rows) {
   if (process.platform === 'win32') {
@@ -23,17 +29,40 @@ function rowsToStdout(rows) {
 mock.module('node:child_process', {
   namedExports: {
     spawn: realChildProcess.spawn,
+    // Imported by the shared atomic writer's owner-only ACL helper (secret
+    // writes only); the sweep never reaches it.
+    execFileSync: realChildProcess.execFileSync,
     // The sweep must never use the blocking variant.
     spawnSync: () => {
       throw new Error('spawnSync must not be used by the orphan sweep');
     },
     execFile: (file, args, options, callback) => {
       execCalls.push({ file, args, options });
-      setTimeout(() => {
+      const reply = () => {
         if (execError) callback(execError, '', '');
         else callback(null, rowsToStdout(processRows), '');
-      }, EXEC_DELAY_MS);
+      };
+      if (holdExec) execHeld = reply;
+      else setTimeout(reply, EXEC_DELAY_MS);
       return { kill() {} };
+    },
+  },
+});
+
+// Hold the temp-root scan the same way, so the cleanup phase itself is shown
+// not to block the loop (not only the process list before it).
+let holdTempScan = false;
+let tempScanHeld = null;
+const { default: realFsPromisesDefault, ...realFsPromisesNamed } = realFsPromises;
+mock.module('node:fs/promises', {
+  defaultExport: realFsPromisesDefault,
+  namedExports: {
+    ...realFsPromisesNamed,
+    readdir: (path, ...rest) => {
+      if (!holdTempScan || path !== tempRoot) return realFsPromises.readdir(path, ...rest);
+      return new Promise((resolve, reject) => {
+        tempScanHeld = () => realFsPromises.readdir(path, ...rest).then(resolve, reject);
+      });
     },
   },
 });
@@ -60,6 +89,11 @@ function makeRoot(name, ageSec) {
 test.after(() => rmSync(tempRoot, { recursive: true, force: true }));
 
 test('sweep runs the process list and temp cleanup asynchronously with identical rules', async (t) => {
+  // A failed assertion must not leave the hold engaged for the next test.
+  t.after(() => {
+    holdExec = false;
+    holdTempScan = false;
+  });
   const kills = [];
   t.mock.method(process, 'kill', (pid, signal) => {
     if (signal === 0) return true;
@@ -86,20 +120,38 @@ test('sweep runs the process list and temp cleanup asynchronously with identical
   ];
 
   let settled = false;
-  const pending = sweepOrphanTempPostmasters({ tempRoot }).then((value) => {
+  holdExec = true;
+  const pending = sweepOrphanTempPostmasters({ tempRoot }).finally(() => {
     settled = true;
-    return value;
   });
-  // The event loop keeps turning while the process list is outstanding.
-  let ticks = 0;
-  const ticker = setInterval(() => {
-    ticks += 1;
-  }, 5);
-  await new Promise((resolve) => setTimeout(resolve, EXEC_DELAY_MS / 2));
+  // The process list is held open, so the sweep cannot finish until the test
+  // releases it. Each awaited timer below can only resolve if the event loop
+  // turns while the list is outstanding (a blocking list would have finished
+  // the sweep, or thrown from the spawnSync mock, by now). This asserts the
+  // ordering, not how many timers fit in a wall-clock window: timer counts
+  // depend on timer resolution and scheduler load, not on the sweep.
+  for (let turn = 0; turn < 3; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.equal(execCalls.length, 1, 'the process list was requested');
   assert.equal(settled, false, 'sweep is still waiting on the async process list');
-  assert.ok(ticks >= 2, `event loop kept running during the sweep (ticks=${ticks})`);
+
+  // Release the list and hold the temp-root scan that starts the cleanup: the
+  // same ordering check then covers the cleanup phase.
+  holdTempScan = true;
+  holdExec = false;
+  execHeld();
+  for (let turn = 0; turn < 200 && !tempScanHeld; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(tempScanHeld, 'the temp-root scan was requested');
+  for (let turn = 0; turn < 3; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.equal(settled, false, 'sweep is still waiting on the async temp-root scan');
+  holdTempScan = false;
+  tempScanHeld();
   const reaped = await pending;
-  clearInterval(ticker);
 
   assert.equal(execCalls.length, 1);
   assert.equal(execCalls[0].file, process.platform === 'win32' ? 'powershell' : 'ps');

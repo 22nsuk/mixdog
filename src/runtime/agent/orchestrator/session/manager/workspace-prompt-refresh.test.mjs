@@ -14,6 +14,7 @@ import test from 'node:test';
 import { composeSystemPrompt } from '../../context/role-instructions.mjs';
 import { buildUserTurn } from './ask-turn-prepare.mjs';
 import {
+  acknowledgePendingSetupNotice,
   acknowledgePendingWorkspaceNotice,
   applyPendingWorkspaceReroot,
   refreshSessionBp3Environment,
@@ -87,6 +88,7 @@ const FULL_NOTICE = [
   '<system-reminder>',
   '# Working Folder Changed',
   `The working folder is now ${WORKTREE}. This replaces the Cwd and environment facts given earlier in this conversation; relative paths and shell commands resolve here.`,
+  'Keep the conversation goals and decisions, but treat earlier file contents, search results and Git observations as historical, not as evidence of this checkout. Check the target project instructions and Git status, and re-read the files needed for the next edit before continuing. A folder change alone does not transfer uncommitted changes.',
   NEXT.environmentContext,
   '',
   'The instruction files below replace all previously provided instruction files.',
@@ -107,12 +109,47 @@ test('a mid-conversation folder change keeps every system message byte-identical
   assert.equal(refreshSessionWorkspaceContext(session, NEXT), true);
   assert.equal(promptState(session), before, 'system messages and prompt fields are untouched');
   assert.deepEqual(systemOf(session), references);
-  systemOf(session).forEach((message, index) => assert.equal(message, references[index], 'same message objects'));
+  systemOf(session).forEach((message, index) => {
+    assert.equal(message, references[index], 'same message objects');
+  });
   assert.deepEqual(session.messages.slice(-2), conversation, 'no message is added to the transcript');
   assert.equal(snapshotPendingWorkspaceNotice(session).content, FULL_NOTICE);
   // An ordinary `# Session` refresh (a same-route update) keeps the old root too.
   refreshSessionBp3Environment(session, WORKTREE);
   assert.equal(promptState(session), before);
+});
+
+test('a move into a worktree adds the uncommitted-changes and path lines to the notice, prompt untouched', () => {
+  const pathLine = `For continued work, substitute ${WORKTREE} for the project root C:/repo in paths mentioned earlier; absolute paths are not remapped automatically. Re-read affected files before editing them.`;
+  const lead = (changes) => {
+    const { session } = sessionFor('C:/repo');
+    const before = promptState(session);
+    refreshSessionWorkspaceContext(session, { cwd: WORKTREE, move: { from: 'C:/repo', changes } });
+    assert.equal(promptState(session), before, 'the system prompt stays byte-identical');
+    const notice = snapshotPendingWorkspaceNotice(session).content;
+    assert.match(notice, /earlier file contents, search results and Git observations as historical/);
+    assert.match(notice, /re-read the files needed for the next edit before continuing/);
+    return { session, lines: notice.split('\n').filter((line) => !line.startsWith('Keep the conversation goals')) };
+  };
+  const head = (lines) => lines.slice(1, 5);
+  const folderLine = `The working folder is now ${WORKTREE}. This replaces the Cwd and environment facts given earlier in this conversation; relative paths and shell commands resolve here.`;
+  assert.deepEqual(head(lead('carried').lines), [
+    '# Working Folder Changed',
+    folderLine,
+    'Uncommitted changes were moved into the worktree; ignored files (dependencies, build output, env files) were not.',
+    pathLine,
+  ]);
+  assert.deepEqual(head(lead('left').lines), [
+    '# Working Folder Changed',
+    folderLine,
+    'Uncommitted changes were left in C:/repo; they are not present here.',
+    pathLine,
+  ]);
+  const clean = lead(null);
+  assert.deepEqual(clean.lines.slice(1, 4), ['# Working Folder Changed', folderLine, pathLine]);
+  // A later change without a move (back to the project folder) drops the lines.
+  refreshSessionWorkspaceContext(clean.session, { cwd: 'C:/elsewhere' });
+  assert.doesNotMatch(snapshotPendingWorkspaceNotice(clean.session).content, /substitute|Uncommitted changes/);
 });
 
 test('removed instruction files and memory are announced as no longer applying; unchanged slices are omitted', () => {
@@ -123,7 +160,10 @@ test('removed instruction files and memory are announced as no longer applying; 
     removed,
     /The new working folder has no instruction files: the previously provided instruction files no longer apply\./
   );
-  assert.match(removed, /The new working folder has no core memory: the previously provided core memory no longer applies\./);
+  assert.match(
+    removed,
+    /The new working folder has no core memory: the previously provided core memory no longer applies\./
+  );
   assert.doesNotMatch(removed, /old rule|old project memo/);
 
   const { session: same } = sessionFor('C:/repo');
@@ -131,7 +171,10 @@ test('removed instruction files and memory are announced as no longer applying; 
   refreshSessionWorkspaceContext(same, {
     cwd: 'C:/elsewhere',
     coreMemoryContext: '- old project memo',
-    instructionFilesContext: presented.slice(presented.indexOf('# Instruction Files')),
+    instructionFilesContext: presented.slice(
+      presented.indexOf('# Instruction Files'),
+      presented.indexOf(`${SEP}# Core Memory`)
+    ),
   });
   const folderOnly = snapshotPendingWorkspaceNotice(same).content;
   assert.match(folderOnly, /^<system-reminder>\n# Working Folder Changed\nThe working folder is now C:\/elsewhere\./);
@@ -206,6 +249,29 @@ test('the next user turn carries the notice as a trailing system-reminder after 
   assert.equal(later.userTurnMessage.content, 'more');
 });
 
+test("a new worktree's preparation report rides the next user turn until acknowledged", async (t) => {
+  const previous = process.env.MIXDOG_DATA_DIR;
+  const dataDir = mkdtempSync(join(tmpdir(), 'mixdog-setup-notice-'));
+  process.env.MIXDOG_DATA_DIR = dataDir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previous;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  const { session } = sessionFor('C:/repo');
+  session.contextWindow = 200_000;
+  const report =
+    '<system-reminder>\n# Worktree Preparation\nWorktree prepared.\nRan: npm run build\n</system-reminder>';
+  session.pendingSetupNotice = { revision: 7, content: report };
+  const turn = await buildUserTurn({ session, prompt: 'go' });
+  assert.equal(turn.userTurnMessage.content, `go\n\n${report}`);
+  assert.equal(acknowledgePendingSetupNotice(session, turn.setupNotice.revision), true);
+  assert.equal(session.pendingSetupNotice, undefined);
+  const later = await buildUserTurn({ session, prompt: 'more' });
+  assert.equal(later.setupNotice, null);
+  assert.equal(later.userTurnMessage.content, 'more');
+});
+
 test('a re-root applies the staged workspace to the system prompt and retires the notice', () => {
   const { session, conversation } = sessionFor('C:/repo');
   refreshSessionWorkspaceContext(session, NEXT);
@@ -219,7 +285,7 @@ test('a re-root applies the staged workspace to the system prompt and retires th
     const view = { messages };
     assert.equal(
       tier(view, 'tier3'),
-      ['# Active Workflow: Solo', '# General', '# Core Memory\n- worktree memo', NEXT.instructionFilesContext].join(SEP)
+      ['# Active Workflow: Solo', '# General', NEXT.instructionFilesContext, '# Core Memory\n- worktree memo'].join(SEP)
     );
     assert.match(tier(view, 'env'), new RegExp(`^# Session\\nCwd: ${WORKTREE}\\nModel: `));
     assert.doesNotMatch(tier(view, 'env'), /C:\/repo/);
@@ -245,8 +311,8 @@ test('a session without a conversation is re-rooted in place', () => {
       [
         '# Active Workflow: Solo',
         '# General',
-        '# Core Memory\n- worktree memo',
         '# Instruction Files\n\n## C:/data/worktrees-v1/abc/fix/AGENTS.md\n\nnew rule',
+        '# Core Memory\n- worktree memo',
       ].join(SEP),
       'superseded blocks are replaced, not accumulated'
     );
@@ -258,7 +324,10 @@ test('a session without a conversation is re-rooted in place', () => {
     assert.doesNotMatch(env, /C:\/repo/);
     assert.ok(env.endsWith(LANGUAGE), 'the response language still closes the environment');
   }
-  assert.ok(session.messages.every((message) => message.role === 'system'), 'no notice message is added');
+  assert.ok(
+    session.messages.every((message) => message.role === 'system'),
+    'no notice message is added'
+  );
 });
 
 test('a same-folder branch change refreshes facts and drops memory/instruction slices that no longer apply', () => {
@@ -278,8 +347,18 @@ test('undefined slices are kept (workers keep their memory layout) and the legac
   const kept = replaceWorkspaceCoreSlices(`# Role${SEP}# Core Memory\n- memo${SEP}# Instruction Files\n\nold`, {
     instructionFilesContext: '# Instruction Files\n\nnew',
   });
-  assert.equal(kept, `# Role${SEP}# Core Memory\n- memo${SEP}# Instruction Files\n\nnew`);
-  assert.equal(replaceWorkspaceCoreSlices('# Role', { coreMemoryContext: '- memo' }), `# Role${SEP}# Core Memory\n- memo`);
+  // A core in the older order (memory, then instruction files) comes back in the current one.
+  assert.equal(kept, `# Role${SEP}# Instruction Files\n\nnew${SEP}# Core Memory\n- memo`);
+  assert.equal(
+    replaceWorkspaceCoreSlices(`# Role${SEP}# Instruction Files\n\nold${SEP}x${SEP}# Core Memory\n- memo`, {
+      coreMemoryContext: '- new memo',
+    }),
+    `# Role${SEP}# Instruction Files\n\nold${SEP}x${SEP}# Core Memory\n- new memo`
+  );
+  assert.equal(
+    replaceWorkspaceCoreSlices('# Role', { coreMemoryContext: '- memo' }),
+    `# Role${SEP}# Core Memory\n- memo`
+  );
 
   const wt = {
     cwd: 'C:/wt',
@@ -290,7 +369,9 @@ test('undefined slices are kept (workers keep their memory layout) and the legac
   const { session } = sessionFor('C:/repo', { split: false, conversation: false });
   refreshSessionWorkspaceContext(session, wt);
   const legacy = tier(session, 'tier3');
-  assert.ok(legacy.startsWith(`# Active Workflow: Solo${SEP}# General${SEP}# Core Memory\n- wt memo${SEP}# Session\nCwd: C:/wt`));
+  assert.ok(
+    legacy.startsWith(`# Active Workflow: Solo${SEP}# General${SEP}# Core Memory\n- wt memo${SEP}# Session\nCwd: C:/wt`)
+  );
   assert.doesNotMatch(legacy, /Instruction Files|old project memo|C:\/repo/);
 
   // Legacy layout with a conversation: untouched until the re-root, which

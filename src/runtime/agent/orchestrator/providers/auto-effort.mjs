@@ -3,24 +3,43 @@
 // Every turn starts again from the base, so a run of hard turns never
 // ratchets the effort upward.
 //
-// The base is `medium` on every model: raised only when the request needs it,
-// lowered when it is easy. The ladder is the model's supported efforts from
+// The base is the global "Auto reasoning base" setting (`autoEffortBase` in the
+// agent config; low / medium / high, default `medium`), the same on every model
+// and independent of the effort last chosen: raised only when the request needs
+// it, lowered when it is easy. The ladder is the model's supported efforts from
 // `low` up to the tier below the top: `none`/`minimal` switch thinking off and
-// `max`/`ultra` are reserved for an explicit user choice, so auto never picks
-// them. A chosen `max`/`ultra` is left untouched.
+// `max`/`ultra` are reserved for an explicit (fixed, Auto off) user choice, so
+// auto never picks them. A base the model does not offer is clamped to the
+// nearest ladder level.
 
 const EFFORT_ORDER = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const FLOOR_INDEX = EFFORT_ORDER.indexOf('low');
 const RESERVED_TOP = new Set(['max', 'ultra']);
 
 export const AUTO_EFFORT_BASE = 'medium';
+/** The "Auto reasoning base" choices: the levels Auto can work around. */
+export const AUTO_EFFORT_BASES = Object.freeze(['low', 'medium', 'high']);
 
-/** The effort auto moves from: `medium`, unless the user chose `max`/`ultra`. */
-export function autoEffortBase(chosen) {
-  const effort = String(chosen ?? '')
+/** The effort auto moves from: the global "Auto reasoning base" setting
+ *  (`autoEffortBase` in the agent config); absent or invalid is `medium`. */
+export function autoEffortBase(setting) {
+  const effort = String(setting ?? '')
     .trim()
     .toLowerCase();
-  return RESERVED_TOP.has(effort) ? effort : AUTO_EFFORT_BASE;
+  return AUTO_EFFORT_BASES.includes(effort) ? effort : AUTO_EFFORT_BASE;
+}
+
+/** The base on the model's ladder: the setting itself, else the nearest
+ *  ladder level (the lower one on a tie); null when the ladder is empty. */
+export function clampAutoEffortBase({ base, options }) {
+  const ladder = autoEffortLadder(options);
+  if (!ladder.length) return null;
+  const want = EFFORT_ORDER.indexOf(autoEffortBase(base));
+  let best = ladder[0];
+  for (const level of ladder) {
+    if (Math.abs(EFFORT_ORDER.indexOf(level) - want) < Math.abs(EFFORT_ORDER.indexOf(best) - want)) best = level;
+  }
+  return best;
 }
 
 export const AUTO_EFFORT_MODES = Object.freeze(['off', 'observe', 'on']);
@@ -31,14 +50,14 @@ export const AUTO_EFFORT_LEVELS = Object.freeze(['easy', 'normal', 'hard', 'very
 const STEP_OF_LEVEL = [-1, 0, 1, 2];
 
 // The chosen level minimises the expected cost under the judge distribution.
-// A miss costs one per level, plus extra for an opposite call and for a
-// needless "very hard" (xhigh). Opposite calls are asymmetric: "easy" for a
-// hard turn degrades the answer, "hard" for an easy turn only costs tokens.
-// On the held-out test splits the heavier under-call cost cut hard-as-easy
-// calls by a third (20 -> 13 of 7,180) for -0.2 points of exact accuracy.
+// A miss costs one per level, plus extra for an opposite call. Opposite calls
+// are asymmetric: "easy" for a hard turn degrades the answer, "hard" for an
+// easy turn only costs tokens. On the held-out test splits the heavier
+// under-call cost cut hard-as-easy calls by a third (20 -> 13 of 7,180) for
+// -0.2 points of exact accuracy. "Very hard" carries no extra cost: an extra
+// penalty there let judge v7 pick xhigh on only 17% of very hard turns.
 export const AUTO_EFFORT_UNDER_OPPOSITE_COST = 3;
 export const AUTO_EFFORT_OVER_OPPOSITE_COST = 1;
-export const AUTO_EFFORT_FALSE_VERY_HARD_COST = 1;
 // Ties keep the default first, then the cheaper side.
 const TIE_ORDER = [1, 0, 2, 3];
 
@@ -49,8 +68,7 @@ function expectedCost(values, level) {
       p *
       (Math.abs(level - actual) +
         (level === 0 && actual >= 2 ? AUTO_EFFORT_UNDER_OPPOSITE_COST : 0) +
-        (actual === 0 && level >= 2 ? AUTO_EFFORT_OVER_OPPOSITE_COST : 0) +
-        (level === 3 && actual < 3 ? AUTO_EFFORT_FALSE_VERY_HARD_COST : 0));
+        (actual === 0 && level >= 2 ? AUTO_EFFORT_OVER_OPPOSITE_COST : 0));
   });
   return cost;
 }

@@ -8,6 +8,7 @@ import { traceLoopPhaseTiming } from './diagnostics.mjs';
 import { processToolBatch } from '../tool-batch.mjs';
 import { CROSS_TURN_CAP, REPEAT_FAIL_LIMIT } from './loop-state.mjs';
 import { markStepEffort } from './step-auto-effort.mjs';
+import { resolveExecutionToolCalls } from './tool-call-resolution.mjs';
 
 function isSleepLikeToolCall(call) {
   const name = String(call?.name || call?.toolName || call?.function?.name || '').toLowerCase();
@@ -15,7 +16,7 @@ function isSleepLikeToolCall(call) {
 }
 
 export async function runToolPhase(state, round, sent, onToolCall) {
-  const { opts, messages, tools, sessionId, sessionRef, signal, response, suppressMidTurnText } = state;
+  const { opts, messages, tools, sessionId, sessionRef, signal, response } = state;
   state.noToolTurn.noteToolCallTurn();
   const calls = response.toolCalls;
   round.resolveToolCallId.all(calls);
@@ -24,8 +25,7 @@ export async function runToolPhase(state, round, sent, onToolCall) {
   // UI. Providers that stream via onTextDelta already rendered it; providers
   // that return text only in response.content would otherwise show nothing
   // before the tool card. The engine de-dups against already-streamed text.
-  // Sub-agent sessions suppress it entirely — Lead only consumes the answer.
-  if (!suppressMidTurnText && typeof response.content === 'string' && response.content.trim()) {
+  if (typeof response.content === 'string' && response.content.trim()) {
     try {
       opts.onAssistantText?.(response.content);
     } catch {
@@ -34,9 +34,11 @@ export async function runToolPhase(state, round, sent, onToolCall) {
   }
   // Per-turn batch shape — one row per assistant turn so trace consumers can
   // derive the multi-tool adoption ratio without scanning message bodies.
-  const toolBatchId = recordToolBatch(sessionId, calls, state.iterations);
+  // Audit records what runs: a bridged call_tool is recorded as its target.
+  // The wire calls stay the transcript identity (assistant turn below).
+  const toolBatchId = recordToolBatch(sessionId, resolveExecutionToolCalls(calls, sessionRef), state.iterations);
   await Promise.resolve(onToolCall?.(state.iterations, calls));
-  const assistantTurnMsg = buildToolCallAssistantMessage(response, { calls, suppressMidTurnText, opts });
+  const assistantTurnMsg = buildToolCallAssistantMessage(response, { calls, opts });
   commitAssistantMessage(messages, assistantTurnMsg, opts);
   try {
     opts.onToolPhaseStarted?.();

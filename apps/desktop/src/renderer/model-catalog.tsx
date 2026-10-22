@@ -1,10 +1,18 @@
-import { Check, Plus, Search, X } from 'lucide-react';
+import { Check, Info, Plus, Search, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { DesktopModelOption } from '../shared/contract';
 import { t } from './i18n';
-import { ErrorNotice } from './ErrorNotice';
+import { ErrorNotice, errorWithKind } from './ErrorNotice';
 import { PaneSurfaceGate } from './PaneSurfaceGate';
+import {
+  elementMenuPoint,
+  isContextMenuKey,
+  pointerMenuPoint,
+  ScmContextMenu,
+  type ScmContextMenuState,
+} from './ScmContextMenu';
+import type { ModelPreferenceChange } from './model-visibility';
 import { record } from './record-utils';
 import {
   modelDisplayName,
@@ -43,9 +51,52 @@ export function customProviderDisplayNames(providerSetup: unknown): Record<strin
   return names;
 }
 
+/** Provider names: setup names win, then the name carried on catalog rows
+ *  (usable before/without the setup load). Custom providers only. */
+export function catalogProviderNames(
+  models: ReadonlyArray<{ provider: string; providerName?: string }> | null | undefined,
+  setupNames?: Record<string, string>
+): Record<string, string> {
+  const names: Record<string, string> = {};
+  for (const model of models || []) {
+    if (model.provider.startsWith('custom-') && model.providerName) names[model.provider] = model.providerName;
+  }
+  return { ...names, ...setupNames };
+}
+
 /** Setup names apply only to custom providers; built-ins keep curated labels. */
 export function resolveProviderDisplayName(id: string, providerNames?: Record<string, string>): string {
   return (id.startsWith('custom-') && providerNames?.[id]) || providerDisplayName(id);
+}
+
+/** Whether a setup entry can run its models: signed in, keyed, or detected. */
+function providerEntryUsable(provider: RecordValue, providerSetup: unknown): boolean {
+  if (record(providerSetup).managedByClient === true) return provider.usable === true;
+  if (provider.custom === true) {
+    // An invalid stored config (`usable: false` + configError) cannot run.
+    if (provider.usable === false || provider.configError) return false;
+    return provider.enabled !== false && (provider.authenticated !== false || provider.auth === 'none');
+  }
+  return provider.group === 'local'
+    ? provider.detected === true && provider.enabled === true
+    : provider.authenticated === true;
+}
+
+/** Setup entries of the connected providers, in setup order (oauth/api/local
+ *  groups as stored). */
+export function connectedProviderEntries(
+  providerSetup: unknown
+): Array<RecordValue & { group: 'api' | 'oauth' | 'local' }> {
+  return providerSetupEntries(providerSetup).filter((entry) => providerEntryUsable(entry, providerSetup));
+}
+
+/** A connected provider's failed model list as ErrorNotice reads it (the
+ *  daemon's `catalogError`: message + provider-kind descriptor). */
+export function providerCatalogFailure(entry: RecordValue): unknown {
+  const failure = record(entry.catalogError);
+  return typeof failure.message === 'string' && failure.message
+    ? errorWithKind(failure.message, failure.errorKind)
+    : null;
 }
 
 export function filterConfiguredModels(
@@ -58,20 +109,15 @@ export function filterConfiguredModels(
   return models.filter((model) => {
     const provider = entries.find((entry) => String(entry.id || entry.provider || '') === model.provider);
     if (!provider) return false;
-    if (provider.custom === true) {
-      // Hidden by the effective row or by the model's own v2 override.
-      const hidden =
-        (Array.isArray(provider.models) &&
-          provider.models.map(record).some((row) => row.id === model.model && row.hidden === true)) ||
+    // Hidden by the effective row or by the model's own v2 override (a server
+    // window receives the desktop's hidden models as overrides).
+    const hidden =
+      provider.custom === true &&
+      ((Array.isArray(provider.models) &&
+        provider.models.map(record).some((row) => row.id === model.model && row.hidden === true)) ||
         (Object.hasOwn(record(provider.modelOverrides), model.model) &&
-          record(record(provider.modelOverrides)[model.model]).hidden === true);
-      // An invalid stored config (`usable: false` + configError) cannot run.
-      if (provider.usable === false || provider.configError) return false;
-      return !hidden && provider.enabled !== false && (provider.authenticated !== false || provider.auth === 'none');
-    }
-    return provider.group === 'local'
-      ? provider.detected === true && provider.enabled === true
-      : provider.authenticated === true;
+          record(record(provider.modelOverrides)[model.model]).hidden === true));
+    return !hidden && providerEntryUsable(provider, providerSetup);
   });
 }
 
@@ -124,6 +170,8 @@ export function ModelCatalog({
   providerSetupError = '',
   onSelect,
   onOpenProviders,
+  onOpenModelManagement,
+  onSetModelPreference,
   onClose,
 }: {
   models: DesktopModelOption[];
@@ -138,9 +186,16 @@ export function ModelCatalog({
   providerSetupError?: string;
   onSelect(option: DesktopModelOption): unknown;
   onOpenProviders?: () => void;
+  /** Opens Settings → Model management (the header's "i"); a row's menu names
+   *  the provider whose card to open. */
+  onOpenModelManagement?: (provider?: string) => void;
+  /** Saves a favourite / hidden change through Model management's own path. */
+  onSetModelPreference?: (option: DesktopModelOption, change: Omit<ModelPreferenceChange, 'model'>) => unknown;
   onClose(): void;
 }) {
   const [query, setQuery] = useState('');
+  const [rowMenu, setRowMenu] = useState<ScmContextMenuState | null>(null);
+  const closeRowMenu = useCallback(() => setRowMenu(null), []);
   const [activeRowKey, setActiveRowKey] = useState('');
   const [recentModelKeys, setRecentModelKeys] = useState<string[]>(readRecentModelKeys);
   const dialog = useRef<HTMLElement>(null);
@@ -154,6 +209,7 @@ export function ModelCatalog({
     // close drops the query; the open re-reads recents and re-centers.
     if (!active) {
       setQuery('');
+      setRowMenu(null);
       return;
     }
     setRecentModelKeys(readRecentModelKeys());
@@ -192,14 +248,23 @@ export function ModelCatalog({
     `${option.model} ${option.display} ${modelDisplayName(option.model, option.provider, option.display)} ${modelOptionDescription(option)} ${resolveProviderLabel(option.provider)}`
       .toLocaleLowerCase()
       .includes(normalizedQuery);
+  // Favorites lead (provider order), then Recent, then each provider without
+  // its favorites. A favorite may also appear under Recent.
+  const favoriteModels = providerEntries.flatMap(([, options]) =>
+    options.filter((option) => option.favorite === true && matchesQuery(option))
+  );
   const visibleProviderEntries = providerEntries
-    .map(([entryProvider, options]) => [entryProvider, options.filter(matchesQuery)] as const)
+    .map(
+      ([entryProvider, options]) =>
+        [entryProvider, options.filter((option) => option.favorite !== true && matchesQuery(option))] as const
+    )
     .filter(([, options]) => options.length > 0);
   const recentModels = recentModelKeys.flatMap((key) => {
     const option = models.find((entry) => modelKey(entry) === key);
     return option && matchesQuery(option) ? [option] : [];
   });
   const renderedKeys = [
+    ...favoriteModels.map((option) => modelKey(option, 'favorite:')),
     ...recentModels.map((option) => modelKey(option, 'recent:')),
     ...visibleProviderEntries.flatMap(([, options]) => options.map((option) => modelKey(option))),
   ];
@@ -207,7 +272,13 @@ export function ModelCatalog({
   // biome-ignore lint/correctness/useExhaustiveDependencies: the derived lists are recomputed each render; the primitive inputs (normalizedQuery, models, recentModelKeys) are the intended triggers.
   useEffect(() => {
     if (!active) return;
-    const recent = recentModels.find((option) => option.provider === provider && option.model === model);
+    const current = (option: DesktopModelOption) => option.provider === provider && option.model === model;
+    const favorite = favoriteModels.find(current);
+    if (favorite) {
+      setActiveRowKey(modelKey(favorite, 'favorite:'));
+      return;
+    }
+    const recent = recentModels.find(current);
     if (recent) {
       setActiveRowKey(modelKey(recent, 'recent:'));
       return;
@@ -272,6 +343,44 @@ export function ModelCatalog({
       // overwrite a newer choice's history while handling an old response.
     }
   };
+  const openRowMenu = (
+    option: DesktopModelOption,
+    row: HTMLElement,
+    rowKey: string,
+    point: { x: number; y: number }
+  ) => {
+    if (!onSetModelPreference && !onOpenModelManagement) return;
+    const inUse = option.provider === provider && option.model === model;
+    const items: ScmContextMenuState['items'] = [];
+    if (onSetModelPreference) {
+      items.push(
+        {
+          id: 'favorite',
+          label: option.favorite ? t('Unfavorite model') : t('Favorite model'),
+          onSelect: () => void onSetModelPreference(option, { favorite: option.favorite !== true }),
+        },
+        {
+          id: 'hide',
+          label: t('Hide from list'),
+          disabled: inUse,
+          title: inUse ? t('The model in use cannot be hidden.') : undefined,
+          onSelect: () => void onSetModelPreference(option, { hidden: true }),
+        }
+      );
+    }
+    if (onOpenModelManagement) {
+      items.push({
+        id: 'manage',
+        label: t('Open model management'),
+        onSelect: () => onOpenModelManagement(option.provider),
+      });
+    }
+    // The menu hands focus back to whatever held it: the row, even when the
+    // press that opened it never focused the button.
+    row.focus({ preventScroll: true });
+    setActiveRowKey(rowKey);
+    setRowMenu({ label: modelDisplayName(option.model, option.provider, option.display), ...point, items });
+  };
   const renderModelOption = (option: DesktopModelOption, scope = '') => {
     const selected = option.provider === provider && option.model === model;
     const key = modelKey(option, scope);
@@ -285,7 +394,15 @@ export function ModelCatalog({
         data-row-key={key}
         data-active={activeRowKey === key}
         tabIndex={activeRowKey === key ? 0 : -1}
-        onKeyDown={(event) => navigateRows(event)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          openRowMenu(option, event.currentTarget, key, pointerMenuPoint(event));
+        }}
+        onKeyDown={(event) => {
+          if (!isContextMenuKey(event)) return navigateRows(event);
+          event.preventDefault();
+          openRowMenu(option, event.currentTarget, key, elementMenuPoint(event.currentTarget));
+        }}
         onMouseMove={() => setActiveRowKey(key)}
         onClick={() => void choose(option)}
       >
@@ -293,7 +410,7 @@ export function ModelCatalog({
           <span className="model-row-title">
             <strong>
               {modelDisplayName(option.model, option.provider, option.display)}
-              {scope === 'recent:' && (
+              {(scope === 'recent:' || scope === 'favorite:') && (
                 <span className="model-row-source">{` (${resolveProviderLabel(option.provider)})`}</span>
               )}
             </strong>
@@ -350,6 +467,17 @@ export function ModelCatalog({
                   </button>
                 )}
               </div>
+              {onOpenModelManagement && (
+                <button
+                  type="button"
+                  className="model-provider-add model-management-open"
+                  aria-label={t('Open model management')}
+                  data-tooltip={t('Model management')}
+                  onClick={() => onOpenModelManagement()}
+                >
+                  <Info size={16} aria-hidden="true" />
+                </button>
+              )}
               {onOpenProviders && (
                 <button
                   type="button"
@@ -374,6 +502,14 @@ export function ModelCatalog({
                   {emptyCatalogText(catalogRefreshing || !catalogLoaded, Boolean(normalizedQuery))}
                 </p>
               )}
+              {favoriteModels.length > 0 && (
+                <section className="model-group model-group--favorites">
+                  <h3>{t('Favorites')}</h3>
+                  <div className="model-items">
+                    {favoriteModels.map((option) => renderModelOption(option, 'favorite:'))}
+                  </div>
+                </section>
+              )}
               {recentModels.length > 0 && (
                 <section className="model-group model-group--recent">
                   <h3>{t('Recent')}</h3>
@@ -397,6 +533,7 @@ export function ModelCatalog({
           </div>
         </PaneSurfaceGate>
       </div>
+      <ScmContextMenu state={rowMenu} onClose={closeRowMenu} />
     </section>
   );
 }

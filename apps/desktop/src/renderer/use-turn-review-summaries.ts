@@ -1,27 +1,26 @@
 import { useMemo } from 'react';
 import type { TranscriptItem } from './desktop-types';
 import { findPatch } from './transcript-diff';
+import { toolRowRevision, uiDiffDigest, type UiDiffSummary } from './transcript-tool-core';
 import type { TurnReviewFile } from './turn-review-cache';
 import {
   summarizeTurnReviewPatch,
+  summarizeTurnReviewSegments,
   summarizeAuthoritativeTurnReview,
   mergeTurnReviewSummaries,
   toolPublishesPatch,
   summarizeTurnReviewOperations,
-  mergeSessionReviewSummaries,
-  resolveSessionRows,
-  summarizeSessionDiffRows,
-  summarizeSessionTranscriptReview,
+  type TurnReviewRowRef,
 } from './turn-review-model';
-import { buildSessionDiffRows } from './session-diff-model';
-import { useSessionDiffRefresh } from './use-session-diff-refresh';
+import { t } from './i18n';
+import { sessionChangesEmptyText, sessionChangesSourceLabel, useSessionChanges } from './session-changes-store';
 import type { useTurnReviewReads } from './use-turn-review-reads';
 
 type Reads = ReturnType<typeof useTurnReviewReads>;
 
 /** The lead's own turn diff: the authoritative snapshot, the post-revert
  *  tracker diff, or the transcript's latest uiDiff / published patches. */
-function summarizeTurnTranscript({
+export function summarizeTurnTranscript({
   items,
   startIndex,
   authoritativeLeadFiles,
@@ -41,10 +40,16 @@ function summarizeTurnTranscript({
   turnBoundaryKey: string;
 }) {
   const patches: string[] = [];
-  let latestUiDiff: string | null = null;
+  // The newest call diff: its text, or the digest a phone's copy carries.
+  let latestUiDiff: string | { row: TurnReviewRowRef; summary: UiDiffSummary } | null = null;
   for (let index = startIndex + 1; index < items.length; index++) {
     const item = items[index];
     if (item?.kind !== 'tool') continue;
+    const digest = uiDiffDigest(item);
+    if (digest) {
+      latestUiDiff = { row: { id: String(item.id ?? ''), revision: toolRowRevision(item) }, summary: digest };
+      continue;
+    }
     if (Object.hasOwn(item, 'uiDiff')) {
       latestUiDiff = typeof item.uiDiff === 'string' ? item.uiDiff : '';
       continue;
@@ -80,8 +85,12 @@ function summarizeTurnTranscript({
   if (trackerCountsOnly && (afterRevert || latestUiDiff === null)) {
     return summarizeAuthoritativeTurnReview(authoritativeLeadFiles, '');
   }
+  if (!afterRevert && latestUiDiff !== null && typeof latestUiDiff !== 'string') {
+    return summarizeTurnReviewSegments([latestUiDiff]);
+  }
+  const latestText = typeof latestUiDiff === 'string' ? latestUiDiff : null;
   return summarizeTurnReviewPatch(
-    afterRevert ? authoritativeLeadPatch : (latestUiDiff ?? authoritativeLeadPatch ?? patches.join('\n'))
+    afterRevert ? authoritativeLeadPatch : (latestText ?? authoritativeLeadPatch ?? patches.join('\n'))
   );
 }
 
@@ -181,68 +190,36 @@ export function useTurnReviewSummaries({
   };
 }
 
-/** What the bar shows: the session-wide set for the island segment, else the
+/** What the bar shows: the island segment's Changes (the selected Git source,
+ *  or a non-Git root's session diff — the same store the pane lists), else the
  *  turn's own, with its source groups and headline stats. */
 export function useShownTurnReview({
   sessionScoped,
   sessionId,
   active,
-  busy,
-  turnBoundaryKey,
-  items,
   cwd,
   turn,
 }: {
   sessionScoped: boolean;
   sessionId: string | undefined;
   active: boolean;
-  busy: boolean;
-  turnBoundaryKey: string;
-  items: TranscriptItem[];
   cwd: string | undefined;
   turn: ReturnType<typeof useTurnReviewSummaries>;
 }) {
   const { summary, transcriptSummary, agentSources, authoritativeWorktreeSnapshot, turnHeadlineStats } = turn;
-  // The island segment is session-wide. The renderer's transcript is paged
-  // (older turns may not be loaded), so the runtime's session diff — the
-  // session-owned paths since the session's earliest retained baseline — is
-  // the authoritative source; the transcript fold covers only until it answers.
-  const sessionDiff = useSessionDiffRefresh({
-    sessionId: sessionScoped ? String(sessionId || '') : '',
-    active,
-    revision: turnBoundaryKey,
-    busy,
-    gitWatchPath: sessionScoped ? cwd : '',
+  const changes = useSessionChanges({
+    cwd: sessionScoped ? cwd : '',
+    sessionId: sessionScoped ? sessionId : '',
+    active: sessionScoped && active,
   });
-  const sessionSummary = useMemo(() => {
-    if (!sessionScoped) return summary;
-    const transcript = summarizeSessionTranscriptReview(items, cwd);
-    const result = sessionDiff.result;
-    // A complete runtime set is final (Undo-aware); the pane lists the same rows.
-    if (result?.supported !== false && result?.complete === true) {
-      return summarizeSessionDiffRows(resolveSessionRows(result, items, cwd));
-    }
-    if (result?.supported !== false && result?.authoritative === true) {
-      return mergeSessionReviewSummaries(transcript, summarizeSessionDiffRows(buildSessionDiffRows(result)));
-    }
-    return transcript;
-  }, [sessionScoped, sessionDiff.result, items, summary, cwd]);
-  // The island segment of a Git project counts only what is still uncommitted
-  // (the runtime's files that differ from HEAD); elsewhere the session set.
-  const uncommittedFiles = sessionDiff.result?.uncommittedFiles;
-  const islandSummary = useMemo(
-    () =>
-      sessionScoped && Array.isArray(uncommittedFiles)
-        ? summarizeSessionDiffRows(buildSessionDiffRows({ files: uncommittedFiles }))
-        : sessionSummary,
-    [sessionScoped, uncommittedFiles, sessionSummary]
-  );
-  const historyTurns = Number(sessionDiff.result?.historyTurns) || 0;
+  const sessionSummary = changes.summary;
+  // Already translated: the source header shows it verbatim.
+  const sessionLabel = changes.repository ? sessionChangesSourceLabel(changes.source) : t('Session');
   const shownSummary = sessionScoped ? sessionSummary : summary;
   const headlineStats = sessionScoped ? sessionSummary : turnHeadlineStats;
   const sources = useMemo(() => {
     if (sessionScoped) {
-      return sessionSummary.files.size > 0 ? [{ key: 'session', label: 'Session', summary: sessionSummary }] : [];
+      return sessionSummary.files.size > 0 ? [{ key: 'session', label: sessionLabel, summary: sessionSummary }] : [];
     }
     const transcriptSource = {
       key: authoritativeWorktreeSnapshot ? 'turn' : 'lead',
@@ -250,6 +227,17 @@ export function useShownTurnReview({
       summary: transcriptSummary,
     };
     return [...(transcriptSummary.files.size > 0 ? [transcriptSource] : []), ...agentSources];
-  }, [sessionScoped, sessionSummary, transcriptSummary, agentSources, authoritativeWorktreeSnapshot]);
-  return { shownSummary, headlineStats, sources, islandSummary, historyTurns };
+  }, [sessionScoped, sessionSummary, sessionLabel, transcriptSummary, agentSources, authoritativeWorktreeSnapshot]);
+  // The segment's name follows the source; a non-Git root lists the session's files.
+  const segmentLabel = changes.repository ? sessionLabel : t('Files changed this session');
+  return {
+    shownSummary,
+    headlineStats,
+    sources,
+    segmentLabel,
+    /** A Git root: the files menu offers the Changes source picker. */
+    sourcePicker: changes.repository,
+    emptyText: changes.repository ? sessionChangesEmptyText(changes.source) : t('No changes from this session.'),
+    ready: changes.ready,
+  };
 }

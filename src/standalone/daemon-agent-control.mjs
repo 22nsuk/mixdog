@@ -8,8 +8,6 @@
 // this control exists — the host takes `execute` as a constructor option), and
 // `cwd`. Output: { canonicalAgentTool, execute }.
 
-import { deliverAutomationCompletion } from '../session-runtime/automation-agents.mjs';
-
 export function createCanonicalAgentControl({ getSessionService, getSessionRuntimeHost, cwd }) {
   let canonicalAgentToolPromise = null;
 
@@ -34,12 +32,7 @@ export function createCanonicalAgentControl({ getSessionService, getSessionRunti
           isKeychainPrewarmReady: () => true,
           sessionSurface: sessionService.agentSurface,
           notifySessionCompletion(ownerSessionId, text, meta = {}) {
-            // A schedule/webhook run owns no session runtime; its own
-            // agent-result waiter takes the completions it is owed.
-            return (
-              getSessionRuntimeHost()?.notifySessionCompletion?.(ownerSessionId, text, meta) === true ||
-              deliverAutomationCompletion(ownerSessionId, text, meta)
-            );
+            return getSessionRuntimeHost()?.notifySessionCompletion?.(ownerSessionId, text, meta) === true;
           },
         });
       })
@@ -61,12 +54,23 @@ export function createCanonicalAgentControl({ getSessionService, getSessionRunti
       ownerSessionId: sessionService.rootOwnerSessionId(parentSessionId),
     };
     if (String(args?.type || '') === '__close_all') {
-      await tool.closeAll?.(String(args?.reason || 'agent owner closed'), { callerSessionId: parentSessionId || null });
+      await tool.closeAll?.(String(args?.reason || 'agent owner closed'), {
+        callerSessionId: parentSessionId || null,
+        processExit: args?.processExit === true,
+      });
       await sessionService.cancelAgentDescendants(parentSessionId, String(args?.reason || 'agent owner closed'));
       return 'agent close all: ok';
     }
     return await tool.execute(args, scopedContext);
   }
 
-  return { canonicalAgentTool, execute };
+  /** Graceful shutdown: drain and release the canonical agent's index writers.
+   *  Never builds the tool just to dispose it. */
+  async function dispose() {
+    if (!canonicalAgentToolPromise) return;
+    const tool = await canonicalAgentToolPromise.catch(() => null);
+    await tool?.disposeAsync?.({ settle: true });
+  }
+
+  return { canonicalAgentTool, execute, dispose };
 }

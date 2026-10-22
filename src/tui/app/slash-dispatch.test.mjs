@@ -4,6 +4,7 @@ import { setImmediate as flush } from 'node:timers/promises';
 import { shouldSupersedePanelEpoch, supersedePanelEpoch } from './panel-epoch.mjs';
 import { createPanelSurface } from './panel-surface.mjs';
 import { createSlashDispatch } from './slash-dispatch.mjs';
+import { createBtwController } from './btw-controller.mjs';
 import { normalizeSlashCommandName, SLASH_COMMANDS, slashCommandTokenForPaletteAccept } from './slash-commands.mjs';
 
 // runSlashCommand against a fake store: which opener or store call each
@@ -64,6 +65,13 @@ function createHarness({ state = {}, store: overrides = {} } = {}) {
   };
   const exits = [];
   const doctors = [];
+  const btwPanels = [];
+  const session = { id: 's1' };
+  const btw = createBtwController({
+    getStore: () => store,
+    setPanel: (p) => btwPanels.push(p),
+    getSessionId: () => session.id,
+  });
   const { runSlashCommand } = createSlashDispatch({
     state: { busy: false, commandBusy: false, provider: 'openai', model: 'gpt-5', ...state },
     store,
@@ -99,9 +107,190 @@ function createHarness({ state = {}, store: overrides = {} } = {}) {
     openUpdatePicker: opener('update'),
     runDoctor: async () => doctors.push(1),
     requestExit: () => exits.push(1),
+    btw,
   });
-  return { runSlashCommand, notices, calls, opened, exits, doctors, current: () => live };
+  return { runSlashCommand, notices, calls, opened, exits, doctors, btw, btwPanels, session, current: () => live };
 }
+
+test('/btw resolves as a command with a question param', () => {
+  const cmd = SLASH_COMMANDS.find((c) => c.name === 'btw');
+  assert.equal(cmd.params, '<question>');
+  assert.equal(normalizeSlashCommandName('BTW'), 'btw');
+});
+
+test('/btw with no question shows the usage hint and sends no request', async () => {
+  const h = createHarness({
+    store: { askSide: async (q) => h.calls.push(['askSide', q]), cancelSide: () => h.calls.push(['cancelSide']) },
+  });
+  h.runSlashCommand('btw', '   ');
+  await flush();
+  assert.deepEqual(h.notices, [['usage: /btw <question>', 'warn']]);
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.btwPanels, []);
+});
+
+test('/btw asks the side question while a turn is running and shows the answer', async () => {
+  const h = createHarness({
+    state: { busy: true },
+    store: { askSide: async (q) => (h.calls.push(['askSide', q]), { text: 'because' }), cancelSide: () => {} },
+  });
+  assert.equal(h.runSlashCommand('btw', 'why?'), true);
+  await flush();
+  assert.deepEqual(h.calls, [['askSide', 'why?']]);
+  assert.deepEqual(h.notices, []);
+  assert.deepEqual(h.btwPanels, [
+    { question: 'why?', status: 'pending', text: '' },
+    { question: 'why?', status: 'done', text: 'because' },
+  ]);
+});
+
+test('/btw failure shows the error message in the panel', async () => {
+  const h = createHarness({
+    store: {
+      askSide: async () => {
+        throw new Error('no side model');
+      },
+    },
+  });
+  h.runSlashCommand('btw', 'q');
+  await flush();
+  assert.deepEqual(h.btwPanels.at(-1), { question: 'q', status: 'error', text: 'no side model' });
+});
+
+test('closing a pending /btw panel (Esc) cancels the side request and ignores the late result', async () => {
+  let release;
+  const h = createHarness({
+    store: {
+      askSide: () => new Promise((resolve) => (release = resolve)),
+      cancelSide: () => h.calls.push(['cancelSide']),
+    },
+  });
+  h.runSlashCommand('btw', 'slow');
+  await flush();
+  h.btw.close();
+  release({ text: 'late' });
+  await flush();
+  assert.deepEqual(h.calls, [['cancelSide']]);
+  assert.deepEqual(h.btwPanels, [{ question: 'slow', status: 'pending', text: '' }, null]);
+});
+
+test('a session change cancels a pending /btw for its originating session and clears the panel', async () => {
+  let release;
+  const h = createHarness({
+    store: {
+      askSide: () => new Promise((resolve) => (release = resolve)),
+      cancelSide: (sessionId) => h.calls.push(['cancelSide', sessionId]),
+    },
+  });
+  h.runSlashCommand('btw', 'slow');
+  await flush();
+  h.btw.sync();
+  assert.deepEqual(h.calls, [], 'same session: nothing to cancel');
+  h.session.id = 's2';
+  h.btw.sync();
+  release({ text: 'late answer' });
+  await flush();
+  assert.deepEqual(h.calls, [['cancelSide', 's1']]);
+  assert.deepEqual(h.btwPanels, [{ question: 'slow', status: 'pending', text: '' }, null]);
+});
+
+test('a settled /btw answer from another session is ignored, and a settled panel clears on session change', async () => {
+  let release;
+  const h = createHarness({
+    store: { askSide: () => new Promise((resolve) => (release = resolve)), cancelSide: () => {} },
+  });
+  h.runSlashCommand('btw', 'q');
+  await flush();
+  h.session.id = 's2';
+  release({ text: 'stale' });
+  await flush();
+  assert.deepEqual(h.btwPanels, [{ question: 'q', status: 'pending', text: '' }], 'settlement dropped');
+
+  const settled = createHarness({ store: { askSide: async () => ({ text: 'ok' }), cancelSide: () => {} } });
+  settled.runSlashCommand('btw', 'q');
+  await flush();
+  settled.session.id = 's2';
+  settled.btw.sync();
+  assert.equal(settled.btwPanels.at(-1), null);
+});
+
+test('disposing the controller (unmount) cancels a pending /btw without touching the panel', async () => {
+  const h = createHarness({
+    store: { askSide: () => new Promise(() => {}), cancelSide: (sessionId) => h.calls.push(['cancelSide', sessionId]) },
+  });
+  h.runSlashCommand('btw', 'q');
+  await flush();
+  h.btw.dispose();
+  assert.deepEqual(h.calls, [['cancelSide', 's1']]);
+  assert.equal(h.btwPanels.length, 1, 'no setPanel after unmount');
+});
+
+test('a new /btw replaces a pending one and cancels it first', async () => {
+  const h = createHarness({
+    store: {
+      askSide: (q) => (h.calls.push(['askSide', q]), new Promise(() => {})),
+      cancelSide: () => h.calls.push(['cancelSide']),
+    },
+  });
+  h.runSlashCommand('btw', 'one');
+  await flush();
+  h.runSlashCommand('btw', 'two');
+  await flush();
+  assert.deepEqual(h.calls, [['askSide', 'one'], ['cancelSide'], ['askSide', 'two']]);
+});
+
+test('/btw followed immediately by close sends no request and no cancel', async () => {
+  const h = createHarness({
+    store: {
+      askSide: (q) => (h.calls.push(['askSide', q]), new Promise(() => {})),
+      cancelSide: (sessionId) => h.calls.push(['cancelSide', sessionId]),
+    },
+  });
+  h.runSlashCommand('btw', 'one');
+  h.btw.close();
+  await flush();
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.btwPanels, [{ question: 'one', status: 'pending', text: '' }, null]);
+});
+
+test('/btw replaced before dispatch sends only the newest question', async () => {
+  const h = createHarness({
+    store: {
+      askSide: (q) => (h.calls.push(['askSide', q]), new Promise(() => {})),
+      cancelSide: (sessionId) => h.calls.push(['cancelSide', sessionId]),
+    },
+  });
+  h.runSlashCommand('btw', 'one');
+  h.runSlashCommand('btw', 'two');
+  await flush();
+  assert.deepEqual(h.calls, [['askSide', 'two']]);
+});
+
+test('/btw followed immediately by a session switch never sends through the new session', async () => {
+  const h = createHarness({
+    store: {
+      askSide: (q) => (h.calls.push(['askSide', q]), new Promise(() => {})),
+      cancelSide: (sessionId) => h.calls.push(['cancelSide', sessionId]),
+    },
+  });
+  h.runSlashCommand('btw', 'one');
+  h.session.id = 's2';
+  h.btw.sync();
+  await flush();
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.btwPanels, [{ question: 'one', status: 'pending', text: '' }, null]);
+});
+
+test('/btw session switch without sync still drops the undispatched request', async () => {
+  const h = createHarness({
+    store: { askSide: (q) => (h.calls.push(['askSide', q]), { text: 'x' }), cancelSide: () => {} },
+  });
+  h.runSlashCommand('btw', 'one');
+  h.session.id = 's2';
+  await flush();
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.btwPanels, [{ question: 'one', status: 'pending', text: '' }]);
+});
 
 test('bare panel commands paint a loading frame and hand over to their opener', async () => {
   const h = createHarness();
@@ -309,4 +498,36 @@ test('palette acceptance preserves the full /new alias while partial matches use
     h.calls.map(([name]) => name),
     ['newSession', 'clear']
   );
+});
+
+test('/shells lists held shells and releases one only with --confirm', async () => {
+  const h = createHarness({
+    store: {
+      listShellJobs: async () => ({
+        jobs: [
+          { taskId: 'job_a', command: 'npm run dev' },
+          { taskId: 'job_b', command: 'node server.js', terminationUnconfirmed: true },
+        ],
+      }),
+      releaseShellJob: async (taskId) => {
+        h.calls.push(['releaseShellJob', taskId]);
+        return { released: true };
+      },
+    },
+  });
+  h.runSlashCommand('shells', '');
+  await flush();
+  assert.equal(h.notices.length, 1);
+  const [listing, tone] = h.notices[0];
+  assert.equal(tone, 'warn');
+  assert.match(listing, /job_a {2}running {2}npm run dev/);
+  assert.match(listing, /job_b {2}termination unconfirmed {2}node server\.js/);
+  h.runSlashCommand('shells', 'release job_b');
+  await flush();
+  assert.match(h.notices[1][0], /may still be running.*\/shells release job_b --confirm/);
+  assert.deepEqual(h.calls, [], 'nothing is released without --confirm');
+  h.runSlashCommand('shells', 'release job_b --confirm');
+  await flush();
+  assert.deepEqual(h.calls, [['releaseShellJob', 'job_b']]);
+  assert.deepEqual(h.notices[2], ['Released job_b.', 'info']);
 });

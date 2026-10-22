@@ -11,8 +11,12 @@ import {
 } from 'lucide-react';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { DesktopSessionSummary } from '../shared/contract';
-import { sessionSummaryTitle } from '../shared/session-title.mjs';
-import { ProgressSpinner } from './ProgressSpinner';
+import type { SessionAttention } from '../shared/session-attention';
+import { sessionDisplayTitle } from './session-display-title';
+import { agentAvatar } from '../../../../src/runtime/shared/agent-avatar.mjs';
+import { RoomMemberFace } from './agent-room-parts';
+import { useArchivedBotIdentities } from './archived-bot-identity';
+import { SessionRowStatusIcon, SessionRowUnreadDot } from './session-status-mark';
 import { t } from './i18n';
 import { beginPaneDrag, finishPaneDrag, type PaneDragSession } from './pane-drag-session';
 import { elementMenuPoint, isContextMenuKey, pointerMenuPoint } from './ScmContextMenu';
@@ -21,11 +25,30 @@ import type { usePersistedListOrder } from './use-persisted-list-order';
 const SESSION_PREFETCH_INTENT_DELAY_MS = 40;
 
 export function sessionLabel(session: DesktopSessionSummary) {
-  return sessionSummaryTitle(session, t('Untitled session'));
+  return sessionDisplayTitle(session, t('Untitled session'));
+}
+
+/** The question before a deleted bot's archived chat is deleted for good. */
+export function permanentBotDeleteMessage(name: string): string {
+  return t(
+    "Delete {{name}} for good? Its conversation history and the bot's remaining data are deleted and cannot be restored.",
+    { name }
+  );
+}
+
+/** The face a deleted bot left (archived-bot-identity.ts), else its id's default. */
+function DeletedBotFace({ agentId }: { agentId: string }) {
+  const identity = useArchivedBotIdentities().get(agentId);
+  return (
+    <RoomMemberFace
+      member={{ id: agentId, name: identity?.name ?? agentId, avatar: identity?.avatar ?? agentAvatar(agentId, null) }}
+      className="session-row-bot-face"
+    />
+  );
 }
 
 /** Display-only title of the n-th fork; the stored title is unchanged. */
-export function forkDisplayTitle(title: string, n: number) {
+function forkDisplayTitle(title: string, n: number) {
   return t('{{title}} (fork {{n}})', { title, n });
 }
 
@@ -37,7 +60,7 @@ export const SessionSidebarRow = React.memo(function SessionSidebarRow({
   reorder,
   active,
   working,
-  unread,
+  attention,
   rowKey,
   editingRowKey,
   sessionTitleDraft,
@@ -53,6 +76,7 @@ export const SessionSidebarRow = React.memo(function SessionSidebarRow({
   onCloseEditor,
   onSetConfirming,
   onSetDeleting,
+  onRequestDelete,
   onArchiveSession,
   onFavoriteSession,
   onDeleteSession,
@@ -66,7 +90,8 @@ export const SessionSidebarRow = React.memo(function SessionSidebarRow({
   reorder?: Partial<SessionRowReorder>;
   active: boolean;
   working?: boolean;
-  unread?: boolean;
+  /** The strongest status (needs you > failed > running > unread). */
+  attention: SessionAttention | '';
   /** Fork grouping: the original (`root`, with its expansion) or a numbered fork. */
   forkKind?: 'root' | 'child';
   forkExpanded?: boolean;
@@ -90,6 +115,7 @@ export const SessionSidebarRow = React.memo(function SessionSidebarRow({
   onCloseEditor(): void;
   onSetConfirming: React.Dispatch<React.SetStateAction<string>>;
   onSetDeleting: React.Dispatch<React.SetStateAction<string>>;
+  onRequestDelete(sessionId: string): void;
   onArchiveSession(sessionId: string, archived: boolean): Promise<void>;
   onFavoriteSession(sessionId: string, favorite: boolean): Promise<void>;
   onDeleteSession(sessionId: string): Promise<void>;
@@ -100,7 +126,7 @@ export const SessionSidebarRow = React.memo(function SessionSidebarRow({
       reorder={reorder}
       active={active}
       working={working}
-      unread={unread}
+      attention={attention}
       editing={editingRowKey === rowKey}
       titleDraft={sessionTitleDraft}
       titleInvalid={sessionTitleInvalid}
@@ -121,7 +147,7 @@ export const SessionSidebarRow = React.memo(function SessionSidebarRow({
       deleting={deletingSessionId === session.id}
       onStartDelete={(target) => {
         onCloseEditor();
-        onSetConfirming(target.id);
+        onRequestDelete(target.id);
       }}
       onCancelDelete={() => onSetConfirming('')}
       onConfirmDelete={(target) => {
@@ -140,7 +166,7 @@ const SessionRow = React.memo(function SessionRow({
   reorder,
   active,
   working,
-  unread,
+  attention,
   editing,
   titleDraft,
   titleInvalid,
@@ -167,7 +193,7 @@ const SessionRow = React.memo(function SessionRow({
   reorder?: Partial<SessionRowReorder>;
   active: boolean;
   working?: boolean;
-  unread?: boolean;
+  attention: SessionAttention | '';
   forkKind?: 'root' | 'child';
   forkExpanded?: boolean;
   forkNumber?: number;
@@ -197,9 +223,12 @@ const SessionRow = React.memo(function SessionRow({
   const suppressClick = useRef(false);
   const [dragging, setDragging] = useState(false);
   const label = forkNumber ? forkDisplayTitle(sessionLabel(session), forkNumber) : sessionLabel(session);
+  // A deleted bot's archived chat: the bot's face before its name.
+  const deletedBot = session.agentDeleted === true ? session.agentHome || '' : '';
   const titleRef = useRef<HTMLElement>(null);
   const [overflowing, setOverflowing] = useState(false);
   // Only a title that does not fit fades at the row edge.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: label is not read, but a new title changes the text width and must re-measure.
   useLayoutEffect(() => {
     const title = titleRef.current;
     if (!title) return undefined;
@@ -374,6 +403,7 @@ const SessionRow = React.memo(function SessionRow({
         {forkKind === 'child' && (
           <CornerDownRight className="session-row-fork-icon" data-fork="child" size={16} aria-hidden="true" />
         )}
+        {deletedBot && <DeletedBotFace agentId={deletedBot} />}
         <span className="session-row-copy">
           <b ref={titleRef} data-overflow={overflowing || undefined}>
             {label}
@@ -382,6 +412,7 @@ const SessionRow = React.memo(function SessionRow({
         {forkKind === 'root' && (
           // A span, not a button: it sits inside the row's button and the
           // click must not open the session.
+          // biome-ignore lint/a11y/useSemanticElements: a nested <button> inside the row's button is invalid HTML.
           <span
             role="button"
             tabIndex={0}
@@ -408,22 +439,9 @@ const SessionRow = React.memo(function SessionRow({
           </span>
         )}
         <span className="session-row-status" data-working={working || undefined}>
-          {working && (
-            <ProgressSpinner
-              size={12}
-              className="session-row-spinner"
-              role="status"
-              aria-label={t('{{name}} is working', { name: label })}
-            />
-          )}
+          <SessionRowStatusIcon status={attention} name={label} />
         </span>
-        {unread && !working && (
-          <span
-            className="session-row-unread-dot"
-            role="status"
-            aria-label={t('{{name}} has new activity', { name: label })}
-          />
-        )}
+        {attention === 'unread' && <SessionRowUnreadDot name={label} />}
       </button>
       <div className="session-row-actions" inert={editing ? true : undefined} aria-hidden={editing ? true : undefined}>
         {/* Archived rows always carry restore/delete; any other row shows the
@@ -431,6 +449,7 @@ const SessionRow = React.memo(function SessionRow({
             confirmation. */}
         {(session.archived === true || confirmingDelete) && (
           <>
+            {/* A deleted bot's chat restores the bot with it (session-sidebar.tsx). */}
             <button
               type="button"
               className={`session-row-action ${confirmingDelete ? 'session-row-delete-cancel' : 'session-row-restore'}`}

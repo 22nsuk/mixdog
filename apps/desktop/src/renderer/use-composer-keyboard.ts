@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type KeyboardEvent, type RefObject, type SetStateAction } from 'react';
+import { useCallback, useRef, type Dispatch, type KeyboardEvent, type RefObject, type SetStateAction } from 'react';
 import type { DesktopRendererComposerActionDiagnostic } from '../shared/contract';
 import { isComposerNewlineChord, shouldInterruptPrompt, shouldNavigatePromptHistory } from './renderer-logic.mjs';
 import { foldAttachmentTokens } from './composer-attachment-restore';
@@ -35,18 +35,7 @@ function movePaletteIndex(
   return true;
 }
 
-export function useComposerKeyboard({
-  draft,
-  slash,
-  mention,
-  skillMention,
-  selector,
-  history,
-  queue,
-  runtime,
-  ime,
-  actions,
-}: {
+interface ComposerKeyboardOptions {
   draft: {
     value: string;
     set: Dispatch<SetStateAction<string>>;
@@ -96,14 +85,11 @@ export function useComposerKeyboard({
     attachmentsRef: RefObject<ComposerAttachment[]>;
     replaceAttachments(attachments: ComposerAttachment[]): void;
   };
-  queue: {
-    pendingSubmissionId: string;
-    hasRestorableMessages(): boolean;
-    restore(source: DesktopRendererComposerActionDiagnostic['source']): void;
-  };
   runtime: {
     turnBusy: boolean;
     draftMode?: boolean;
+    /** The prompt this pane sent last that has not settled yet. */
+    pendingSubmissionId: string;
     attachments: ComposerAttachment[];
     escapeClearAt: RefObject<number>;
     showNotice(message: string): void;
@@ -117,7 +103,25 @@ export function useComposerKeyboard({
     stop(preserveDraft?: boolean, submissionId?: string): Promise<void>;
     clearAttachments(): void;
   };
-}) {
+}
+
+export function useComposerKeyboard({
+  draft,
+  slash,
+  mention,
+  skillMention,
+  selector,
+  history,
+  runtime,
+  ime,
+  actions,
+}: ComposerKeyboardOptions) {
+  // A suggested command is not consent to replace a literal slash or path.
+  // Only arrow navigation explicitly selects a candidate for Enter.
+  const slashNavigation = useRef({ draft: draft.value, selected: false });
+  if (slashNavigation.current.draft !== draft.value) {
+    slashNavigation.current = { draft: draft.value, selected: false };
+  }
   const insertNewline = useCallback(
     (element: HTMLTextAreaElement) => {
       const start = element.selectionStart;
@@ -213,12 +217,14 @@ export function useComposerKeyboard({
         event.preventDefault();
         event.stopPropagation();
         slash.setDismissed(draft.value);
+        slashNavigation.current.selected = false;
         runtime.escapeClearAt.current = 0;
         return true;
       }
       const command = slash.commands[slash.index] || slash.commands[0];
       if (!command) return false;
       if (event.key === 'Enter') {
+        if (!slashNavigation.current.selected) return false;
         event.preventDefault();
         void actions.send(command.usage, 'keyboard-enter');
         return true;
@@ -238,6 +244,7 @@ export function useComposerKeyboard({
         paletteOwnsPromptVerticalArrow(slash.commands.length)
       ) {
         event.preventDefault();
+        slashNavigation.current.selected = true;
         const direction = event.key === 'ArrowDown' ? 1 : -1;
         slash.setIndex((index) => (index + direction + slash.commands.length) % slash.commands.length);
         return true;
@@ -321,11 +328,13 @@ export function useComposerKeyboard({
       const escapeIntent = classifyPromptEscape({
         interruptActive: shouldInterruptPrompt({
           turnBusy: runtime.turnBusy,
-          pendingSubmissionId: queue.pendingSubmissionId,
+          pendingSubmissionId: runtime.pendingSubmissionId,
           draftMode: runtime.draftMode,
         }),
         hasSelection: element.selectionStart !== element.selectionEnd,
-        hasQueuedMessages: queue.hasRestorableMessages(),
+        // Messages sent behind a turn live in the transcript, not a queue
+        // the editor takes back.
+        hasQueuedMessages: false,
         hasMessages: selector.messages.length > 0,
         value: draft.value || (runtime.attachments.length ? 'attachment' : ''),
         lastClearPressAt: runtime.escapeClearAt.current,
@@ -335,15 +344,12 @@ export function useComposerKeyboard({
         event.preventDefault();
         void actions.stop(
           Boolean(draft.value || runtime.attachments.length),
-          runtime.turnBusy ? '' : queue.pendingSubmissionId
+          runtime.turnBusy ? '' : runtime.pendingSubmissionId
         );
       } else if (escapeIntent.action === 'collapse-selection') {
         event.preventDefault();
         const end = element.selectionEnd;
         window.setTimeout(() => element.setSelectionRange(end, end), 0);
-      } else if (escapeIntent.action === 'restore-queue') {
-        event.preventDefault();
-        queue.restore('escape');
       } else if (escapeIntent.action === 'arm-clear') {
         event.preventDefault();
         runtime.showNotice(t('Esc again to clear'));
@@ -365,7 +371,7 @@ export function useComposerKeyboard({
         selector.openSelector();
       }
     },
-    [actions, draft, history, queue, runtime, selector]
+    [actions, draft, history, runtime, selector]
   );
 
   const onKeyDown = useCallback(
@@ -430,7 +436,6 @@ export function useComposerKeyboard({
         handleEscape(event);
         return;
       }
-      const queueAvailable = queue.hasRestorableMessages();
       const historyIntent = shouldNavigatePromptHistory({
         key: event.key,
         value: draft.value,
@@ -441,13 +446,7 @@ export function useComposerKeyboard({
         metaKey: event.metaKey,
         altKey: event.altKey,
         historyActive: history.navigation.current.index >= 0,
-        allowNonEmpty: event.key === 'ArrowUp' && queueAvailable,
       });
-      if (event.key === 'ArrowUp' && historyIntent && !event.altKey && queueAvailable) {
-        event.preventDefault();
-        queue.restore('arrow-up');
-        return;
-      }
       if (event.key === 'ArrowUp' && historyIntent && history.entries.length) {
         event.preventDefault();
         const navigation = history.navigation.current;
@@ -491,7 +490,6 @@ export function useComposerKeyboard({
       navigateMessageSelector,
       navigateSkillMentionPalette,
       navigateSlashPalette,
-      queue,
       runtime,
     ]
   );

@@ -11,6 +11,8 @@ import { turnReviewScope } from './renderer-logic.mjs';
 import { preloadMarkdownBody } from './markdown-body-loader';
 import { parseStreamingMarkdownAst } from './markdown-worker-client';
 import { useTranscriptRows } from './use-conversation-rows';
+import { roomRowMessage } from '../../../../src/runtime/agent/orchestrator/session/agent-room.mjs';
+import { restoreTranscriptItems } from '../../../../src/runtime/agent/orchestrator/session/transcript-restore/restore.mjs';
 
 function mount(t) {
   const { dom, root } = installTestDom(t, {
@@ -46,6 +48,9 @@ test('settling an assistant preserves its rendered Markdown without an empty int
   const strong = body.querySelector('strong');
   const expectedText = body.textContent;
   assert.ok(strong);
+  // A reply watched streaming breaks lines greedily (22-markdown.css), so its
+  // words never re-wrap as it grows, and settling keeps that: no reflow.
+  assert.ok(body.classList.contains('streamed'));
   act(() => {
     root.render(
       React.createElement(TranscriptAssistantRow, {
@@ -58,8 +63,17 @@ test('settling an assistant preserves its rendered Markdown without an empty int
   assert.equal(document.querySelector('.markdown'), body);
   assert.equal(document.querySelector('.markdown strong'), strong);
   assert.equal(body.textContent, expectedText);
+  assert.ok(body.classList.contains('streamed'));
   assert.equal(document.querySelector('[data-transcript-pending]'), null);
   assert.ok(document.querySelector('.response-footer'));
+  // A settled reply mounted whole keeps the pretty line breaks.
+  act(() => root.render(React.createElement('div')));
+  act(() => {
+    root.render(
+      React.createElement(TranscriptAssistantRow, { item: { ...item, id: 'history', streaming: false }, live: false })
+    );
+  });
+  assert.equal(document.querySelector('.markdown').classList.contains('streamed'), false);
 });
 
 test('a completed reply takes the live band’s place: no band lingers below its footer while busy', async (t) => {
@@ -91,13 +105,72 @@ test('a completed reply takes the live band’s place: no band lingers below its
   await render({ items: [prompt], liveItem: { ...reply, streaming: true }, busy: true });
   assert.deepEqual(tags, ['UserMessage', 'AssistantPart', 'Thinking'], 'streaming: the band sits under the reply');
   await render({ items: [prompt, reply, done], busy: true });
-  assert.deepEqual(tags, ['UserMessage', 'AssistantPart'], 'the footer replaced the band; a busy flag alone keeps none');
+  assert.deepEqual(
+    tags,
+    ['UserMessage', 'AssistantPart'],
+    'the footer replaced the band; a busy flag alone keeps none'
+  );
   await render({ items: [prompt, reply, done], busy: true, activity: true });
   assert.deepEqual(tags, ['UserMessage', 'AssistantPart', 'Thinking'], 'visible activity brings the band back');
   await render({ items: [prompt, reply], busy: true });
-  assert.deepEqual(tags, ['UserMessage', 'AssistantPart', 'Thinking'], 'an open turn keeps its band through null activity');
+  assert.deepEqual(
+    tags,
+    ['UserMessage', 'AssistantPart', 'Thinking'],
+    'an open turn keeps its band through null activity'
+  );
   await render({ items: [prompt, reply, done, { kind: 'user', id: 'wake', text: 'next', hidden: true }], busy: true });
   assert.deepEqual(tags, ['UserMessage', 'AssistantPart', 'Thinking'], 'a hidden follow-up turn keeps the band');
+});
+
+test('a group room keeps one typing slot row through its turns; the typing rows open none', async (t) => {
+  const { root } = mount(t);
+  const prompt = { kind: 'user', id: 'desktop-submit-1', text: 'hello room' };
+  const typing = {
+    kind: 'notice',
+    id: 'room-typing-1',
+    tone: 'info',
+    text: 'GH…',
+    room: { kind: 'typing', speaker: 'gh' },
+  };
+  let keys = [];
+  function Rows(props) {
+    const { transcriptRows } = useTranscriptRows({
+      identity: 'sess_room_r1',
+      sessionKey: 'sess_room_r1',
+      settledItems: props.items,
+      settledRowItems: props.items,
+      failedTurnKeys: [],
+      precomputedTurnKeys: null,
+      pendingItems: props.pendingItems ?? [],
+      liveItem: null,
+      busy: true,
+      commandBusy: false,
+      commandActivityVisible: false,
+      optimisticActivityStartedAt: props.optimistic ?? 0,
+      room: true,
+    });
+    keys = transcriptRows.map((row) => `${row._tag}:${row.key}`);
+    return null;
+  }
+  const render = (props) => act(async () => root.render(React.createElement(Rows, props)));
+  const pending = { ...prompt, pending: true, accepted: true, submittedAt: 1 };
+  await render({ items: [], pendingItems: [pending], optimistic: 1 });
+  const sent = keys;
+  assert.ok(sent.at(-1).startsWith('Thinking:'), 'the slot opens on send');
+  await render({ items: [prompt, typing] });
+  // The settled row keeps the pending bubble's key: no remount at the flat estimate.
+  assert.deepEqual(keys, sent, 'the typing row paints in the slot: same rows, same keys');
+  // Between turns the typing row is gone; the next one has a fresh id.
+  await render({ items: [prompt] });
+  assert.deepEqual(keys, sent, 'between turns the slot stays');
+  const speech = { kind: 'notice', id: 'row_s1', text: 'hi', room: { kind: 'speech', speaker: 'gh' } };
+  const pass = { kind: 'notice', id: 'row_p1', room: { kind: 'pass', speaker: 'cx' } };
+  await render({
+    items: [prompt, speech, pass, { ...typing, id: 'room-typing-2', room: { kind: 'typing', speaker: 'cx' } }],
+  });
+  assert.equal(keys.at(-1), sent.at(-1), 'one slot key for the whole run');
+  assert.equal(keys.filter((key) => key.startsWith('Thinking:')).length, 1);
+  assert.equal(keys.filter((key) => key.includes('room-typing')).length, 0, 'no typing row of its own');
 });
 
 test('the island files segment appears only once the session diff read finds changes, including an empty final diff', async (t) => {
@@ -123,7 +196,8 @@ test('the island files segment appears only once the session diff read finds cha
     const scope = turnReviewScope(items).key;
     rememberAgentReviews(`${sessionId}:${scope}`, [], '', [], 'worktree', scope);
     const props = {
-      sessionId: '',
+      // The island mounts once the session's first lane snapshot has named it.
+      sessionId,
       goalSubmissionId: '',
       showProjectSelector: false,
       reviewActive: true,
@@ -249,7 +323,7 @@ test('a transcript tail without its prompt row keeps the turn review of that tur
         React.createElement(
           ComposerDock,
           {
-            sessionId: '',
+            sessionId,
             goalSubmissionId: '',
             showProjectSelector: false,
             reviewActive: true,
@@ -391,6 +465,37 @@ test('a tweaks line in a user message is drawn with an icon, not the emoji', asy
   assert.ok(line.querySelector('svg'));
   assert.doesNotMatch(document.querySelector('.message-body').textContent, /🎚/);
   assert.equal(document.querySelector('.message-body > p').textContent, 'Bake these');
+});
+
+test("a group room's restored user row shows its files as a prompt row does", async (t) => {
+  const { root, document } = mount(t);
+  const image = 'a'.repeat(64);
+  const pdf = 'b'.repeat(64);
+  // What the room log stores for a message with an image and a PDF, restored.
+  const message = roomRowMessage({
+    id: 'sub-room',
+    kind: 'user',
+    at: 5,
+    text: '[Image #1] check [PDF #2: spec.pdf]',
+    to: ['gh'],
+    toName: ['GitHub'],
+    parts: [
+      { type: 'image', attachmentRef: image, mimeType: 'image/png', sizeBytes: 3 },
+      { type: 'file', attachmentRef: pdf, mimeType: 'application/pdf', filename: 'spec.pdf', sizeBytes: 9 },
+    ],
+    attachments: [
+      { id: image, kind: 'image', name: 'shot.png', mimeType: 'image/png', size: 3 },
+      { id: pdf, kind: 'file', name: 'spec.pdf', mimeType: 'application/pdf', size: 9 },
+    ],
+    images: [{ id: 1, name: 'shot.png', mimeType: 'image/png', bytes: 3, attachmentRef: image }],
+  });
+  const [item] = restoreTranscriptItems([message], { sessionId: 'sess_room_abc123' });
+  await act(async () => root.render(React.createElement(TranscriptRow, { item })));
+  assert.equal(document.querySelector('.message-body > p').textContent, 'check');
+  const cards = [...document.querySelectorAll('.message-attachments > .attachment-card')];
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0].textContent, 'shot.png');
+  assert.match(cards[1].textContent, /spec\.pdf/);
 });
 
 test('inline image markers preserve user text and attachment chips', async (t) => {

@@ -24,7 +24,6 @@ export function wireSessionLifecycle(boot) {
       params.modelParameters !== undefined,
     invalidatePreSessionToolSurface: boot.invalidatePreSessionToolSurface,
     invalidateOutputStyleStatusCache: boot.invalidateOutputStyleStatusCache,
-    invalidateSkills: boot.invalidateSkills,
     connectConfiguredMcp: boot.connectConfiguredMcp,
     configureEmbedding,
   });
@@ -125,6 +124,7 @@ export function wireSessionLifecycle(boot) {
   scheduleModelCatalogWarmup();
   scheduleStatuslineUsageWarmup();
   scheduleAutomationAutostart(tunables.remoteAutoStartDelayMs);
-  // Auto effort touches neither network nor memory at boot: the first judged
-  // turn fetches/updates the model and loads the judge (judge-client.mjs).
+  // Auto effort touches neither network nor memory at boot: creating or
+  // opening a session loads the judge, and the first judged turn
+  // fetches/updates the model (judge-client.mjs).
 }

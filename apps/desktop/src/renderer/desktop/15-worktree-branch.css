@@ -44,52 +44,131 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.composer-branch-context .branch-chip-fork,
-.branch-menu .branch-chip-fork {
+.composer-branch-context .branch-chip-fork {
   color: var(--mx-accent);
 }
 .composer-branch-context[data-recovery] .branch-chip-trigger > svg {
   color: var(--mx-warning);
 }
 
+/* Wide enough for every label on one line ("Worktree · New branch ·
+   separate folder"); long branch names ellipsize at the cap. */
 .branch-menu {
   position: fixed;
   z-index: var(--mx-menu-z-index);
-  width: 280px;
-  max-width: calc(100vw - 16px);
+  width: max-content;
+  min-width: 280px;
+  max-width: min(420px, calc(100vw - 16px));
   display: flex;
   flex-direction: column;
   padding: 6px;
-  overflow: hidden;
+  /* Only when even the list's floor cannot fit the room left above the
+     anchor: the whole menu scrolls rather than cutting rows off. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: var(--mx-popup-border);
   border-radius: var(--mx-popup-radius);
   color: var(--mx-text);
   background: var(--mx-popup-bg);
   box-shadow: var(--mx-popup-shadow);
 }
-.branch-menu-search {
-  height: 26px;
-  flex: 0 0 26px;
+.branch-menu-search-frame {
+  flex: 0 0 28px;
   margin: 0 0 6px;
-  padding: 0 8px;
+}
+/* Inside a popup the field sits on the popup surface, like the model picker's
+   search; the rail's sunken sheet fill read as a black hole here. */
+.schedules-search.branch-menu-search-frame {
+  background: transparent;
+}
+/* The "…" trigger sits inside the row's right end: shown on hover or focus
+   (the row's label steps aside); right-click opens the same menu. */
+.branch-row-shell {
+  --branch-row-h: 30px;
+  position: relative;
+}
+.branch-row-shell > .branch-menu-item {
+  min-width: 0;
+}
+.branch-row-more {
+  position: absolute;
+  top: calc((var(--branch-row-h) - 26px) / 2);
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 0;
   border-radius: var(--mx-radius-md);
-  outline: 0;
-  color: var(--mx-text);
-  background: var(--mx-bg-layer-1);
-  font-size: var(--mx-font-minor);
+  color: var(--mx-text-muted);
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
 }
+.branch-row-shell:is(:hover, :focus-within) > .branch-row-more,
+.branch-row-shell > .branch-row-more[aria-expanded="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* The trailing label or check moves left of the "…" instead of hiding. */
+.branch-row-shell:is(:hover, :focus-within) > .branch-menu-item > :is(small, .branch-menu-check) {
+  margin-right: 28px;
+}
+/* Touch has no hover: a long-press opens the row's menu, so no "…" sits next
+   to the check. */
+@media (hover: none) {
+  .branch-row-shell:is(:hover, :focus-within) > .branch-row-more,
+  .branch-row-shell > .branch-row-more[aria-expanded="true"] {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .branch-row-shell:is(:hover, :focus-within) > .branch-menu-item > :is(small, .branch-menu-check) {
+    margin-right: 0;
+  }
+}
+.branch-row-more:hover,
+.branch-row-more[aria-expanded="true"] {
+  background: var(--mx-hover);
+  color: var(--mx-text);
+}
+.branch-row-more:focus-visible {
+  outline: 1px solid var(--mx-focus);
+  outline-offset: -1px;
+}
+/* Everything but the list keeps its own height: a notice, the search, the
+   actions and New branch never squeeze. */
+:is(.branch-menu, .branch-menu-body) > :not(.branch-menu-list) {
+  flex: none;
+}
+/* A notice wraps to the menu's width (it never widens the menu) above the
+   list, capped so a long refusal scrolls inside itself. */
 .branch-menu-notice {
+  width: 0;
+  min-width: 100%;
+  max-height: 96px;
   margin: 0 0 6px;
   padding: 4px 10px;
+  overflow-y: auto;
+  overflow-wrap: break-word;
+  word-break: keep-all;
+  scrollbar-width: thin;
   color: var(--mx-warning);
   font-size: var(--mx-font-meta);
 }
-/* The list sizes to its rows and scrolls past OpenSelect's 240px cap. */
+/* The list sizes to its rows and scrolls past OpenSelect's 240px cap. It
+   gives way to a notice, but never below about three rows. */
 .branch-menu-list {
   max-height: 240px;
   flex: 0 1 auto;
   overflow: auto;
+}
+:is(.branch-menu, .branch-menu-body):has(> .branch-menu-notice) > .branch-menu-list {
+  min-height: 96px;
+}
+html[data-mixdog-mobile-tabs] .branch-menu-item {
+  min-height: var(--mx-touch, 44px);
 }
 .branch-menu-item {
   width: 100%;
@@ -164,6 +243,157 @@
   margin: 4px 0;
   border: 0;
   background: var(--mx-border-muted);
+}
+.branch-menu-item > span,
+.branch-menu-item > small {
+  white-space: nowrap;
+}
+/* Work is running: the reason leads the menu and no switch can start. */
+.branch-menu-notice[data-kind="locked"] {
+  margin: 0 0 6px;
+  padding: 4px 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border-radius: var(--mx-radius-md);
+  background: color-mix(in srgb, var(--mx-warning) 12%, transparent);
+}
+.branch-menu-item[aria-disabled="true"]:not([data-mark="external"]) {
+  opacity: var(--mx-op-disabled);
+}
+.branch-menu-item[data-selected][aria-disabled="true"],
+.branch-menu-item[data-mark="current"][aria-disabled="true"],
+.branch-menu-item[data-pending][aria-disabled="true"] {
+  opacity: 1;
+}
+.branch-menu-item > .progress-spinner-turn {
+  flex: 0 0 auto;
+  color: var(--mx-accent);
+}
+.branch-menu-item > .branch-menu-check {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--mx-accent);
+}
+.branch-menu-item > small + .branch-menu-check {
+  margin-left: 0;
+}
+/* The composer island's branch tab (BranchIslandPanel): the same body in the
+   island's panel grammar — compact 40px rows on hairline rules, the list
+   capped like the island's other tab lists, New branch or a worktree
+   session's actions (View changes · Merge · Remove) in the footer. */
+.branch-menu-body {
+  display: flex;
+  flex-direction: column;
+}
+.branch-menu-body > .branch-menu-search {
+  height: 30px;
+  flex-basis: 30px;
+  margin-bottom: 4px;
+  padding: 0 10px;
+  border-radius: var(--mx-radius-md);
+  font-size: var(--mx-font-minor);
+}
+.branch-menu-body > .branch-menu-list {
+  max-height: min(320px, 40dvh);
+  margin-inline: -6px;
+  padding-inline: 6px;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+/* No list read or remembered yet (the segment reads it ahead, so this is
+   rare): the list holds its full height while loading, so the island never
+   grows when the rows land. A remembered height (inline) wins. */
+.branch-menu-body > .branch-menu-list:has(> [data-loading]) {
+  min-height: min(320px, 40dvh);
+}
+.branch-menu-body .branch-menu-item {
+  min-height: 40px;
+  gap: 10px;
+  padding: 6px;
+}
+.branch-menu-body .branch-row-shell {
+  --branch-row-h: 40px;
+}
+.branch-row-shell:hover > .branch-menu-item:not([aria-disabled="true"]) {
+  background: var(--mx-hover);
+}
+.branch-menu-body .branch-row-shell:hover > .branch-menu-item:not([aria-disabled="true"]) {
+  background: var(--composer-island-wash);
+}
+.branch-menu-body .branch-menu-item + .branch-menu-item,
+.branch-menu-body .branch-row-shell + .branch-row-shell {
+  border-top: var(--mx-hairline) solid var(--composer-island-rule);
+}
+.branch-menu-body .branch-menu-item:hover:not([aria-disabled="true"]),
+.branch-menu-body .branch-menu-item:focus-visible,
+.branch-menu-body .branch-menu-item[data-selected] {
+  background: var(--composer-island-wash);
+}
+.branch-menu-body .branch-menu-label {
+  height: auto;
+  margin-top: 6px;
+  padding: 6px 6px 2px;
+  border-top-color: var(--composer-island-rule);
+}
+.branch-menu-foot {
+  justify-content: flex-start;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: var(--mx-hairline) solid var(--composer-island-rule);
+}
+.branch-menu-foot > .composer-island-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.branch-menu-foot > .composer-island-button > svg {
+  flex: none;
+}
+.branch-menu-foot > .composer-island-button[aria-disabled="true"] {
+  opacity: var(--mx-op-disabled);
+  cursor: default;
+}
+.branch-menu-item[data-danger],
+.branch-menu-item[data-danger] > svg,
+.branch-menu-foot > [data-danger] {
+  color: var(--mx-danger);
+}
+
+/* "Worktree" with uncommitted project-folder files: a short scrolling
+   preview of the paths, then what each choice does. */
+.worktree-carry-paths {
+  max-height: 96px;
+  margin: 0 20px 10px;
+  padding: 6px 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-bg-layer-1);
+  color: var(--mx-text-muted);
+  font-family: var(--mx-font-mono, monospace);
+  font-size: var(--mx-font-meta);
+}
+.worktree-carry-paths > li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktree-carry-choices {
+  margin: 0;
+  padding: 0 20px 4px;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.worktree-carry-choices > li {
+  display: grid;
+  gap: 2px;
+  font-size: var(--mx-font-minor);
+}
+.worktree-carry-choices > li > span {
+  color: var(--mx-text-muted);
 }
 
 /* Source-control branch picker: occupancy marks beside the branch name. */

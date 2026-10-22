@@ -4,6 +4,7 @@
  * close verdict and the bounded in-place restart.
  */
 import {
+  MAX_CONNECT_FRAME_BYTES,
   isCursorAuthError,
   isCursorThrottleError,
   isRetryableCursorStreamError,
@@ -12,6 +13,10 @@ import {
 import { emitProviderRetryStage, markProviderRecoveryExhausted, retryAfterMsFromError } from './retry-classifier.mjs';
 import { createFrameParser, cursorError, parseEndStream } from './cursor-wire-transport.mjs';
 import { processServerMessage } from './cursor-wire-stream-messages.mjs';
+
+// A parked HTTP/2 run can still receive parallel execs. Keep their raw chunks
+// with the transport until the next SSE consumer attaches.
+const parkedInputs = new WeakMap();
 
 // Resolves after `ms`, or early when the stream is cancelled.
 function abortableSleep(ms, signal) {
@@ -51,7 +56,9 @@ export function createBridgeController(ctx) {
       modelParameters: run.modelParameters,
       maxMode: run.maxMode,
       sessionId: run.sessionId,
+      ownerSessionId: run.ownerSessionId,
       pending: state.pending,
+      executions: state.executions,
       sawTurnEnded: state.sawTurnEnded,
     });
     sink.finish('tool_calls');
@@ -80,13 +87,11 @@ export function createBridgeController(ctx) {
     const serverDelay = retryAfterMsFromError(error);
     // Server advice is honored in full for every retryable kind; local
     // backoff applies only when the server gave none.
-    const delayMs = Number.isFinite(serverDelay)
-      ? serverDelay
-      : backoffMs(throttled ? throttleCount + 1 : retryCount + 1);
+    const backoffAttempt = (throttled ? throttleCount : retryCount) + 1;
+    const delayMs = Number.isFinite(serverDelay) ? serverDelay : backoffMs(backoffAttempt);
     const throttleOk = throttled && throttleCount < tuning.maxThrottleRetries;
     const authOk = authFailure && authCount < tuning.maxAuthRetries;
-    const canRetry =
-      retryCount < tuning.maxRetries && recoveryEligible && (retryable || throttleOk || authOk);
+    const canRetry = retryCount < tuning.maxRetries && recoveryEligible && (retryable || throttleOk || authOk);
     if (!canRetry) {
       // A fresh Cursor run owns its bounded in-place retries. Mark
       // exhaustion so the outer loop does not multiply that budget.
@@ -96,8 +101,7 @@ export function createBridgeController(ctx) {
       // A throttle that spent its bounded retries is final for the turn too.
       if (
         recoveryEligible &&
-        ((retryable && retryCount >= tuning.maxRetries) ||
-          (throttled && throttleCount >= tuning.maxThrottleRetries))
+        ((retryable && retryCount >= tuning.maxRetries) || (throttled && throttleCount >= tuning.maxThrottleRetries))
       ) {
         markProviderRecoveryExhausted(error, { owner: 'cursor-wire', attempts: retryCount + 1 });
       }
@@ -118,6 +122,9 @@ export function createBridgeController(ctx) {
       lastErr: error,
       delayMs,
     });
+    let restartReason = 'transient';
+    if (throttled) restartReason = 'throttle';
+    else if (authFailure) restartReason = 'auth';
     void sleep(delayMs, cancelSignal).then(async () => {
       if (isCancelled() || state.closed) return;
       try {
@@ -126,7 +133,7 @@ export function createBridgeController(ctx) {
           attempt: retryCount,
           fromCheckpoint: !throttled && Boolean(run.conversation.checkpoint),
           visibleOutput: state.visibleOutput,
-          reason: throttled ? 'throttle' : authFailure ? 'auth' : 'transient',
+          reason: restartReason,
           error,
         });
         if (isCancelled() || state.closed) {
@@ -200,6 +207,11 @@ export function createBridgeController(ctx) {
   const attach = (ownedBridge, nextHeartbeat) => {
     live.bridge = ownedBridge;
     live.heartbeat = nextHeartbeat;
+    let inbox = parkedInputs.get(ownedBridge);
+    if (!inbox) {
+      inbox = { chunks: [], bytes: 0 };
+      parkedInputs.set(ownedBridge, inbox);
+    }
     const messageCtx = {
       state,
       filter,
@@ -207,14 +219,27 @@ export function createBridgeController(ctx) {
       conversation: run.conversation,
       tools: run.tools,
       cloudRule: run.cloudRule,
+      sessionId: run.sessionId,
+      ownerSessionId: run.ownerSessionId,
     };
     const frameParser = createFrameParser(
       // Server requests answer on whichever bridge is live when they arrive.
       (bytes) => watchdog.progress(processServerMessage(bytes, { ...messageCtx, bridge: live.bridge })),
       (bytes) => onEndStream(ownedBridge, bytes)
     );
-    ownedBridge.onData((chunk) => {
-      if (live.bridge !== ownedBridge || state.closed) return;
+    const receive = (chunk) => {
+      if (live.bridge !== ownedBridge || isCancelled()) return;
+      if (state.closed) {
+        if (inbox.bytes + chunk.byteLength > MAX_CONNECT_FRAME_BYTES) {
+          ownedBridge.close(
+            cursorError('Cursor parked input exceeds the buffer limit', { code: 'stream_buffer_limit' })
+          );
+          return;
+        }
+        inbox.chunks.push(chunk);
+        inbox.bytes += chunk.byteLength;
+        return;
+      }
       state.chunkSeq += 1;
       try {
         frameParser(chunk);
@@ -226,9 +251,15 @@ export function createBridgeController(ctx) {
       } catch (error) {
         ownedBridge.close(error);
       }
-    });
+    };
+    ownedBridge.onData(receive);
     ownedBridge.onClose((error) => onBridgeClose(ownedBridge, nextHeartbeat, frameParser, error));
     watchdog.start();
+    while (!state.closed && !isCancelled() && inbox.chunks.length) {
+      const chunk = inbox.chunks.shift();
+      inbox.bytes -= chunk.byteLength;
+      receive(chunk);
+    }
   };
 
   return { attach };

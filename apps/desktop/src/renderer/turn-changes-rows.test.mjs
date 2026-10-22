@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { projectSettledTranscriptRows } from './transcript-rows.ts';
 import { transcriptRowNode } from './conversation-support.tsx';
-import { TurnChangesCard } from './TurnChangesCard.tsx';
+// The changes card under a turn's row, listing none of its preview card's files.
+import { PreviewedTurnChangesCard as TurnChangesCard } from './transcript-visualize-card.tsx';
 
 /** Turn keys follow the prompt that opened each turn, like transcriptTurnKeys. */
 function project(items, failed = []) {
@@ -136,15 +137,91 @@ test('the row node renders the card after its row', () => {
     retryDisabled: false,
     settledItems: [],
     settledTurnKeys: [],
-    latestCompletion: undefined,
     snapshot: { sessionId: 's' },
     onRetryTurn() {},
     onOpenSettings() {},
   });
   const children = node.props.children;
   assert.equal(children[0], 'assistant');
-  assert.equal(children[1].type, TurnChangesCard);
-  assert.equal(children[1].props.turnChanges, row.turnChanges);
+  const card = children.find((child) => child?.type === TurnChangesCard);
+  assert.equal(card.props.turnChanges, row.turnChanges);
   const plain = rows.find((candidate) => candidate._tag === 'UserMessage');
   assert.equal(plain.turnChanges, undefined);
+});
+
+/** The row node's children for `row`, with the turn's visualize cards seated. */
+function seatedChildren(row, turnCards) {
+  const node = transcriptRowNode(row, {
+    disclosureScope: 's',
+    optimisticActivityStartedAt: 0,
+    readOnly: false,
+    renderAssistantRow: () => 'assistant',
+    retryDisabled: false,
+    settledItems: [],
+    settledTurnKeys: [],
+    snapshot: { sessionId: 's' },
+    onRetryTurn() {},
+    onOpenSettings() {},
+    turnCards,
+  });
+  return node.props.children;
+}
+
+test('coding order: reply, then the visualize cards, then the changes card', () => {
+  const rows = project([
+    { kind: 'user', id: 'u1', text: 'one', checkpointId: 'cp-1' },
+    { kind: 'assistant', id: 'a1', text: 'done' },
+    { kind: 'turndone', id: 'd1', status: 'complete' },
+  ]);
+  const row = rows.find((candidate) => candidate.turnChanges);
+  const seat = { cards: 'VISUALIZE', placed: false };
+  const children = seatedChildren(row, seat);
+  const changesAt = children.findIndex((child) => child?.type === TurnChangesCard);
+  assert.deepEqual(children.slice(0, changesAt), ['assistant', 'VISUALIZE']);
+  assert.equal(seat.placed, true);
+});
+
+test('the changes card is handed the files the turn visualized, on reply and error rows alike', () => {
+  const visualized = ['design/mockups/app-skins/index.html'];
+  const reply = project([
+    { kind: 'user', id: 'u1', text: 'one', checkpointId: 'cp-1' },
+    { kind: 'assistant', id: 'a1', text: 'done' },
+    { kind: 'turndone', id: 'd1', status: 'complete' },
+  ]).find((row) => row.turnChanges);
+  const card = seatedChildren(reply, { cards: 'VISUALIZE', placed: false, visualized }).find(
+    (child) => child?.type === TurnChangesCard
+  );
+  assert.equal(card.props.visualized, visualized);
+  const failed = project(
+    [
+      { kind: 'user', id: 'u1', text: 'one', checkpointId: 'cp-1' },
+      { kind: 'error', id: 'e1', text: 'boom' },
+      { kind: 'turndone', id: 'd1', status: 'failed' },
+    ],
+    ['turn:u1']
+  ).find((row) => row._tag === 'Error' && row.turnChanges);
+  const errorCard = seatedChildren(failed, { cards: 'VISUALIZE', placed: false, visualized }).find(
+    (child) => child?.type === TurnChangesCard
+  );
+  assert.equal(errorCard.props.visualized, visualized);
+});
+
+test('coding order on an error row: notice, then the visualize cards, then the changes card', () => {
+  const rows = project(
+    [
+      { kind: 'user', id: 'u1', text: 'one', checkpointId: 'cp-1' },
+      { kind: 'tool', id: 't1', name: 'apply_patch', args: {}, result: 'ok' },
+      { kind: 'error', id: 'e1', text: 'boom' },
+      { kind: 'turndone', id: 'd1', status: 'failed' },
+    ],
+    ['turn:u1']
+  );
+  const row = rows.find((candidate) => candidate._tag === 'Error' && candidate.turnChanges);
+  assert.ok(row, 'the error row holds the changes card');
+  const seat = { cards: 'VISUALIZE', placed: false };
+  const children = seatedChildren(row, seat);
+  const changesAt = children.findIndex((child) => child?.type === TurnChangesCard);
+  assert.equal(changesAt, children.length - 1);
+  assert.equal(children[changesAt - 1], 'VISUALIZE');
+  assert.equal(seat.placed, true);
 });

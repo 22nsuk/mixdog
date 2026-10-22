@@ -7,6 +7,11 @@ import { join } from 'node:path';
 import { freshContextCompactMessages, SUMMARY_PREFIX } from './compact.mjs';
 import { runFreshContextCompact } from './loop/fresh-context.mjs';
 import { withRuntimeUserContext } from './runtime-user-context.mjs';
+import { toAnthropicMessages } from '../providers/lib/anthropic-request-utils.mjs';
+import { renderAgentCompletionEnvelope } from '../../../shared/task-notification-envelope.mjs';
+import { isActualUserInstructionMessage, latestActualUserInstructionMessage } from './compact/messages.mjs';
+import { agentTaskMessage, routineResultMessage } from './routine-result.mjs';
+import { estimateMessagesTokens } from './context-utils.mjs';
 
 test('fresh Compact summarizes the live conversation without calling Memory', async () => {
   const messages = [{ role: 'system', content: 'system' }];
@@ -61,7 +66,9 @@ test('fresh Compact summarizes the live conversation without calling Memory', as
   assert.doesNotMatch(summary.content, /memory_session=/);
 });
 
-test('fresh Compact excludes skill bodies and tool output from the conversation summary request', async () => {
+test('fresh Compact summarizes tool calls as bounded lines, ask_user answers verbatim, and never skill bodies', async () => {
+  const answer =
+    'User has answered your questions: "Which db?"="PG"; "Which features?"="X, Y". You can now continue with these answers in mind.';
   let summaryInput = '';
   const result = await runFreshContextCompact({
     config: {},
@@ -86,7 +93,9 @@ test('fresh Compact excludes skill bodies and tool output from the conversation 
       { role: 'assistant', content: 'old answer' },
       { role: 'user', meta: 'skill', content: '<skill>\n<name>demo</name>\nSKILL_BODY_ONLY\n</skill>' },
       { role: 'assistant', content: '', toolCalls: [{ id: 'read-source', name: 'read', arguments: '{}' }] },
-      { role: 'tool', toolCallId: 'read-source', content: 'TOOL_OUTPUT_ONLY' },
+      { role: 'tool', toolCallId: 'read-source', content: `TOOL_OUTPUT_ONLY ${'long body '.repeat(200)}` },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'ask', name: 'ask_user', arguments: { q: 'db' } }] },
+      { role: 'tool', toolCallId: 'ask', content: `${answer} ${'and more context '.repeat(40)}` },
       { role: 'user', content: 'current request' },
     ],
     compactBudgetTokens: 50_000,
@@ -98,8 +107,16 @@ test('fresh Compact excludes skill bodies and tool output from the conversation 
     sessionId: 'sess-ingest-barrier',
   });
   assert.match(summaryInput, /old request/);
-  assert.doesNotMatch(summaryInput, /SKILL_BODY_ONLY|TOOL_OUTPUT_ONLY/);
-  assert.equal(result.messages.find((m) => m.toolCallId === 'read-source')?.content, 'TOOL_OUTPUT_ONLY');
+  assert.doesNotMatch(summaryInput, /SKILL_BODY_ONLY/);
+  // One bounded line per call, with its outcome; an ask_user answer whole.
+  assert.match(summaryInput, /\[tool call\] read\(\{\}\) → TOOL_OUTPUT_ONLY long body[^\n]*… \[\d+ more chars\]\n/);
+  assert.ok(summaryInput.includes(`[tool call] ask_user({"q":"db"}) → ${answer}`));
+  assert.ok(summaryInput.includes('and more context '.repeat(40).trim()));
+  // The retained execution tail keeps the result whole.
+  assert.match(
+    result.messages.find((m) => m.toolCallId === 'read-source')?.content,
+    /^TOOL_OUTPUT_ONLY (long body ){200}$/
+  );
 });
 
 test('pre-send active turn reaches the fresh builder as a continuation', async () => {
@@ -140,6 +157,285 @@ test('pre-send active turn reaches the fresh builder as a continuation', async (
 
   assert.match(String(result.messages.at(-1)?.content), /already in progress/i);
   assert.equal(result.diagnostics.activeTurnContinuation, true);
+});
+
+test('an agent report delivered as the turn input survives Compact into the next model request', async () => {
+  const report = renderAgentCompletionEnvelope({
+    id: 'task_agent_advise',
+    tag: 'advise-pr-146',
+    status: 'completed',
+    result: 'ADVISOR_REPORT_BODY: recommend merge as is.',
+  });
+  const notification = {
+    role: 'user',
+    content: report,
+    meta: { source: 'task-notification' },
+  };
+  let summaryInput = '';
+  const result = await runFreshContextCompact({
+    config: {},
+    model: 'fake-model',
+    provider: {
+      name: 'fake',
+      async send(input) {
+        summaryInput = input[1].content;
+        return { content: GENERATED_HANDOFF };
+      },
+    },
+    sessionRef: {
+      id: 'sess-notification-wake',
+      cwd: 'C:\\Project\\mixdog',
+      compaction: { conversationThresholdTokens: 1 },
+      contextWindow: 100_000,
+      compactBoundaryTokens: 100_000,
+    },
+    messages: [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'review PR #146' },
+      { role: 'assistant', content: 'PR #146 looks acceptable.' },
+      { role: 'user', content: 'ask the Advisor too' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'agent-call', name: 'agent', arguments: '{"action":"spawn"}' }],
+      },
+      { role: 'tool', toolCallId: 'agent-call', content: 'agent task: task_agent_advise\nstatus: running' },
+      { role: 'assistant', content: 'The Advisor is reviewing; waiting for its report.' },
+      notification,
+    ],
+    compactBudgetTokens: 30_000,
+    compactPolicy: { contextWindow: 100_000, boundaryTokens: 100_000, reserveTokens: 0 },
+    sessionId: 'sess-notification-wake',
+    activeTurn: true,
+  });
+
+  assert.ok(result.messages.some((m) => typeof m.content === 'string' && m.content.startsWith(SUMMARY_PREFIX)));
+  assert.doesNotMatch(summaryInput, /ADVISOR_REPORT_BODY/);
+  // The unanswered report is the turn's input: it ends the context verbatim,
+  // with no reminder claiming the earlier user request is still in progress.
+  assert.deepEqual(result.messages.at(-1), notification);
+  assert.equal(result.diagnostics.activeTurnContinuation, false);
+  const request = JSON.stringify(toAnthropicMessages(result.messages.filter((m) => m.role !== 'system')));
+  assert.match(request, /ADVISOR_REPORT_BODY: recommend merge as is\./);
+  assert.doesNotMatch(request, /active-turn-continuation/);
+});
+
+function summaryRun(messages, sessionId, capture, extra = {}) {
+  return runFreshContextCompact({
+    config: {},
+    model: 'fake-model',
+    provider: {
+      name: 'fake',
+      async send(input) {
+        capture.input = (capture.input || '') + input[1].content;
+        return { content: GENERATED_HANDOFF };
+      },
+    },
+    sessionRef: { id: sessionId, compaction: { conversationThresholdTokens: 1 }, contextWindow: 100_000 },
+    messages,
+    compactBudgetTokens: 30_000,
+    compactPolicy: { contextWindow: 100_000, boundaryTokens: 100_000, reserveTokens: 0 },
+    sessionId,
+    ...extra,
+  });
+}
+
+const rulesCompact = (messages, extra = {}) =>
+  freshContextCompactMessages(messages, 10_000, { force: true, contextWindow: 40_000, ...extra });
+
+function answeredReport(body) {
+  return {
+    role: 'user',
+    content: renderAgentCompletionEnvelope({ id: 'task_agent_done', tag: 'advise', status: 'completed', result: body }),
+    meta: { source: 'task-notification' },
+  };
+}
+
+test('an answered agent report reaches the summary bounded and stays whole in rule-only Compact', async () => {
+  const report = answeredReport(`ANSWERED_REPORT_BODY ${'finding '.repeat(800)}`);
+  const messages = [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'ask the Advisor' },
+    { role: 'assistant', content: 'Waiting for the Advisor.' },
+    report,
+    { role: 'assistant', content: 'The Advisor recommends merging.' },
+    { role: 'user', content: 'current request' },
+  ];
+  const capture = {};
+  await summaryRun(messages, 'sess-answered-report', capture);
+  assert.match(capture.input, /ANSWERED_REPORT_BODY/);
+  assert.match(capture.input, /… \[\d+ more chars\]/);
+  const rules = rulesCompact(messages);
+  assert.ok(rules.messages.some((m) => m.content === report.content));
+});
+
+test('the summary request reads tool outcomes and notification bodies with their secrets redacted', async () => {
+  const messages = [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'check the deploy environment' },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'env', name: 'shell', arguments: { command: 'env' } }] },
+    {
+      role: 'tool',
+      toolCallId: 'env',
+      content: `Authorization: Bearer sk-live-HEADER_SECRET\nAUTH_TOKEN=tok-KV_SECRET PATH=/usr/bin\n${'line\n'.repeat(200)}`,
+    },
+    { role: 'assistant', content: 'The environment is set.' },
+    {
+      role: 'user',
+      content: 'Async shell task job_1 (printenv) finished.\nResult:\npassword: hunter2-NOTIFY_SECRET',
+      meta: { source: 'task-notification' },
+    },
+    { role: 'assistant', content: 'The background check finished.' },
+    { role: 'user', content: 'current request' },
+  ];
+  const capture = {};
+  await summaryRun(messages, 'sess-redacted-outcomes', capture);
+  assert.match(capture.input, /\[tool call\] shell\(\{"command":"env"\}\) → Authorization: \[redacted\]/);
+  assert.match(capture.input, /AUTH_TOKEN=\[redacted\] PATH=\/usr\/bin/);
+  assert.match(capture.input, /password: \[redacted\]/);
+  for (const secret of ['HEADER_SECRET', 'KV_SECRET', 'NOTIFY_SECRET']) {
+    assert.equal(capture.input.includes(secret), false, secret);
+  }
+});
+
+test('a plain-text channel notification never displaces the human request it interrupts', () => {
+  const notification = { role: 'user', content: 'Build #12 failed on main.', meta: { source: 'task-notification' } };
+  assert.equal(isActualUserInstructionMessage(notification), false);
+  const goal = '<system-reminder><goal_state>GOAL_NOW</goal_state></system-reminder>';
+  const messages = [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'fix the flaky test' },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'r1', name: 'read', arguments: '{}' }] },
+    { role: 'tool', toolCallId: 'r1', content: 'read ok' },
+    notification,
+    { role: 'assistant', content: '', toolCalls: [{ id: 'r2', name: 'read', arguments: '{}' }] },
+    { role: 'tool', toolCallId: 'r2', content: 'read ok' },
+  ];
+  assert.equal(latestActualUserInstructionMessage(messages).content, 'fix the flaky test');
+  const result = rulesCompact(messages, { handoffText: 'Fixing the test.', latestUserPrefix: goal, activeTurn: true });
+  assert.ok(result.messages.some((m) => m.content === `${goal}\n\nfix the flaky test`));
+  assert.ok(result.messages.some((m) => m.content === notification.content));
+});
+
+test('home-thread routine and task results reach the summary and stay in rule-only Compact', async () => {
+  const routine = routineResultMessage({ name: 'news', ok: true, text: 'ROUTINE_RESULT_BODY', messageId: 'r_1' });
+  const task = agentTaskMessage({
+    title: 'fix',
+    status: 'completed',
+    text: 'TASK_REPLY_BODY',
+    taskSessionId: 'sess_task_1',
+    messageId: 'r_2',
+  });
+  const messages = [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'start the task' },
+    { role: 'assistant', content: 'Started.' },
+    routine,
+    task,
+    { role: 'assistant', content: 'The task finished.' },
+    { role: 'user', content: 'current request' },
+  ];
+  const capture = {};
+  await summaryRun(messages, 'sess-home-results', capture);
+  assert.match(capture.input, /ROUTINE_RESULT_BODY/);
+  assert.match(capture.input, /TASK_REPLY_BODY/);
+  const rules = rulesCompact(messages);
+  for (const row of [routine, task]) assert.ok(rules.messages.some((m) => m.content === row.content));
+});
+
+test('rule-only Compact keeps an interrupt marker as its own row', () => {
+  const marker = { role: 'user', content: '[Request interrupted by user]' };
+  const messages = [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'rename the module' },
+    { role: 'assistant', content: 'Starting the rename.' },
+    marker,
+    { role: 'user', content: 'only the tests, please' },
+  ];
+  const result = rulesCompact(messages);
+  const index = result.messages.findIndex((m) => m.content === marker.content);
+  assert.ok(index > 0);
+  assert.equal(result.messages[index + 1].content, 'only the tests, please');
+});
+
+test('a notification turn in a thread with no human request keeps its continuation and ack', () => {
+  const report = answeredReport('HOME_REPORT_BODY');
+  const messages = [
+    { role: 'system', content: 'system' },
+    report,
+    { role: 'assistant', content: 'Relaying.', toolCalls: [{ id: 'h1', name: 'read', arguments: '{}' }] },
+    { role: 'tool', toolCallId: 'h1', content: 'read ok' },
+  ];
+  const result = rulesCompact(messages, { handoffText: 'A report arrived.', activeTurn: true });
+  assert.equal(result.diagnostics.activeTurnContinuation, true);
+  const summary = result.messages.findIndex((m) => m.meta?.source === 'compact-summary');
+  assert.equal(result.messages[summary + 1].content, '.');
+  assert.ok(result.messages.some((m) => m.content === report.content));
+});
+
+test('a skill body Compact cannot restore leaves a reload reminder that lasts until it is reloaded', () => {
+  const body = {
+    role: 'user',
+    meta: 'skill',
+    content: `<skill>\n<name>guide</name>\n${'rule '.repeat(12_000)}\n</skill>`,
+  };
+  const messages = [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'use the guide' },
+    body,
+    { role: 'assistant', content: 'Following the guide.' },
+    { role: 'user', content: 'continue' },
+  ];
+  const reminder = (list) => list.filter((m) => m.meta?.source === 'compact-skill-reload');
+  const first = freshContextCompactMessages(messages, 20_000, { force: true, contextWindow: 200_000 });
+  assert.equal(
+    first.messages.some((m) => m === body),
+    false
+  );
+  assert.equal(reminder(first.messages).length, 1);
+  assert.match(reminder(first.messages)[0].content, /Skill "guide" was active[\s\S]*Reload it with the Skill tool/);
+  assert.equal(isActualUserInstructionMessage(reminder(first.messages)[0]), false);
+  const second = freshContextCompactMessages(first.messages, 20_000, { force: true, contextWindow: 200_000 });
+  assert.equal(reminder(second.messages).length, 1);
+  // Reloaded, and restored by a Compact with room for it: the reminder is gone.
+  const reloaded = [
+    ...second.messages,
+    { ...body },
+    { role: 'assistant', content: 'Reloaded the guide.' },
+    { role: 'user', content: 'go on' },
+  ];
+  const third = freshContextCompactMessages(reloaded, 100_000, { force: true, contextWindow: 1_000_000 });
+  assert.ok(third.messages.some((m) => m.content === body.content));
+  assert.equal(reminder(third.messages).length, 0);
+});
+
+test('skill reload reminders are charged to the skill budget, so a tight Compact still fits', () => {
+  const opts = { force: true, contextWindow: 200_000 };
+  const base = [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'use the guides' },
+    { role: 'assistant', content: 'Noted. '.repeat(5_200) },
+    { role: 'user', content: 'continue' },
+  ];
+  const { finalTokens: committed, budgetTokens: budget } = freshContextCompactMessages(base, 10_000, opts).diagnostics;
+  const skillBudget = budget - committed;
+  assert.ok(skillBudget > 100 && skillBudget < budget * 0.2, `skill budget ${skillBudget}`);
+  const skill = (name, words) => ({
+    role: 'user',
+    meta: 'skill',
+    content: `<skill>\n<name>${name}</name>\n${'rule '.repeat(words)}\n</skill>`,
+  });
+  // The newest body alone fills the skill budget to within one word, so an
+  // uncharged reminder for the older, too-large skill would overflow it.
+  let words = 1;
+  while (estimateMessagesTokens([skill('fit', words + 1)]) <= skillBudget) words += 1;
+  const messages = [base[0], base[1], skill('big', 20_000), skill('fit', words), base[2], base[3]];
+  const result = freshContextCompactMessages(messages, 10_000, opts);
+  assert.ok(result.diagnostics.finalTokens <= budget);
+  assert.deepEqual(
+    result.messages.filter((m) => m.meta?.source === 'compact-skill-reload').map((m) => m.meta.skill),
+    ['big', 'fit']
+  );
 });
 
 test('repeated compact replaces one cumulative summary and does not replay older raw history', async () => {
@@ -441,8 +737,8 @@ test('263k-class tool-heavy transcript retains bounded recent execution and arch
   );
   assert.equal(result.messages.at(-1)?.content, 'LATEST_AFTER_127_TOOLS');
   assert.ok(result.messages.some((message) => message.toolCallId === 'tool-heavy-126'));
-  assert.equal(result.diagnostics.toolHistoryBudget, 20_000);
-  assert.ok(result.diagnostics.toolHistoryTokens <= 20_000);
+  assert.equal(result.diagnostics.toolHistoryBudget, 25_000);
+  assert.ok(result.diagnostics.toolHistoryTokens <= 25_000);
   assert.ok(result.diagnostics.omittedToolGroups > 0);
 });
 
@@ -618,4 +914,41 @@ test('large conversation input is batched completely within the summary model wi
       (message) => typeof message?.content === 'string' && message.content.includes('one Compact path')
     )
   );
+});
+
+test('the deferred tool list and bridge guidance in the system prompt survive Compact', async () => {
+  const system = [
+    'You are the Lead.',
+    '<available-deferred-tools>\nmcp__demo__fetch\nmcp__demo__search\n</available-deferred-tools>',
+    '<tool-bridge>\nDeferred tools are run with call_tool {name, arguments}.\n</tool-bridge>',
+  ].join('\n\n');
+  const messages = [{ role: 'system', content: system }];
+  for (let index = 0; index < 7; index += 1) {
+    messages.push({ role: 'user', content: `request-${index}` }, { role: 'assistant', content: `answer-${index}` });
+  }
+  const result = await runFreshContextCompact({
+    config: {},
+    model: 'fake-model',
+    provider: {
+      name: 'fake',
+      async send() {
+        return { content: GENERATED_HANDOFF };
+      },
+    },
+    sessionRef: {
+      id: 'sess-deferred-list-survives',
+      cwd: 'C:\\Project\\mixdog',
+      compaction: { conversationThresholdTokens: 1 },
+      contextWindow: 100_000,
+      compactBoundaryTokens: 100_000,
+    },
+    messages,
+    compactBudgetTokens: 30_000,
+    compactPolicy: { contextWindow: 100_000, boundaryTokens: 100_000, reserveTokens: 0 },
+    sessionId: 'sess-deferred-list-survives',
+  });
+  const systems = result.messages.filter((message) => message.role === 'system');
+  assert.equal(systems.length, 1);
+  assert.equal(systems[0].content, system, 'the system prompt, with its deferred list, is carried over unchanged');
+  assert.ok(result.messages.some((message) => message.role === 'user' && message.content.startsWith(SUMMARY_PREFIX)));
 });

@@ -1,10 +1,13 @@
 import { t } from './i18n';
 import { findPatch, PATCH_CACHE_LIMIT } from './transcript-diff';
 import type { TranscriptItem } from './desktop-types';
-import { parseUnifiedDiff } from './renderer-logic.mjs';
+import { analyzePatchFiles, type parseUnifiedDiff } from './renderer-logic.mjs';
+import { toolRowRevision, uiDiffDigest, type UiDiffSummary } from './transcript-tool-core';
 import {
   buildSessionDiffRows,
   isAbsolutePath,
+  PATCH_TOO_LARGE,
+  sessionDiffFileOmitted,
   type SessionDiffResult,
   type SessionDiffRow,
 } from './session-diff-model';
@@ -16,6 +19,7 @@ import {
   leadReviewFilesCache,
   leadReviewSnapshotKindCache,
   leadReviewCheckpointIdCache,
+  leadReviewHistoryTurnsCache,
   type AgentTurnReview,
   type TurnReviewFile,
 } from './turn-review-cache';
@@ -34,7 +38,13 @@ export type TurnReviewFileEntry = {
   status: string;
   binary: boolean;
   parts: ReturnType<typeof parseUnifiedDiff>;
+  /** The contributions to `parts` in transcript order, when a phone holds
+   *  the digest of one instead of its text: an index into `parts`, or the
+   *  row whose diff the host still has. Absent when every diff is held. */
+  slots?: Array<number | TurnReviewRowRef>;
 };
+/** A transcript row (and the revision of it) a digest-derived file came from. */
+export type TurnReviewRowRef = { id: string; revision: string };
 export type TurnReviewSummary = {
   files: Map<string, TurnReviewFileEntry>;
   additions: number;
@@ -69,63 +79,96 @@ function analyzeTurnReviewPatch(patch: string) {
   if (cached) {
     return cached;
   }
-  const analyzed = parseUnifiedDiff(patch).flatMap((part) => {
-    const name = String(part.newFile?.fileName || '');
-    if (!name) return [];
-    let additions = 0;
-    let deletions = 0;
-    for (const line of part.hunks.join('\n').split('\n')) {
-      if (line.startsWith('+') && !line.startsWith('+++')) additions += 1;
-      else if (line.startsWith('-') && !line.startsWith('---')) deletions += 1;
-    }
-    const status = String(part.status || '');
-    // A bare `diff --git` header is not a file change. It used to survive as
-    // an empty parsed part and rendered the misleading “+0 -0” row.
-    if (additions === 0 && deletions === 0 && !status) return [];
-    return [
-      {
-        name,
-        additions,
-        deletions,
-        lineStats: additions + deletions > 0,
-        status,
-        binary: status === 'binary',
-        part,
-      },
-    ];
-  });
+  // A bare `diff --git` header is not a file change (it used to render a
+  // misleading “+0 -0” row); analyzePatchFiles drops it.
+  const analyzed = analyzePatchFiles(patch);
   if (patch.length <= TURN_REVIEW_PATCH_CACHE_ENTRY_MAX_CHARS) {
     turnReviewPatchCache.set(patch, analyzed);
   }
   return analyzed;
 }
 
-export function summarizeTurnReviewPatch(patch: string): TurnReviewSummary {
+const partIndexes = (entry: TurnReviewFileEntry): number[] => entry.parts.map((_, index) => index);
+
+/** `source` appended to `target`: its parts, and the order they and any
+ *  digest rows came in. */
+function appendEntry(target: TurnReviewFileEntry, source: TurnReviewFileEntry): void {
+  const offset = target.parts.length;
+  const own = target.slots ?? partIndexes(target);
+  const added = (source.slots ?? partIndexes(source)).map((slot) => (typeof slot === 'number' ? slot + offset : slot));
+  target.parts.push(...source.parts);
+  if (target.slots || source.slots) target.slots = [...own, ...added];
+}
+
+type AnalyzedFile = Omit<ReturnType<typeof analyzePatchFiles>[number], 'part'> & {
+  part?: TurnReviewPatchPart;
+  row?: TurnReviewRowRef;
+};
+
+/** The files of analyzed diffs, one entry per name. A file that came from a
+ *  digest has no parsed part: its diff text is not held. */
+function summarizeAnalyzed(list: readonly AnalyzedFile[]): TurnReviewSummary {
   const files: TurnReviewSummary['files'] = new Map();
-  if (patch) {
+  for (const analyzed of list) {
+    const entry = files.get(analyzed.name) || {
+      additions: 0,
+      deletions: 0,
+      lineStats: false,
+      status: '',
+      binary: false,
+      parts: [],
+    };
+    entry.additions += analyzed.additions;
+    entry.deletions += analyzed.deletions;
+    entry.lineStats ||= analyzed.lineStats;
+    entry.status ||= analyzed.status;
+    entry.binary ||= analyzed.binary;
+    if (analyzed.part) {
+      entry.parts.push(analyzed.part);
+      entry.slots?.push(entry.parts.length - 1);
+    }
+    if (analyzed.row) {
+      entry.slots ??= partIndexes(entry);
+      const last = entry.slots.at(-1);
+      // One row's sections for a file are one contribution.
+      if (typeof last !== 'object' || last.id !== analyzed.row.id) entry.slots.push(analyzed.row);
+    }
+    files.set(analyzed.name, entry);
+  }
+  return turnReviewSummaryOf(files);
+}
+
+export function summarizeTurnReviewPatch(patch: string): TurnReviewSummary {
+  if (!patch) return turnReviewSummaryOf(new Map());
+  try {
+    return summarizeAnalyzed(analyzeTurnReviewPatch(patch));
+  } catch {
+    /* malformed/non-diff payload — skip */
+    return turnReviewSummaryOf(new Map());
+  }
+}
+
+/** Diffs in transcript order — text patches and the digests a phone's copy
+ *  carries — summarized as one change. Each diff is analyzed on its own: joined
+ *  as text, a plain `---/+++` patch after a `diff --git` one was read as the
+ *  tail of that file's last hunk and its lines counted to the wrong file. */
+export type TurnReviewDiffSegment = string | { row: TurnReviewRowRef; summary: UiDiffSummary };
+export function summarizeTurnReviewSegments(segments: readonly TurnReviewDiffSegment[]): TurnReviewSummary {
+  const analyzed: AnalyzedFile[] = [];
+  for (const segment of segments) {
+    if (typeof segment !== 'string') {
+      analyzed.push(
+        ...segment.summary.sections.flatMap((section) => section.files.map((file) => ({ ...file, row: segment.row })))
+      );
+      continue;
+    }
     try {
-      for (const analyzed of analyzeTurnReviewPatch(patch)) {
-        const entry = files.get(analyzed.name) || {
-          additions: 0,
-          deletions: 0,
-          lineStats: false,
-          status: '',
-          binary: false,
-          parts: [],
-        };
-        entry.additions += analyzed.additions;
-        entry.deletions += analyzed.deletions;
-        entry.lineStats ||= analyzed.lineStats;
-        entry.status ||= analyzed.status;
-        entry.binary ||= analyzed.binary;
-        entry.parts.push(analyzed.part);
-        files.set(analyzed.name, entry);
-      }
+      analyzed.push(...analyzeTurnReviewPatch(segment));
     } catch {
       /* malformed/non-diff payload — skip */
     }
   }
-  return turnReviewSummaryOf(files);
+  return summarizeAnalyzed(analyzed);
 }
 
 /** Totals a summary always carries for its own file map. */
@@ -183,7 +226,7 @@ export function mergeTurnReviewSummaries(summaries: TurnReviewSummary[]): TurnRe
       merged.lineStats ||= entry.lineStats;
       merged.status ||= entry.status;
       merged.binary ||= entry.binary;
-      merged.parts.push(...entry.parts);
+      appendEntry(merged, entry);
       files.set(name, merged);
     }
   }
@@ -214,6 +257,7 @@ export function cachedTurnReviewState(scopeKey: string) {
     files: leadReviewFilesCache.get(scopeKey) || [],
     snapshotKind: leadReviewSnapshotKindCache.get(scopeKey) || '',
     checkpointId: leadReviewCheckpointIdCache.get(scopeKey) || '',
+    historyTurns: leadReviewHistoryTurnsCache.get(scopeKey) || 0,
   };
 }
 
@@ -274,7 +318,7 @@ export function summarizeTurnReviewOperations(items: TranscriptItem[], turnStart
  *  just the current turn): the file set from their patches, the line totals
  *  from the same workload count the activity cards use. */
 export function summarizeSessionTranscriptReview(items: TranscriptItem[], cwd = ''): TurnReviewSummary {
-  const patches: string[] = [];
+  const patches: TurnReviewDiffSegment[] = [];
   for (const item of items) {
     if (item?.kind !== 'tool') continue;
     // Grouped cards (`__aggregate__`) key their categories as
@@ -304,11 +348,16 @@ export function summarizeSessionTranscriptReview(items: TranscriptItem[], cwd = 
     // `edit`-dialect calls carry no patch in their arguments; the runtime's
     // per-call `uiDiff` is the change they made. An explicit empty uiDiff means
     // the call changed nothing.
+    const digest = uiDiffDigest(item);
+    if (digest) {
+      patches.push({ row: { id: String(item.id ?? ''), revision: toolRowRevision(item) }, summary: digest });
+      continue;
+    }
     const uiDiff = typeof item.uiDiff === 'string' ? item.uiDiff : null;
     const patch = uiDiff !== null ? uiDiff : findPatch(item);
     if (patch) patches.push(patch);
   }
-  const summary = summarizeTurnReviewPatch(patches.join('\n'));
+  const summary = summarizeTurnReviewSegments(patches);
   // Tool patches sometimes carry ABSOLUTE paths; the session diff's rows are
   // project-relative, and the two sources must meet on the same key.
   const root = String(cwd || '')
@@ -330,38 +379,7 @@ export function summarizeSessionTranscriptReview(items: TranscriptItem[], cwd = 
     merged.lineStats ||= entry.lineStats;
     merged.status ||= entry.status;
     merged.binary ||= entry.binary;
-    merged.parts.push(...entry.parts);
-  }
-  return turnReviewSummaryOf(files);
-}
-
-/** The session's files: everything the loaded transcript's successful edits
- *  touched, plus whatever the runtime's session diff knows beyond it (turns the
- *  paged transcript no longer holds). Where both name a file the larger line
- *  count wins, so the diff can only add lines. The runtime diff alone is not cumulative everywhere — a
- *  non-Git folder only tracks the running turn and answers an authoritative
- *  empty set when a new turn starts — so it can add files but never remove the
- *  transcript's. */
-export function mergeSessionReviewSummaries(transcript: TurnReviewSummary, diff: TurnReviewSummary): TurnReviewSummary {
-  const files: TurnReviewSummary['files'] = new Map(transcript.files);
-  for (const [name, entry] of diff.files) {
-    const known = files.get(name);
-    if (!known) {
-      files.set(name, entry);
-      continue;
-    }
-    // The diff may only cover the running turn (non-Git), so it never lowers
-    // what the transcript's successful calls already add up to.
-    const additions = Math.max(known.additions, entry.additions);
-    const deletions = Math.max(known.deletions, entry.deletions);
-    files.set(name, {
-      ...known,
-      additions,
-      deletions,
-      lineStats: additions + deletions > 0,
-      status: known.status || entry.status,
-      binary: known.binary || entry.binary,
-    });
+    appendEntry(merged, entry);
   }
   return turnReviewSummaryOf(files);
 }
@@ -384,9 +402,9 @@ export function summarizeSessionDiffRows(rows: readonly SessionDiffRow[]): TurnR
 }
 
 /** A transcript file the runtime diff lacks becomes a row, and a row takes the
- *  larger counts and the patch of the transcript's own edit — the island's
- *  `mergeSessionReviewSummaries`, for a diff that is NOT the complete set (a
- *  runtime without ownership metadata). */
+ *  larger counts and the patch of the transcript's own edit, for a diff that
+ *  is NOT the complete set (a runtime without ownership metadata): such a diff
+ *  may only cover the running turn, so it never lowers the transcript's. */
 function mergeTranscriptIntoRows(rows: readonly SessionDiffRow[], transcript: TurnReviewSummary): SessionDiffRow[] {
   const known = new Set(rows.map((row) => row.path));
   const merged = rows.map((row) => {
@@ -463,6 +481,10 @@ export type TurnReviewCapabilityValue = {
    *  current worktree, so a refreshing re-read answers the same. */
   reason?: unknown;
   patch?: unknown;
+  /** Retained turn change records that Delete history removes. */
+  historyTurns?: unknown;
+  /** No file's patch fit the reply: the files and counts are still listed. */
+  diffTooLarge?: unknown;
   files?: Array<{
     path?: unknown;
     oldPath?: unknown;
@@ -470,6 +492,8 @@ export type TurnReviewCapabilityValue = {
     additions?: unknown;
     deletions?: unknown;
     binary?: unknown;
+    patchOmitted?: unknown;
+    reason?: unknown;
   }>;
   agents?: Array<{
     sessionId?: unknown;
@@ -488,6 +512,8 @@ export function decodeTurnReviewCapabilityValue(value: TurnReviewCapabilityValue
   checkpointId: string;
   files: TurnReviewFile[];
   reviews: AgentTurnReview[];
+  historyTurns: number;
+  diffTooLarge: boolean;
 } | null {
   if (!value || value.supported === false) return null;
   const authoritative = value.authoritative === true;
@@ -506,6 +532,7 @@ export function decodeTurnReviewCapabilityValue(value: TurnReviewCapabilityValue
         additions: typeof row?.additions === 'number' ? row.additions : null,
         deletions: typeof row?.deletions === 'number' ? row.deletions : null,
         binary: row?.binary === true,
+        ...(sessionDiffFileOmitted(row) ? { patchOmitted: true, reason: PATCH_TOO_LARGE } : {}),
       },
     ];
   });
@@ -522,5 +549,7 @@ export function decodeTurnReviewCapabilityValue(value: TurnReviewCapabilityValue
       },
     ];
   });
-  return { leadPatch, snapshotKind, checkpointId, files, reviews };
+  const historyTurns = typeof value.historyTurns === 'number' ? Math.max(0, value.historyTurns) : 0;
+  const diffTooLarge = authoritative && value.diffTooLarge === true;
+  return { leadPatch, snapshotKind, checkpointId, files, reviews, historyTurns, diffTooLarge };
 }

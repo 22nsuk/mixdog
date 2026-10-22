@@ -4,7 +4,7 @@
 import { promptDisplayText } from '../../queue-helpers.mjs';
 
 export function createSubmissionIntake(bag) {
-  const { runtime, nextId, flags, getState, enqueue, autoClearBeforeSubmit } = bag;
+  const { nextId, flags, getState, enqueue, autoClearBeforeSubmit } = bag;
 
   const submission = (text, options = {}) => {
     const displayText = promptDisplayText(text, options);
@@ -14,6 +14,11 @@ export function createSubmissionIntake(bag) {
       text,
       queueOptions: {
         ...options,
+        // A kickoff (a new agent's greeting turn) reaches the model only: no
+        // user bubble, no queue row, never restored into the composer.
+        ...(options.kickoff === true
+          ? { isMeta: true, suppressDisplay: true, skipSlashCommands: true, restorable: false }
+          : {}),
         // Always mint a submission id so daemon retries / dual-path intake
         // can dedupe instead of booking the same prompt twice.
         id: String(options.id || '').trim() || nextId(),
@@ -25,19 +30,13 @@ export function createSubmissionIntake(bag) {
   };
 
   const enqueueSubmission = (intake) => {
+    // The queue itself wakes a passive `task wait` or shell hold for typed
+    // input (not for slash commands, which run after the turn); see enqueue.
     const accepted = enqueue(intake.text, intake.queueOptions);
-    // User input wakes a passive `task wait` without cancelling either the
-    // turn or the background task. The returned running snapshot creates the
-    // normal post-tool boundary, where this queued prompt is injected.
-    if (accepted !== false) {
-      if ((intake.queueOptions.mode || 'prompt') === 'prompt') {
-        bag.cancelQuotaResumeOnUserInput?.();
-        bag.cancelQueuedGoalContinuations?.();
-        bag.archiveCompletedGoalOnUserInput?.();
-      }
-      try {
-        runtime.interruptTaskWait?.('user-message');
-      } catch {}
+    if (accepted !== false && (intake.queueOptions.mode || 'prompt') === 'prompt') {
+      bag.cancelQuotaResumeOnUserInput?.();
+      bag.cancelQueuedGoalContinuations?.();
+      bag.archiveCompletedGoalOnUserInput?.();
     }
     return accepted;
   };

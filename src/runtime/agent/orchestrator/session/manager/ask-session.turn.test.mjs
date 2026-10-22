@@ -22,6 +22,7 @@ const { askSession } = await import('./ask-session.mjs');
 const { deleteSession, loadSession } = await import('../store.mjs');
 const { enqueuePendingMessage } = await import('./pending-messages.mjs');
 const { renderShellCompletionEnvelope } = await import('../../../../shared/task-notification-envelope.mjs');
+const { USER_CANCEL_KEEP_PROMPT_REASON } = await import('./turn-interruption.mjs');
 const { _withRegisteredProviderForTestAsync } = await import('../../providers/registry.mjs');
 const { SessionClosedError } = await import('./session-errors.mjs');
 const { modelToolSchemaAllowlist } = await import('../../runtime-core/tool-profile.mjs');
@@ -240,6 +241,36 @@ for (const abortReason of ['user-cancel', 'interrupt']) {
   });
 }
 
+// A first message stopped while the model is only thinking: a Stop whose host
+// hands the prompt back rewinds it, one that does not (the desktop Stop button)
+// keeps it, so the stored session still holds the text instead of none.
+for (const [abortReason, kept] of [
+  [USER_CANCEL_KEEP_PROMPT_REASON, true],
+  ['user-cancel', false],
+]) {
+  test(`a first message stopped before any output (${abortReason}) ${kept ? 'stays in' : 'leaves'} the stored transcript`, async (t) => {
+    const { abortSessionTurn } = await import('./session-close.mjs');
+    await withAskHarness(t, async ({ session, askSession, loadSession, SessionClosedError, setReply }) => {
+      setReply(
+        (_messages, sendOpts) =>
+          new Promise((_, reject) => {
+            sendOpts.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+            setImmediate(() => abortSessionTurn(session.id, abortReason));
+          })
+      );
+      await assert.rejects(
+        askSession(session.id, 'RUN:slowt first message', null, null, null, null, {}),
+        (err) => err instanceof SessionClosedError
+      );
+      const users = loadSession(session.id).messages.filter((m) => m.role === 'user');
+      assert.deepEqual(
+        users.map((m) => String(m.content)),
+        kept ? ['RUN:slowt first message', '[Request interrupted]'] : []
+      );
+    });
+  });
+}
+
 const islandNotification = () =>
   renderShellCompletionEnvelope({
     jobId: 'task_agent_island',
@@ -278,7 +309,10 @@ test('completions drained behind a cancelled idle turn are released back to the 
     const drained = drainPendingMessages(session.id);
     const text = drained.map((entry) => String(entry.content ?? entry.message ?? ''));
     assert.deepEqual(
-      [text.filter((value) => value.includes('job_first')).length, text.filter((value) => value.includes('job_second')).length],
+      [
+        text.filter((value) => value.includes('job_first')).length,
+        text.filter((value) => value.includes('job_second')).length,
+      ],
       [1, 1],
       'both completions are queued again, each exactly once'
     );
@@ -473,6 +507,120 @@ test('after the close snapshot finalizes a cancelled notification turn, the next
     const promptAt = at((m) => m.role === 'user' && /foreground shell/.test(String(m.content)));
     assert.ok(notificationAt >= 0, 'the provider sees the notification');
     assert.ok(notificationAt < assistantAt && assistantAt < closureAt && closureAt < promptAt);
+  });
+});
+
+// An in-place model switch (set-route switchSessionInPlace) rewrites the
+// prompt's model line and drops provider replay; the next turn starts a new
+// cache chain instead of failing the old route's prefix guard.
+test('the first turn after an in-place model switch is sent on the new model', async (t) => {
+  const { updateSessionRoute } = await import('./session-lifecycle.mjs');
+  await withAskHarness(t, async ({ session, askSession, loadSession, sends, setReply }) => {
+    setReply(async () => ({
+      content: 'first answer',
+      reasoningContent: 'thinking on the old model',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }));
+    await askSession(session.id, 'before the switch', null, null, null, null, {});
+    assert.ok(loadSession(session.id)._providerPrefixGuardState, 'the first turn baselined the prefix guard');
+    const systemBefore = JSON.stringify(sends[0].messages.filter((m) => m.role === 'system'));
+
+    updateSessionRoute(session.id, { model: 'fake-model-2' }, { crossProvider: true });
+    setReply(async () => ({ content: 'second answer', usage: { inputTokens: 1, outputTokens: 1 } }));
+    const result = await askSession(session.id, 'after the switch', null, null, null, null, {});
+    assert.equal(result.content, 'second answer');
+    assert.equal(sends.length, 2);
+    assert.equal(sends[1].model, 'fake-model-2');
+    assert.notEqual(JSON.stringify(sends[1].messages.filter((m) => m.role === 'system')), systemBefore);
+
+    // The new route's chain is stable from here on.
+    setReply(async () => ({ content: 'third answer', usage: { inputTokens: 1, outputTokens: 1 } }));
+    await askSession(session.id, 'next turn', null, null, null, null, {});
+    assert.deepEqual(sends[2].messages.slice(0, sends[1].messages.length), sends[1].messages);
+  });
+});
+
+test('a quota failure without output preserves its notification and failure after restoration', async (t) => {
+  const { restoreTranscriptItems } = await import('../transcript-restore/restore.mjs');
+  await withAskHarness(t, async ({ session, askSession, loadSession, setReply }) => {
+    const notification = islandNotification();
+    const quota = { provider: session.provider, model: session.model, resetAt: null };
+    setReply(async () => {
+      throw Object.assign(new Error('quota exhausted'), { httpStatus: 400, quotaExhausted: quota });
+    });
+    await assert.rejects(
+      askSession(session.id, notification, null, null, null, null, { promptSource: 'task-notification' }),
+      /quota exhausted/
+    );
+    const stored = JSON.parse(JSON.stringify(loadSession(session.id).messages));
+    const prompt = stored.find((message) => message.content === notification);
+    assert.ok(prompt, 'the notification survives a failure with no output');
+    assert.equal(prompt.meta.transcript.completion.status, 'failed');
+    assert.deepEqual(prompt.meta.transcript.completion.quota, quota);
+    const items = restoreTranscriptItems(stored, { sessionId: session.id });
+    assert.equal(items.at(-1).kind, 'turndone');
+    assert.equal(items.at(-1).status, 'failed');
+    assert.deepEqual(items.at(-1).quota, quota);
+    assert.equal(items.at(-1).detail, 'Provider usage limit reached.');
+    assert.ok(
+      items.some((item) => item.kind === 'tool'),
+      'the notification card survives'
+    );
+    setReply(async () => ({ content: 'recovered' }));
+    await askSession(session.id, 'continue', null, null, null, null, {});
+    const recovered = loadSession(session.id).messages.find((message) => message.content === notification);
+    assert.deepEqual(recovered.meta.transcript.completion, prompt.meta.transcript.completion);
+  });
+});
+
+test('a close refused by its lifecycle barrier leaves the turn running and checkpointing', async (t) => {
+  const { closeSession } = await import('./session-close.mjs');
+  const { readTurnCheckpoint } = await import('./turn-checkpoint.mjs');
+  const { sessionPath } = await import('../store/session-paths.mjs');
+  const { existsSync, readFileSync, unlinkSync, writeFileSync } = await import('node:fs');
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  await withAskHarness(t, async ({ session, askSession, loadSession, setReply }) => {
+    let refused = null;
+    let checkpointed = null;
+    setReply(async (_messages, sendOpts) => {
+      sendOpts.onTextDelta?.('before');
+      // Let the turn's preflight save land before replacing the record.
+      await sleep(100);
+      const path = sessionPath(session.id);
+      const original = existsSync(path) ? readFileSync(path) : null;
+      // Another session's record renamed onto this path: the barrier refuses it.
+      writeFileSync(path, JSON.stringify({ id: 'sess_someone_else', messages: [] }));
+      const stderrWrite = process.stderr.write;
+      process.stderr.write = () => true;
+      try {
+        refused = closeSession(session.id, 'cli-agent-close');
+      } finally {
+        process.stderr.write = stderrWrite;
+        if (original) writeFileSync(path, original);
+        else unlinkSync(path);
+      }
+      sendOpts.onTextDelta?.(' after');
+      await sleep(400);
+      checkpointed = readTurnCheckpoint(session.id);
+      return { content: 'before after', usage: { inputTokens: 1, outputTokens: 1 } };
+    });
+    const result = await askSession(session.id, 'keep going', null, null, null, null, {});
+    assert.equal(refused, false, 'the close was refused');
+    assert.equal(
+      checkpointed?.interruption?.partialAssistantContent,
+      'before after',
+      'the checkpoint kept recording after the refused close'
+    );
+    assert.equal(result.content, 'before after');
+    const stored = loadSession(session.id);
+    assert.notEqual(stored.closed, true);
+    assert.equal(stored.messages.at(-1).role, 'assistant');
+    assert.equal(stored.messages.at(-1).content, 'before after');
+    assert.equal(
+      stored.messages.some((m) => /Request interrupted/.test(String(m.content))),
+      false,
+      'the refused close left no interruption snapshot behind'
+    );
   });
 });
 

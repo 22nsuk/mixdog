@@ -7,18 +7,22 @@ import { getProvider } from '../../providers/registry.mjs';
 import { invalidateContextUsageSnapshot, invalidateProviderContextBaseline } from '../loop/compact-policy.mjs';
 import { saveSession, saveSessionAsync, saveSessionAsyncDeferred, loadSession, setLiveSession } from '../store.mjs';
 import { _liveSessions } from '../store/live-state.mjs';
-import { _isActivelyOwnedElsewhere, _recoverTurnCheckpointDurably } from './session-owner-liveness.mjs';
+import { _recoverTurnCheckpointDurably } from './turn-checkpoint-recovery.mjs';
 import { isAgentOwner } from '../../agent-owner.mjs';
+import { AGENT_MODE, resolveSessionMode, sessionModeOf } from '../agent-mode.mjs';
 import { getHiddenAgent } from '../../internal-agents.mjs';
 import { loadConfig } from '../../config.mjs';
 import {
   buildProviderCacheOpts,
   cacheCapabilityForProvider,
+  isLeadCacheClass,
   roleProviderCacheOpts,
 } from '../../agent-runtime/cache-strategy.mjs';
 import { normalizeAutoClearConfig, resolveAutoClearIdleMs } from '../../runtime-core/config-helpers.mjs';
-import { _buildBaseRules } from './rules-cache.mjs';
+import { _buildBaseRules, promptRulesRevision } from './rules-cache.mjs';
+import { stripProviderReplayMessages } from './provider-replay.mjs';
 import { composeSessionSystem, seedSessionMessages } from './session-prompt-composition.mjs';
+import { agentProfileRevision, leadRosterRevision } from '../../context/role-instructions.mjs';
 import {
   _prepareResumeTools,
   delegationDisabled,
@@ -37,28 +41,34 @@ import { getAgentRuntimeSync, warnAgentRuntimeResolveFailureOnce } from './agent
 import { ensureCodexWireSessionId, mintSessionId } from './session-id.mjs';
 import { providerCacheKey } from './provider-cache-key.mjs';
 import { buildSessionRecord, normalizeDesktopSessionMetadata, sessionOriginFields } from './session-record.mjs';
+import { normalizeWorkflowRoute } from '../../runtime-core/workflow.mjs';
+import { ownerRouteFallbacks } from './owner-route-fallbacks.mjs';
 import { applyPendingWorkspaceReroot, refreshSessionBp3Environment } from './prompt-utils.mjs';
 import { isWorktreeBound } from '../../../../shared/worktrees/contract.mjs';
+import { applyAgentToolExposure } from '../loop/tool-exposure-migration.mjs';
+import { prewarmSessionAutoEffort } from './ask-turn-auto-effort.mjs';
 
-// Owner liveness (attach-on-resume guard) and the durable turn-checkpoint
-// recovery it gates; re-exported so prior importers of this module stay
-// unchanged.
-export { isSessionOwnerGone, recoverSessionAfterProcessRestart } from './session-owner-liveness.mjs';
+// Durable turn-checkpoint recovery; re-exported so prior importers of this
+// module stay unchanged.
+export { recoverSessionAfterProcessRestart } from './turn-checkpoint-recovery.mjs';
 // Prepared-surface cache warmers (desktop hover prefetch, pane projection);
 // re-exported so prior importers of this module stay unchanged.
 export { prefetchSession, prepareSessionProjection } from './prepared-resume-cache.mjs';
 
-function buildSessionProviderCacheOpts(providerName, sessionId, agent = null, config = null) {
+// `session` is the record or create options; it classifies agent-mode Leads
+// (bot home threads, routine runs) into the Lead cache class.
+function buildSessionProviderCacheOpts(providerName, sessionId, agent = null, config = null, session = null) {
   // Keep this in sync with createSession's provider-cache policy: only
-  // explicit-breakpoint providers get BP cache opts here; OpenAI/key-prefix
-  // providers use promptCacheKey and request-time strategy instead, plus the
-  // shared prompt-cache scope of a one-shot role.
+  // explicit-breakpoint providers get BP cache opts here; key-prefix
+  // providers use promptCacheKey and request-time strategy instead (plus the
+  // OpenAI API's Lead-class 12h prefix TTL and a one-shot role's shared
+  // prompt-cache scope).
   if (cacheCapabilityForProvider(providerName) !== 'explicit-breakpoint') {
-    return roleProviderCacheOpts(providerName, agent);
+    return roleProviderCacheOpts(providerName, agent, { session });
   }
   try {
     let autoClear = null;
-    if (!agent || agent === 'lead') {
+    if (isLeadCacheClass(agent, session)) {
       const loadedConfig = config || loadConfig({ secrets: false });
       const normalizedAutoClear = normalizeAutoClearConfig(loadedConfig?.autoClear);
       autoClear = {
@@ -66,20 +76,23 @@ function buildSessionProviderCacheOpts(providerName, sessionId, agent = null, co
         idleMs: resolveAutoClearIdleMs(loadedConfig, providerName),
       };
     }
-    return buildProviderCacheOpts(providerName, sessionId, agent, { autoClear });
+    return buildProviderCacheOpts(providerName, sessionId, agent, { autoClear, session });
   } catch {
     return null;
   }
 }
 
-// Re-derive a Lead session's builder-made cache policy (messages TTL follows
-// the auto-clear idle window). Explicit caller/profile policies, non-Lead
-// sessions and non-explicit-breakpoint providers are left untouched.
+// Re-derive a Lead-class session's builder-made cache policy (Anthropic
+// messages TTL follows the auto-clear idle window; the OpenAI API prefix TTL
+// follows the cache class). Explicit caller/profile policies, sub-agents and
+// other providers are left untouched.
 export function refreshSessionProviderCacheOpts(session, config = null) {
   if (!session || session.providerCacheOptsOverride === true) return false;
-  if (session.agent && session.agent !== 'lead') return false;
-  if (cacheCapabilityForProvider(session.provider) !== 'explicit-breakpoint') return false;
-  const next = buildSessionProviderCacheOpts(session.provider, session.id, session.agent, config);
+  if (!isLeadCacheClass(session.agent, session)) return false;
+  if (cacheCapabilityForProvider(session.provider) !== 'explicit-breakpoint' && session.provider !== 'openai') {
+    return false;
+  }
+  const next = buildSessionProviderCacheOpts(session.provider, session.id, session.agent, config, session);
   if (!next) return false;
   session.providerCacheOpts = next;
   return true;
@@ -204,27 +217,52 @@ function logSessionSurface({ resolvedAgent, toolPermission, tools }) {
   }
 }
 
-export function createSession(opts) {
-  const presetObj = opts.preset && typeof opts.preset === 'object' ? opts.preset : null;
-  const resolved = resolveAgentRuntimeProfile(opts, presetObj);
+export function createSession(createOpts) {
+  const presetObj = createOpts.preset && typeof createOpts.preset === 'object' ? createOpts.preset : null;
+  const resolved = resolveAgentRuntimeProfile(createOpts, presetObj);
   const { profile } = resolved;
-  const route = resolveSessionRoute(opts, presetObj, profile);
+  const route = resolveSessionRoute(createOpts, presetObj, profile);
   const { providerName, modelName, provider, toolPreset, id } = route;
+  // Agent or coding mode (agent-mode.mjs), resolved once and persisted. An
+  // agent-mode Lead acts as its agent: a schedule/webhook run that names only
+  // its `ownerAgentId` gets that agent's role, persona and connector policy
+  // (all keyed by `session.agent`), as its home thread does.
+  const sessionMode = sessionModeOf({ ...createOpts, id });
+  const actingAgent = resolveSessionMode({ session: { ...createOpts, id } }).agentId;
+  const opts =
+    sessionMode === AGENT_MODE && !createOpts.agent && actingAgent
+      ? { ...createOpts, agent: actingAgent, sessionMode }
+      : { ...createOpts, sessionMode };
+  // A Lead-class session (actingAgent set) takes its owner's chain while it
+  // runs on the owner's primary model; an agent keeps its preset's.
+  const routeFallbacks = actingAgent
+    ? Object.hasOwn(opts, 'routeFallbacks')
+      ? opts.routeFallbacks
+      : ownerRouteFallbacks({ sessionMode, agentId: actingAgent, provider: providerName, model: modelName })
+    : normalizeWorkflowRoute({
+        provider: providerName,
+        model: modelName,
+        fallbacks: Object.hasOwn(opts, 'routeFallbacks') ? opts.routeFallbacks : presetObj?.fallbacks,
+      })?.fallbacks;
   // Provider cache strategy — agentRuntime.resolveSync() above is a
   // best-effort injection point (setAgentRuntime() has no live caller
   // today, so that branch never fires); build it directly here so every
-  // session still gets a cache strategy. Lead sessions (opts.agent ===
-  // 'lead', or no agent at all — raw/CLI callers) get their BP4 message
-  // tail TTL linked to the user's autoClear idle-sweep config; hidden and
-  // public agents keep the flat 5m default (see cache-strategy.mjs docs).
-  // Scoped to explicit-breakpoint (Anthropic-family) providers only — the
-  // non-Anthropic branches of buildProviderCacheOpts (e.g. the 'openai'
-  // cacheRetention:'24h' shape) were never exercised by createSession
-  // before this change, and are left untouched to avoid altering live
-  // OpenAI/other-provider request shape as a side effect of this fix.
-  const providerCacheOpts = resolved.providerCacheOpts || buildSessionProviderCacheOpts(providerName, id, opts.agent);
+  // session still gets a cache strategy. Lead-class sessions (the Lead, raw
+  // callers, bot home threads and other agent-mode Leads) get their BP4
+  // message tail TTL linked to the user's autoClear idle-sweep config and,
+  // on the OpenAI API, the 12h stable-prefix TTL; sub-agents and hidden roles
+  // keep the agent defaults (see cache-strategy.mjs docs).
+  const providerCacheOpts =
+    resolved.providerCacheOpts || buildSessionProviderCacheOpts(providerName, id, opts.agent, null, { ...opts, id });
   const surface = resolveSessionToolSurface(opts, { profile, toolPreset, modelName });
-  const prompt = composeSessionSystem(opts, { profile, providerName, modelName, surface });
+  // The agent profile the prompt is composed from, read first: an edit landing
+  // during composition leaves the stamp behind, never ahead (refreshAgentProfile).
+  const agentProfile = surface.ownerIsAgent
+    ? ''
+    : agentProfileRevision(surface.resolvedAgent, { mixy: sessionMode === AGENT_MODE });
+  // A bot thread lives on across releases: the rules it was built from.
+  const rulesRevision = agentProfile && sessionMode === AGENT_MODE ? promptRulesRevision() : '';
+  const prompt = composeSessionSystem(opts, { profile, providerName, modelName, surface, sessionMode });
   const messages = seedSessionMessages(prompt, opts.files);
   logSessionSurface(surface);
   const contextMeta = resolveSessionContextMeta(provider, modelName, {
@@ -243,11 +281,21 @@ export function createSession(opts) {
     origin: sessionOriginFields(opts, { profile, presetObj, providerCacheOpts, surface }),
   });
   session.providerCacheOptsOverride = Boolean(resolved.providerCacheOpts);
+  if (agentProfile) {
+    session.agentProfileRevision = agentProfile;
+    // The bot roster its prompt lists (a Lead's catalog slices).
+    session.agentRosterRevision = leadRosterRevision(opts.leadWorkflowParts);
+    if (rulesRevision) session.rulesRevision = rulesRevision;
+  }
+  if (routeFallbacks?.length) session.routeFallbacks = routeFallbacks;
+  // A non-native agent sends core + bridge, built from its filtered tools.
+  applyAgentToolExposure(session);
   refreshSessionBp3Environment(session, opts.cwd);
   // In-process registry + async debounced save: same-process create → load
   // reads live memory; disk flush is for cross-process / restart durability.
   setLiveSession(session);
   saveSession(session);
+  prewarmSessionAutoEffort(session, provider);
   return session;
 }
 
@@ -310,6 +358,13 @@ function applyRouteFields(session, route) {
     else delete session.autoEffort;
   }
   if (Object.hasOwn(route, 'effort')) session.effort = route.effort || null;
+  // A deliberate route choice restarts the chain (a fallback hop never passes this).
+  if (Object.hasOwn(route, 'routeFallbacks')) {
+    if (route.routeFallbacks?.length) session.routeFallbacks = route.routeFallbacks;
+    else delete session.routeFallbacks;
+    delete session.routeFallbackIndex;
+    delete session.routeFallbackFailures;
+  }
   ensureCodexWireSessionId(session);
   if (Object.hasOwn(route, 'modelParameters')) {
     session.modelParameters =
@@ -357,7 +412,8 @@ function applyRouteContextWindow(session, routeChanged, selectedContextWindowPro
 // surface: the previous route's readings and prepared tools no longer apply.
 function resetSessionForRouteChange(id, session, previousModel, previousProvider) {
   session.promptCacheKey = providerCacheKey(session.provider);
-  session.providerCacheOpts = buildSessionProviderCacheOpts(session.provider, session.id, session.agent) || null;
+  session.providerCacheOpts =
+    buildSessionProviderCacheOpts(session.provider, session.id, session.agent, null, session) || null;
   session.providerCacheOptsOverride = false;
   session.lastInputTokens = 0;
   session.lastOutputTokens = 0;
@@ -367,6 +423,11 @@ function resetSessionForRouteChange(id, session, previousModel, previousProvider
   session.lastContextTokensUpdatedAt = Date.now();
   session.lastContextTokensStaleAfterCompact = false;
   session.providerState = undefined;
+  // The previous route's prefix snapshot measured another prompt (model line,
+  // stripped replay); the new chain baselines on its first send.
+  delete session._providerPrefixGuardState;
+  // The new route resolves its own wire before its first request.
+  session.wireRoute = null;
   const prepared = _prepareResumeTools(session, session.preset || 'full');
   session.tools = prepared.tools;
   session.toolSpec = prepared.toolSpec;
@@ -384,31 +445,16 @@ function resetSessionForRouteChange(id, session, previousModel, previousProvider
   ]) {
     if (Array.isArray(session[key])) session[key] = filterModelEditToolNames(session[key], session.model);
   }
+  applyAgentToolExposure(session, { existing: true });
   _refreshSessionRuleVariantsForModel(session, previousModel, previousProvider);
   _forgetPreparedResume(id);
 }
 
-// Every message field a provider adapter replays or re-reads as native state.
-const PROVIDER_REPLAY_FIELDS = [
-  'providerReplay',
-  'reasoning',
-  'thinkingBlocks',
-  'assistantBlocks',
-  'reasoningItems',
-  'reasoningContent',
-  'providerMetadata',
-];
-
-// Provider-native replay (reasoning items, thinking blocks) belongs to the
-// provider that produced it. Replace, never mutate, so delta saves rewrite.
+// Provider-native replay (reasoning items, thinking blocks, signatures)
+// belongs to the provider that produced it (see provider-replay.mjs).
 function stripProviderReplay(session) {
   if (!Array.isArray(session.messages)) return;
-  session.messages = session.messages.map((message) => {
-    if (!message || !PROVIDER_REPLAY_FIELDS.some((field) => field in message)) return message;
-    const plain = { ...message };
-    for (const field of PROVIDER_REPLAY_FIELDS) delete plain[field];
-    return plain;
-  });
+  session.messages = stripProviderReplayMessages(session.messages);
 }
 
 // `options.crossProvider` is the explicit in-place continuation of an
@@ -417,7 +463,9 @@ function stripProviderReplay(session) {
 // auto-compacts) against the new model's window.
 export function updateSessionRoute(id, route = {}, options = {}) {
   if (!id) return null;
-  const session = loadSession(id);
+  // options.session: the live object of a running turn, changed in place; the id's
+  // stored copy (a disk reload after another process took the generation) is not.
+  const session = options.session?.id === id ? options.session : loadSession(id);
   if (!session || session.closed === true) return null;
   const previousProvider = session.provider || null;
   const previousModel = session.model || null;
@@ -451,9 +499,8 @@ export function updateSessionRoute(id, route = {}, options = {}) {
 }
 
 // --- resume (reload tools for a stored session) ---
-// Whether another live process is driving the session (and therefore whether
-// this resume attaches as a viewer) is decided by session-owner-liveness.mjs;
-// the prepared tool surface it consumes is cached in prepared-resume-cache.mjs.
+// Interrupted-turn recovery lives in turn-checkpoint-recovery.mjs; the
+// prepared tool surface it consumes is cached in prepared-resume-cache.mjs.
 
 // Desktop callers pass their selected durable classification as a
 // capability check. Refuse a stale/tampered cross-class resume before any
@@ -487,25 +534,6 @@ function _applyDesktopResumeScope(session, options) {
   return true;
 }
 
-// ATTACH (viewer mode, zero ownership): hand back the live transcript
-// under the SAME id, flagged remoteAttached. No tool refresh, no save,
-// no generation claim — the session file remains exclusively the
-// owner's. session-turn-api routes this surface's submits into the
-// shared pending spool instead of running a local turn.
-function _attachViewerSession(session, sessionId) {
-  const attached = { ...session, remoteAttached: true };
-  delete attached.liveTurnMessages;
-  delete attached.toolApprovalHook;
-  if (process.env.MIXDOG_DEBUG_SESSION_LOG) {
-    try {
-      process.stderr.write(`[session] attach-on-resume: ${sessionId} is live elsewhere → viewer attach\n`);
-    } catch {
-      /* best-effort */
-    }
-  }
-  return attached;
-}
-
 // Refreshes the session's tool surface from the prepared resume when it still
 // matches, warning about tools the preset no longer offers.
 function _refreshResumedTools(session, sessionId, preset) {
@@ -516,7 +544,12 @@ function _refreshResumedTools(session, sessionId, preset) {
   // Keep the persisted tool mode in sync on resume (see createSession note).
   session.toolSpec = prepared.toolSpec;
   session.tools = prepared.tools;
-  const missing = oldTools.filter((t) => !session.tools.find((n) => n.name === t.name));
+  applyAgentToolExposure(session, { existing: true });
+  // A bridge surface keeps the rest of its tools in the catalog.
+  const available = new Set(
+    [...session.tools, ...(session.deferredToolCatalog || [])].map((tool) => tool?.name).filter(Boolean)
+  );
+  const missing = oldTools.filter((t) => !available.has(t.name));
   if (missing.length) {
     process.stderr.write(
       `[session] Warning: ${missing.length} tools no longer available: ${missing.map((t) => t.name).join(', ')}\n`
@@ -534,10 +567,11 @@ export async function resumeSession(sessionId, preset, options = {}) {
   ensureCodexWireSessionId(session);
   if (!_applyDesktopResumeScope(session, options)) return null;
   if (!session.owner) session.owner = 'user';
+  // Records from before the mode existed get it resolved and stamped.
+  session.sessionMode = sessionModeOf(session);
   if (Object.hasOwn(options, 'mcpScopeId')) {
     session.mcpScopeId = String(options.mcpScopeId || '').trim() || null;
   }
-  if (_isActivelyOwnedElsewhere(session, sessionId)) return _attachViewerSession(session, sessionId);
   _recoverTurnCheckpointDurably(session, sessionId);
   _refreshResumedTools(session, sessionId, preset);
   refreshSessionProviderCacheOpts(session);
@@ -549,5 +583,6 @@ export async function resumeSession(sessionId, preset, options = {}) {
       process.stderr.write(`[session] resume save failed: ${err?.message || err}\n`);
     } catch {}
   });
+  prewarmSessionAutoEffort(session, session.provider ? getProvider(session.provider) : null);
   return session;
 }

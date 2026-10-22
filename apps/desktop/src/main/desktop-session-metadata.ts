@@ -10,7 +10,7 @@ import { isSessionId } from './desktop-state';
 
 type MetadataMaps = Parameters<typeof writeSessionMetadata>[1];
 type MetadataField = keyof MetadataMaps;
-const FIELDS: MetadataField[] = ['titles', 'names', 'archived', 'favorites', 'projects', 'reads'];
+const FIELDS: MetadataField[] = ['titles', 'names', 'archived', 'favorites', 'projects', 'reads', 'retired'];
 const dirtyKey = (field: MetadataField, sessionId: string): string => `${field}\u0000${sessionId}`;
 
 /** A queued save: this instance's maps plus the (field, session) entries it
@@ -30,11 +30,13 @@ export class DesktopSessionMetadata {
    *  changes the session's working folder); only a deleted session drops its entry. */
   private projectMap: Record<string, string> | null = null;
   private readMap: Record<string, SessionReadCursor> | null = null;
+  private retiredMap: Record<string, number> | null = null;
   private loadRequest: Promise<void> | null = null;
   private readonly writer: DebouncedWriter<PendingWrite>;
   private writeError: unknown;
   private readonly dirty = new Map<string, number>();
   private generation = 0;
+  private lastArchiveStamp = 0;
 
   constructor(userDataRoot: () => string) {
     this.userDataRoot = userDataRoot;
@@ -84,6 +86,7 @@ export class DesktopSessionMetadata {
       this.favoriteMap = maps.favorites;
       this.projectMap = maps.projects;
       this.readMap = maps.reads;
+      this.retiredMap = maps.retired;
       // A stored title the current generator would render differently is
       // rewritten in memory; persist it so the next read is stable.
       if (maps.rewritten) await this.queueWrite();
@@ -104,8 +107,13 @@ export class DesktopSessionMetadata {
     await this.queueWrite();
   }
 
-  /** True when the archive state actually changed (and was persisted). */
-  async setArchived(sessionId: string, archived: boolean): Promise<boolean> {
+  /** True when the session's own archive state actually changed (and was
+   *  persisted). Its sub-agent `descendants` follow it in the same write: an
+   *  archive stamps the ones not archived yet with the session's own stamp, a
+   *  restore brings back exactly the ones carrying it (those it archived) and
+   *  leaves any archived on their own. Stamps never repeat within this
+   *  instance, so two archives never share one. */
+  async setArchived(sessionId: string, archived: boolean, descendants: readonly string[] = []): Promise<boolean> {
     await this.load();
     this.archivedMap ??= Object.create(null) as Record<string, number>;
     const map = this.archivedMap;
@@ -114,9 +122,34 @@ export class DesktopSessionMetadata {
       await this.flush();
       return false;
     }
-    if (archived) map[sessionId] = Date.now();
+    const stamp = archived ? Math.max(Date.now(), this.lastArchiveStamp + 1) : map[sessionId];
+    if (archived) this.lastArchiveStamp = stamp;
+    for (const id of [sessionId, ...descendants]) {
+      if (id !== sessionId && (archived ? Object.hasOwn(map, id) : map[id] !== stamp)) continue;
+      if (archived) map[id] = stamp;
+      else delete map[id];
+      this.touch('archived', id);
+    }
+    await this.queueWrite();
+    return true;
+  }
+
+  /** Whether this home thread was already archived for its agent's deletion. */
+  async isRetired(sessionId: string): Promise<boolean> {
+    await this.load();
+    return Object.hasOwn(this.retiredMap || {}, sessionId);
+  }
+
+  /** Record (or, when the agent exists again, clear) a home thread's
+   *  retirement. True when the record changed. */
+  async setRetired(sessionId: string, retired: boolean): Promise<boolean> {
+    await this.load();
+    this.retiredMap ??= Object.create(null) as Record<string, number>;
+    const map = this.retiredMap;
+    if (retired === Object.hasOwn(map, sessionId)) return false;
+    if (retired) map[sessionId] = Date.now();
     else delete map[sessionId];
-    this.touch('archived', sessionId);
+    this.touch('retired', sessionId);
     await this.queueWrite();
     return true;
   }
@@ -170,13 +203,15 @@ export class DesktopSessionMetadata {
       Object.hasOwn(this.archivedMap || {}, sessionId) ||
       Object.hasOwn(this.favoriteMap || {}, sessionId) ||
       Object.hasOwn(this.projectMap || {}, sessionId) ||
-      Object.hasOwn(this.readMap || {}, sessionId);
+      Object.hasOwn(this.readMap || {}, sessionId) ||
+      Object.hasOwn(this.retiredMap || {}, sessionId);
     delete this.titleMap?.[sessionId];
     delete this.nameMap?.[sessionId];
     if (this.archivedMap) delete this.archivedMap[sessionId];
     if (this.favoriteMap) delete this.favoriteMap[sessionId];
     if (this.projectMap) delete this.projectMap[sessionId];
     if (this.readMap) delete this.readMap[sessionId];
+    if (this.retiredMap) delete this.retiredMap[sessionId];
     if (had) {
       for (const field of FIELDS) this.touch(field, sessionId);
       await this.queueWrite();
@@ -191,7 +226,21 @@ export class DesktopSessionMetadata {
     const existing = this.titleMap[sessionId] || '';
     if (existing && (!isMediaSessionTitlePlaceholder(existing) || isMediaSessionTitlePlaceholder(normalized)))
       return false;
-    this.titleMap[sessionId] = normalized;
+    return this.storeTitle(sessionId, normalized);
+  }
+
+  /** A deleted bot's archived home: titled with the bot's name at that
+   *  deletion, replacing an earlier one (a user name still wins). */
+  rememberRetiredTitle(sessionId: string, name: string): boolean {
+    if (!this.titleMap || !isSessionId(sessionId) || this.nameMap?.[sessionId]) return false;
+    const normalized = generatedSessionTitle(name, '');
+    if (!normalized || this.titleMap[sessionId] === normalized) return false;
+    return this.storeTitle(sessionId, normalized);
+  }
+
+  private storeTitle(sessionId: string, title: string): boolean {
+    if (!this.titleMap) return false;
+    this.titleMap[sessionId] = title;
     this.touch('titles', sessionId);
     void this.queueWrite().catch(() => {
       /* writer retains and reports the pending save */
@@ -204,6 +253,19 @@ export class DesktopSessionMetadata {
     const archived = this.archivedMap;
     if (!archived) return summaries;
     return summaries.map((row) => (Object.hasOwn(archived, row.id) ? { ...row, archived: true } : row));
+  }
+
+  /** Mark the home threads whose bot was deleted (a read-only chat), each
+   *  listed under the bot's name (rememberRetiredTitle) over a title its
+   *  conversation got; a user's own name for it still wins. */
+  withRetiredFlags<T extends { id: string; title?: string }>(summaries: T[]): T[] {
+    const retired = this.retiredMap;
+    if (!retired) return summaries;
+    return summaries.map((row) => {
+      if (!Object.hasOwn(retired, row.id)) return row;
+      const botName = this.nameMap?.[row.id] ? '' : this.titleMap?.[row.id] || '';
+      return { ...row, agentDeleted: true, ...(botName ? { title: botName } : {}) };
+    });
   }
 
   /** Mark favorite rows in a session listing. */
@@ -241,7 +303,11 @@ export class DesktopSessionMetadata {
     const favorites = { ...(this.favoriteMap || {}) };
     const projects = { ...(this.projectMap || {}) };
     const reads = { ...this.reads };
-    this.writer.schedule({ maps: { titles, names, archived, favorites, projects, reads }, dirty: new Map(this.dirty) });
+    const retired = { ...(this.retiredMap || {}) };
+    this.writer.schedule({
+      maps: { titles, names, archived, favorites, projects, reads, retired },
+      dirty: new Map(this.dirty),
+    });
     return this.flush();
   }
 

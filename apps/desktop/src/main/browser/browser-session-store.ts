@@ -6,9 +6,10 @@
  * those cookies, sealed with the OS keychain, and puts them back on the next
  * start. Nothing here reads cookie values into a reply.
  */
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { writeFileAtomicAsync } from '../../../../../src/runtime/shared/atomic-file.mjs';
 import {
   cookiePartitionKey,
   storedCookieSetDetails,
@@ -129,10 +130,8 @@ export function createBrowserSessionStore(host: BrowserSessionStoreHost) {
       }
       const sealed = await encrypt(JSON.stringify({ savedAt: now(), cookies: records }));
       if (!sealed) return 0;
-      await mkdir(host.directory, { recursive: true });
-      const staging = `${file}.${process.pid}.tmp`;
-      await writeFile(staging, sealed, { mode: 0o600 });
-      await rename(staging, file);
+      // Flushed before it replaces the last snapshot, so a crash keeps one good copy.
+      await writeFileAtomicAsync(file, sealed, { secret: true });
       return records.length;
     })().finally(() => {
       saving = null;
@@ -198,4 +197,42 @@ export function createBrowserSessionStore(host: BrowserSessionStoreHost) {
   }
 
   return { save, restore, startAutosave, file };
+}
+
+type CookieChangeListener = (event: unknown, cookie: { session?: boolean }, cause: string, removed: boolean) => void;
+
+/** A sign-in (or sign-out) is written within a second of the cookie change,
+ *  not at the next minute's autosave: a crash right after a login used to
+ *  lose its session cookies, and Chromium's own lazily flushed store could
+ *  lose the persistent ones. Session cookies go through the sealed store,
+ *  persistent ones are flushed to Chromium's profile. */
+export function watchBrowserSessionCookies(
+  cookies: {
+    on(event: 'changed', listener: CookieChangeListener): unknown;
+    removeListener(event: 'changed', listener: CookieChangeListener): unknown;
+  },
+  store: { save(): Promise<number> },
+  jar: Pick<BrowserCookieJar, 'flushStore'>,
+  delayMs = 1_000
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let sessionChanged = false;
+  const write = () => {
+    timer = null;
+    const saveSession = sessionChanged;
+    sessionChanged = false;
+    if (saveSession) void store.save().catch(() => undefined);
+    void jar.flushStore().catch(() => undefined);
+  };
+  const listener: CookieChangeListener = (_event, cookie) => {
+    if (cookie?.session === true) sessionChanged = true;
+    timer ??= setTimeout(write, delayMs);
+    timer.unref?.();
+  };
+  cookies.on('changed', listener);
+  return () => {
+    cookies.removeListener('changed', listener);
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
 }

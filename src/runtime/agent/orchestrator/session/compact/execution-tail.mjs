@@ -1,10 +1,14 @@
+import { readFileSync } from 'node:fs';
 import { estimateMessagesTokens } from '../context-utils.mjs';
 import { estimateTokens } from '../token-estimate.mjs';
 import { persistToolResultArtifactSync, previewToolResultArtifact } from '../tool-result-offload.mjs';
 import {
+  EXECUTION_TEXT_SOURCE,
   isActualUserInstructionMessage,
+  isCompactConversationRow,
   isProtectedContextAckMessage,
   latestActualUserInstructionIndex,
+  pendingTaskNotificationIndexes,
 } from './messages.mjs';
 import { staleObservations, supersedeObservation } from './observation-supersession.mjs';
 import { carryMessageId, withoutMessageIdsReplacer } from '../message-ids.mjs';
@@ -12,9 +16,64 @@ import { carryMessageId, withoutMessageIdsReplacer } from '../message-ids.mjs';
 export const EXECUTION_RECOVERY_SOURCE = 'compact-execution-recovery';
 const TOOL_HISTORY_CONTEXT_RATIO = 0.05;
 // The working set of recent execution evidence does not grow with the window:
-// above 400k, 5% kept a large block of old tool output after every Compact.
-const TOOL_HISTORY_MAX_TOKENS = 20_000;
+// above 800k, 5% kept a large block of old tool output after every Compact.
+export const TOOL_HISTORY_MAX_TOKENS = 40_000;
 const ARCHIVE_THRESHOLD_TOKENS = 512;
+// Only the newest reminder survives a Compact; it names the dumps it replaced
+// (each dump holds the reminder that preceded it, so older ones stay reachable).
+const MAX_EARLIER_DUMPS = 4;
+const RECOVERY_PATH_RE = /available at (.+?) \(sha256:/;
+const EARLIER_DUMPS_RE = /^Earlier dumps \(older first\): (.+)$/m;
+const EARLIER_DUMPS_SEPARATOR = ' | ';
+// Below this a reference line saves little and every blob is one more file
+// for the offload prune walk to stat and read.
+const ARCHIVE_BLOB_MIN_BYTES = 16_384;
+const ARCHIVED_MESSAGE_KEY = 'archivedMessage';
+
+// One message per line (JSONL): grep returns whole messages, and line N + 1
+// holds message index N. JSON.stringify never emits a raw newline.
+// A message whose line reaches ARCHIVE_BLOB_MIN_BYTES is stored once per
+// session as its own content-addressed one-line file (`storeLine`); its dump
+// line is a reference to that file. Every later dump that still carries the
+// message (a retained tool result, an unchanged summary) repeats only the
+// reference, so a session's dumps no longer re-save their large bodies.
+function serializeExecutionArchive(messages, storeLine = null) {
+  return messages
+    .map((message) => {
+      const line = `${JSON.stringify(message, withoutMessageIdsReplacer)}\n`;
+      if (!storeLine || Buffer.byteLength(line, 'utf8') < ARCHIVE_BLOB_MIN_BYTES) return line;
+      const blob = storeLine(line);
+      if (!blob) throw new Error('compact: execution history could not be archived; original context preserved');
+      // The file name is the line's sha256; the call id keeps the line greppable.
+      const reference = { path: blob.path, toolCallId: message?.toolCallId };
+      return `${JSON.stringify({ [ARCHIVED_MESSAGE_KEY]: reference })}\n`;
+    })
+    .join('');
+}
+
+function archivedReference(value) {
+  return value && !Object.hasOwn(value, 'role') ? value[ARCHIVED_MESSAGE_KEY] : null;
+}
+
+// The archived transcript, with every referenced message read back.
+export function parseExecutionArchive(text) {
+  return text
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const value = JSON.parse(line);
+      const reference = archivedReference(value);
+      return reference ? JSON.parse(readFileSync(reference.path, 'utf8')) : value;
+    });
+}
+
+// Dump paths a recovery reminder names, oldest first.
+function recoveryArchivePaths(message) {
+  const content = String(message?.content ?? '');
+  const own = RECOVERY_PATH_RE.exec(content)?.[1];
+  const earlier = EARLIER_DUMPS_RE.exec(content)?.[1].split(EARLIER_DUMPS_SEPARATOR) ?? [];
+  return own ? [...earlier, own] : earlier;
+}
 
 export function toolHistoryBudget(contextWindow) {
   const window = Number(contextWindow);
@@ -89,7 +148,7 @@ function withoutStaleReplay(messages) {
 // call keeps its paired result.
 function shrinkGroup(group, archive, level) {
   const reference = (offset, what, id) =>
-    `[${what} archived without interpretation: ${archive.path}; message index ${group.start + offset}; toolCallId=${id}.`;
+    `[${what} archived without interpretation: ${archive.path}; message index ${group.start + offset} (line ${group.start + offset + 1}); toolCallId=${id}.`;
   return group.messages.map((message, offset) => {
     if (message.role === 'tool') {
       if (executionTokens([message]) < ARCHIVE_THRESHOLD_TOKENS) return message;
@@ -112,9 +171,10 @@ function shrinkGroup(group, archive, level) {
   });
 }
 
-// Walk from the anchor: kept groups verbatim, user instructions, and the
-// conversational assistant text the mode allows.
-function assembleTail(messages, kept, { anchor, firstKept, preserveConversation }) {
+// Walk from the anchor: kept groups verbatim, user instructions, unanswered
+// task notifications, and the conversation the mode allows (rule-only:
+// assistant text and runtime conversation rows).
+function assembleTail(messages, kept, { anchor, firstKept, preserveConversation, pending }) {
   const tail = [];
   for (let i = Math.max(0, anchor); i < messages.length; i += 1) {
     const group = kept.get(i);
@@ -128,8 +188,16 @@ function assembleTail(messages, kept, { anchor, firstKept, preserveConversation 
       // Omitted execution stays in the archive; its conversational text
       // remains verbatim without replaying an orphaned call or reasoning.
       if (message.toolCalls?.length) {
-        // The text-only copy is this message's rewrite: it keeps its id.
-        if (message.content) tail.push(carryMessageId({ role: 'assistant', content: message.content }, message));
+        // The text-only copy is this message's rewrite: it keeps its id, and
+        // its marker keeps it from reading as a final reply.
+        if (message.content) {
+          tail.push(
+            carryMessageId(
+              { role: 'assistant', content: message.content, meta: { source: EXECUTION_TEXT_SOURCE } },
+              message
+            )
+          );
+        }
       } else {
         tail.push(message);
       }
@@ -137,12 +205,27 @@ function assembleTail(messages, kept, { anchor, firstKept, preserveConversation 
     }
     if (
       isActualUserInstructionMessage(message) ||
+      pending.has(i) ||
+      (preserveConversation && isCompactConversationRow(message)) ||
       (i >= firstKept && message?.role === 'assistant' && !message.toolCalls?.length)
     ) {
       tail.push(message);
     }
   }
   return tail;
+}
+
+// The reminder naming the new dump and the earlier ones it supersedes.
+function recoveryReminder(archive, previousRecovery) {
+  const earlier = [...new Set(previousRecovery.flatMap(recoveryArchivePaths))]
+    .filter((path) => path !== archive.path)
+    .slice(-MAX_EARLIER_DUMPS);
+  const earlierLine = earlier.length ? `\nEarlier dumps (older first): ${earlier.join(EARLIER_DUMPS_SEPARATOR)}` : '';
+  return {
+    role: 'user',
+    meta: { source: EXECUTION_RECOVERY_SOURCE, synthetic: true },
+    content: `<system-reminder>\nSome execution history was omitted or shortened to fit the tool-history budget. This is not an instruction to repeat those calls. The original calls, outcomes, and earlier recovery references are available at ${archive.path} (sha256:${archive.sha256}). The dump is JSONL: line N+1 is message index N; an "archivedMessage" line names the file holding that message, so search its directory too. Read only missing evidence when needed.${earlierLine}\n</system-reminder>`,
+  };
 }
 
 export function buildExecutionTail(
@@ -157,24 +240,19 @@ export function buildExecutionTail(
   const kept = new Map();
   let tokens = 0;
   let archive = null;
-  let recovery = previousRecovery;
+  // One reminder at most: the newest, which replaces any earlier ones.
+  let recovery = previousRecovery.slice(-1);
   const ensureArchive = () => {
     if (archive) return;
-    archive = (preview ? previewToolResultArtifact : persistToolResultArtifactSync)({
-      sessionId,
-      toolCallId: 'compact-execution',
-      channel: 'compact-execution',
-      // Model-readable evidence: display ids stay out of it.
-      content: JSON.stringify({ version: 1, messages: transcript }, withoutMessageIdsReplacer, 2),
-    });
-    if (!archive) throw new Error('compact: execution history could not be archived; original context preserved');
-    recovery = [
-      {
-        role: 'user',
-        meta: { source: EXECUTION_RECOVERY_SOURCE, synthetic: true },
-        content: `<system-reminder>\nSome execution history was omitted or shortened to fit the tool-history budget. This is not an instruction to repeat those calls. The original calls, outcomes, and earlier recovery references are available at ${archive.path} (sha256:${archive.sha256}). Read only missing evidence when needed.\n</system-reminder>`,
-      },
-    ];
+    const persist = preview ? previewToolResultArtifact : persistToolResultArtifactSync;
+    // Model-readable evidence: display ids stay out of it.
+    const text = serializeExecutionArchive(transcript, (line) =>
+      persist({ sessionId, toolCallId: 'compact-execution', channel: 'compact-execution-message', content: line })
+    );
+    const dump = persist({ sessionId, toolCallId: 'compact-execution', channel: 'compact-execution', content: text });
+    if (!dump) throw new Error('compact: execution history could not be archived; original context preserved');
+    archive = dump;
+    recovery = [recoveryReminder(archive, previousRecovery)];
   };
   // An observation a later one of the same page or window replaced keeps only
   // its outcome and a reference to the archived original.
@@ -233,13 +311,22 @@ export function buildExecutionTail(
     throw new Error('compact: latest execution group cannot fit the tool-history budget; original context preserved');
   }
   const latest = latestActualUserInstructionIndex(messages);
+  const pendingIndexes = pendingTaskNotificationIndexes(messages);
+  const pending = new Set(pendingIndexes);
   const firstKept = kept.size ? Math.min(...kept.keys()) : messages.length;
   const latestKept = latest < 0 ? firstKept : latest;
-  const anchor = preserveConversation ? 0 : requestStart(messages, Math.min(firstKept, latestKept));
-  const tail = assembleTail(messages, kept, { anchor, firstKept, preserveConversation });
+  const anchor = preserveConversation
+    ? 0
+    : Math.min(requestStart(messages, Math.min(firstKept, latestKept)), ...pendingIndexes);
+  const tail = assembleTail(messages, kept, { anchor, firstKept, preserveConversation, pending });
   // With no execution to retain, keep the existing latest-request contract.
   if (!preserveConversation && !groups.length && !previousRecovery.length) {
-    return { messages: latest < 0 ? [] : [messages[latest]], toolTokens: 0, toolBudget: budget, retainedGroups: 0 };
+    return {
+      messages: messages.filter((_message, index) => index === latest || pending.has(index)),
+      toolTokens: 0,
+      toolBudget: budget,
+      retainedGroups: 0,
+    };
   }
   return {
     messages: [...recovery, ...tail],

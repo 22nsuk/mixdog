@@ -10,6 +10,7 @@ export type SettingsSection =
   | 'model'
   | 'websearch'
   | 'providers'
+  | 'model-management'
   | 'mcp'
   | 'plugins'
   | 'skills'
@@ -17,6 +18,7 @@ export type SettingsSection =
   | 'voice'
   | 'update'
   | 'connection'
+  | 'bots'
   | 'developer';
 
 // 'stats' is the usage dialog: /usage and the usage flyout both open it.
@@ -33,7 +35,7 @@ export interface DesktopSlashCommand {
   desktopDescription?: string;
   settingsRow?: SettingsSection;
   surface?: CommandSurface;
-  action?: 'clear' | 'compact' | 'goal' | 'resume' | 'remote' | 'project' | 'fast' | 'settings' | 'close-task';
+  action?: 'clear' | 'compact' | 'btw' | 'goal' | 'resume' | 'remote' | 'project' | 'fast' | 'settings' | 'close-task';
 }
 
 // Public fields mirror src/tui/app/slash-commands.mjs exactly. Desktop routing
@@ -59,6 +61,13 @@ export const SLASH_COMMANDS: ReadonlyArray<DesktopSlashCommand> = [
   },
   { name: 'compact', usage: '/compact', description: 'Compact older conversation context', action: 'compact' },
   {
+    name: 'btw',
+    usage: '/btw',
+    params: '<question>',
+    description: 'Ask a quick side question without interrupting the current work',
+    action: 'btw',
+  },
+  {
     name: 'goal',
     usage: '/goal',
     params: '[objective --time 1h --time-mode max|status|pause|resume|edit|stop]',
@@ -68,7 +77,7 @@ export const SLASH_COMMANDS: ReadonlyArray<DesktopSlashCommand> = [
   {
     name: 'autoclear',
     usage: '/autoclear',
-    params: '[on|off|duration]',
+    params: '[on|off|duration|unlimited]',
     description: 'Reduce cache-miss cost after long idle gaps',
     settingsRow: 'autoclear',
   },
@@ -205,9 +214,30 @@ export function resolveDesktopSlashCommand(rawName: string): DesktopSlashCommand
   return SLASH_COMMANDS.find((entry) => entry.name === token || entry.aliases?.includes(token));
 }
 
+/** The recognised `/name` token of a draft, by the executor's rule: the
+ *  trimmed draft begins with `/` and its first whitespace-delimited token
+ *  names a registry command or alias. Returns the token's range in `draft`. */
+export function recognisedSlashSpan(draft: string): { start: number; end: number } | null {
+  const match = /^\s*(\/(\S+))/.exec(draft);
+  if (!match || !resolveDesktopSlashCommand(match[2])) return null;
+  const start = match[0].length - match[1].length;
+  return { start, end: match[0].length };
+}
+
+/** The only commands a bot's conversation room runs: every other leading `/`
+ *  there is message text. They are the room's own context controls, matched by
+ *  their literal name (`/new` stays text). */
+const AGENT_ROOM_SLASH_COMMANDS: ReadonlySet<string> = new Set(['compact', 'clear']);
+
+export function recognisedAgentRoomSlash(draft: string): boolean {
+  const span = recognisedSlashSpan(draft);
+  return span !== null && AGENT_ROOM_SLASH_COMMANDS.has(draft.slice(span.start + 1, span.end).toLowerCase());
+}
+
 // Discovery stays small; the full registry still accepts commands typed directly.
 const COMPOSER_SLASH_COMMANDS: ReadonlyArray<DesktopSlashCommand> = [
   'new',
+  'btw',
   'resume',
   'model',
   'compact',
@@ -220,10 +250,20 @@ const COMPOSER_SLASH_COMMANDS: ReadonlyArray<DesktopSlashCommand> = [
   'fast',
 ].map((name) => ({ ...resolveDesktopSlashCommand(name)!, usage: `/${name}` }));
 
-export function desktopComposerSlashCommands(draft: string): ReadonlyArray<DesktopSlashCommand> {
+/** A group room's own command (agent-room.mjs parseRoomAsk): not a runtime
+ *  command, so it lives outside the shared registry and lists only in rooms. */
+export const ROOM_ASK_COMMAND: DesktopSlashCommand = {
+  name: 'ask',
+  usage: '/ask',
+  params: '<agent> <message>',
+  description: 'Ask one member of this room; the others skip their turn',
+};
+
+export function desktopComposerSlashCommands(draft: string, room = false): ReadonlyArray<DesktopSlashCommand> {
   if (!/^\/[a-z]*$/i.test(draft)) return [];
   const query = draft.toLowerCase();
-  return COMPOSER_SLASH_COMMANDS.filter((command) => command.usage.startsWith(query));
+  const commands = room ? [ROOM_ASK_COMMAND, ...COMPOSER_SLASH_COMMANDS] : COMPOSER_SLASH_COMMANDS;
+  return commands.filter((command) => command.usage.startsWith(query));
 }
 
 export function desktopSlashCommandDescription(command: DesktopSlashCommand): string {

@@ -242,6 +242,12 @@ jobs:
         with:
           path: apps/desktop/.cache/computer-native
           key: ${{ steps.computer-native.outputs.cache-primary-key }}
+      # Runs on a restored cache as well as a fresh preparation: it compares
+      # the versions inside runtime.asar, its unpacked sidecar and the shipped
+      # node-pty with the lockfiles, so a stale cache or install cannot ship.
+      - name: Verify packaged runtime dependency versions match the lockfiles
+        shell: bash
+        run: node scripts/verify-runtime-dependency-versions.mjs
       - name: Download common desktop output
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -273,10 +279,20 @@ jobs:
             $signArgs = @(
               '-c.win.azureSignOptions.endpoint=https://krc.codesigning.azure.net/',
               '-c.win.azureSignOptions.codeSigningAccountName=tribgamessigning',
-              '-c.win.azureSignOptions.certificateProfileName=mixdog-public',
+              '-c.win.azureSignOptions.certificateProfileName=tribgames-public',
               "-c.win.azureSignOptions.publisherName=$env:AZURE_PUBLISHER_NAME"
             )
             $signed = 'true'
+            # Install the signing module once, up front: electron-builder's own
+            # install runs per file, in parallel and non-interactively, and left
+            # Invoke-TrustedSigning missing for every file.
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+            Install-Module -Name TrustedSigning -Scope CurrentUser -Force -Repository PSGallery
+            Import-Module TrustedSigning
+            if (-not (Get-Command Invoke-TrustedSigning -ErrorAction SilentlyContinue)) {
+              Write-Output '::error title=Windows signing unavailable::The TrustedSigning module did not install.'
+              exit 1
+            }
           } elseif ($present -eq 0) {
             Write-Output '::warning title=Unsigned Windows installer::Artifact Signing is not configured; packaging an unsigned installer.'
           } else {

@@ -12,7 +12,6 @@ import React, {
   type ReactNode,
   type SetStateAction,
 } from 'react';
-import { createPortal } from 'react-dom';
 import type {
   DesktopAbortOptions,
   DesktopModelSelection,
@@ -27,32 +26,50 @@ import { touchPrimaryPointer } from './surface-input-focus';
 // @ts-expect-error The shared TUI module is plain ESM and has no declaration file.
 import { shouldFoldPastedText } from '../../../../src/tui/paste-text-policy.mjs';
 
-// Project-context pill, attachment budget, prompt history and the queued
-// follow-up list live in composer-support.tsx.
-import { ATTACHMENT_ACCEPT, COMPOSER_PLACEHOLDERS, QueueList, pastedTextFields } from './composer-support';
-import { ComposerPastedTextDialog } from './ComposerPastedTextDialog';
-import { ComposerQueueTrayContext } from './composer-island-state';
+// Project-context pill, attachment budget and prompt history live in
+// composer-support.tsx.
 import {
+  ATTACHMENT_ACCEPT,
+  COMPOSER_PLACEHOLDERS,
+  pastedTextFields,
+  type ComposerAttachment,
+} from './composer-support';
+import { ComposerPastedTextDialog } from './ComposerPastedTextDialog';
+import type { PendingPromptItem } from './conversation-prompt-items';
+import type { RouteSessionChoice } from './route-editor-panes';
+import { SteerContext } from './steer-actions';
+import {
+  composerAttachmentsCarryOver,
   composerDraftAfterScopeChange,
   composerScopeOpensFreshDraft,
+  noteComposerContent,
+  persistComposerDrafts,
+  stashComposerAttachments,
   stashComposerDraft,
+  stashComposerTags,
   stashedComposerDraft,
+  takeDraftPromotion,
+  takeStashedComposerAttachments,
+  takeStashedComposerTags,
 } from './composer-draft';
 import { useComposerDictation } from './use-composer-dictation';
 import { useComposerAttachments } from './use-composer-attachments';
 import { useComposerCapability } from './use-composer-capability';
 import { useComposerExternalDraft } from './use-composer-external-draft';
-import { useComposerQueue } from './use-composer-queue';
 import { useComposerPromptRestore } from './use-composer-prompt-restore';
 import { useComposerSubmission } from './use-composer-submission';
 import { useComposerKeyboard } from './use-composer-keyboard';
 import { useComposerFocus } from './use-composer-focus';
+import { restoreDraftHandoff } from './composer-attachment-restore';
 import { useComposerHistory } from './use-composer-history';
 import { useComposerIme } from './use-composer-ime';
 import { useComposerMessageSelector } from './use-composer-message-selector';
 import { useComposerNotice } from './use-composer-notice';
 import { useComposerPalettes } from './use-composer-palettes';
 import { createSlashExecutor } from './composer-slash-executor';
+import { attachmentContextNotice } from './composer-attachments';
+import { backfillAgentChatRoute } from './agent-chat-route';
+import { BtwCard, useBtwCard } from './BtwCard';
 import { readCachedModelCatalog } from './model-catalog-cache';
 import { modelOffersUltrafast } from './model-route-utils';
 import {
@@ -65,11 +82,31 @@ import {
   composerPlaceholder,
 } from './composer-surfaces';
 import { disabledMentionedSkills, useComposerSkillHighlight, useSkillCatalog } from './composer-skill-mentions';
+import { isInMarkdownCode } from '../../../../src/runtime/shared/skill-mentions.mjs';
 import { ComposerBanners } from './ComposerBanners';
-import { ComposerFooter } from './ComposerFooter';
+import {
+  type ComposerModelControlProps,
+  ComposerFooter,
+  ComposerModelControls,
+  ComposerModelLine,
+} from './ComposerFooter';
+import { useMobileRemoteSurface } from './mobile-surface';
 import { CapabilityIcon } from './CapabilityIcon';
 import { shouldRemoveSelectedSkill, skillTitle, useComposerSkill } from './composer-skill';
 import { VisualizeFeedbackCards } from './VisualizeFeedbackCards';
+import {
+  RoomAskChip,
+  RoomAskPalette,
+  RoomMentionChip,
+  contentAsking,
+  draftAskingMore,
+  roomAskCandidates,
+  roomAskTargets,
+  roomTagCandidates,
+  roomTagTargets,
+  roomTaggedMembers,
+  useComposerRoomMembers,
+} from './composer-room-ask';
 import { useVisualizeFeedback, visualizeFeedbackPending } from './visualize-feedback-store';
 
 // Perf diagnostics (MIXDOG_DESKTOP_PERF=1): keystroke→paint latency, logged
@@ -98,7 +135,10 @@ function pastedFiles(clipboard: DataTransfer): File[] {
 type ComposerAttachmentsApi = ReturnType<typeof useComposerAttachments>;
 
 /** Clipboard intake: pasted files attach, and a long text paste folds into a
- *  single chip instead of flooding the draft. */
+ *  single chip instead of flooding the draft. Rich copies (Word, Excel,
+ *  browsers) carry a rendered image beside their text: any plain text means
+ *  the user copied text, so the files are attached only when there is none
+ *  (screenshots, files copied in Explorer). */
 function handleComposerPaste(
   event: React.ClipboardEvent<HTMLTextAreaElement>,
   {
@@ -111,13 +151,13 @@ function handleComposerPaste(
     insertAttachment: ComposerAttachmentsApi['insertAttachment'];
   }
 ) {
-  const files = pastedFiles(event.clipboardData);
+  const text = event.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n');
+  const files = text.trim() ? [] : pastedFiles(event.clipboardData);
   if (files.length) {
     event.preventDefault();
     void attachFiles(files);
     return;
   }
-  const text = event.clipboardData.getData('text/plain').replace(/\r\n?/g, '\n');
   if (!shouldFoldPastedText(text)) return;
   const id = attachmentSequence.current++;
   const inserted = insertAttachment({
@@ -142,7 +182,9 @@ function switchComposerIdentity({
   composingRef,
   suppressImeLineBreakRef,
   historyNavigation,
+  attachmentsRef,
   resetAttachments,
+  replaceAttachments,
   palettes,
   selector,
   setDraft,
@@ -157,7 +199,9 @@ function switchComposerIdentity({
   composingRef: { current: boolean };
   suppressImeLineBreakRef: { current: boolean };
   historyNavigation: { current: { index: number; seed: string } };
+  attachmentsRef: { current: ComposerAttachment[] };
   resetAttachments(): void;
+  replaceAttachments(attachments: ComposerAttachment[]): void;
   palettes: { reset(): void; invalidateSearch(): void };
   selector: { reset(): void };
   setDraft: Dispatch<SetStateAction<string>>;
@@ -172,10 +216,6 @@ function switchComposerIdentity({
     previousScope,
     document.activeElement === leavingElement && leavingElement ? leavingElement.value : draftRef.current
   );
-  resetAttachments();
-  composingRef.current = false;
-  suppressImeLineBreakRef.current = false;
-  palettes.invalidateSearch();
   // Scope settles ASYNC after a session switch/promotion; when the user is
   // ALREADY typing in the composer, the in-flight text carries over instead
   // of being wiped (user bug: draft vanished + scroll jumped mid-sentence).
@@ -184,6 +224,23 @@ function switchComposerIdentity({
   // A fresh New Task pane is the exception: it ALWAYS opens clean (user:
   // 새작업 pulled the previous pane's text and attachments along).
   const freshDraft = composerScopeOpensFreshDraft(identityScope);
+  // Chips attached there but not yet sent are parked with it, and the
+  // incoming tab gets back the chips it parked. A New Task promoted to the
+  // session ITS submission minted keeps them instead: the draft scope is never
+  // revisited, so a file attached while its first send was in flight vanished
+  // with it.
+  const parkedAttachments = takeStashedComposerAttachments(identityScope);
+  const promotingDraft = takeDraftPromotion(previousScope, identityScope);
+  if (composerAttachmentsCarryOver({ freshDraft, promotingDraft, parkedCount: parkedAttachments.length })) {
+    stashComposerAttachments(previousScope, []);
+  } else {
+    stashComposerAttachments(previousScope, attachmentsRef.current);
+    resetAttachments();
+    replaceAttachments(parkedAttachments);
+  }
+  composingRef.current = false;
+  suppressImeLineBreakRef.current = false;
+  palettes.invalidateSearch();
   setDraft((current) => {
     // A remote snapshot can change scope in the same turn as a native input
     // event. The DOM already owns the newest character while React state may
@@ -240,13 +297,23 @@ export type ComposerProps = {
   draftMode?: boolean;
   onDraftModelSelection?: (selection: DesktopModelSelection) => void;
   onRoutePreferenceApplied?: (selection: DesktopModelSelection, options?: { modelChoice?: boolean }) => void;
+  /** A conversation's workflow / delegation rows in the model menu. */
+  sessionChoices?: RouteSessionChoice[];
   /** Session readout seated right after the model trigger — the context
    *  gauge (user: 컨텍스트는 모델 선택기 옆). */
   modelAside?: ReactNode;
-  queued?: unknown[];
-  hiddenQueueIds?: Array<string | number>;
+  /** The line under the card's left end: the last turn's speed and cache hit. */
+  usageReadout?: ReactNode;
+  /** Before the first message: the Project / Workflow / Delegation / Branch
+   *  pickers. On a desktop they take the line under the card; a phone shows
+   *  them in a line of their own above it. */
+  contextBar?: ReactNode;
+  /** Messages sent while the turn runs that the model has not read yet. */
+  steerItems?: PendingPromptItem[];
   pendingSubmissionIds?: Array<string | number>;
   onQueuedRestored?: (ids: string[]) => void;
+  /** A slash command sent mid-turn that the session holds for the turn's end. */
+  onSlashHeld?: (text: string) => void;
   /** A prompt another device cancelled, handed back to the device that sent it. */
   promptRestore?: { id: string; ids: string[]; text: string; device: string; at: number } | null;
   /** Rewindable user prompts (oldest → newest) for the Esc-Esc selector. */
@@ -270,8 +337,12 @@ export type ComposerProps = {
   /** This pane is the focused, visible one. A payload shared into the app from
    *  outside (share sheet) may only land in a composer the user can see. */
   paneActive?: boolean;
-  /** Replaces the rotating placeholder (a pending question: sending closes it). */
+  /** Replaces the rotating placeholder (a pending question: sending answers it). */
   placeholderOverride?: string;
+  /** Agent mode: a one-line messenger bar with the agent's route shown
+   *  read-only under it; `/` and `$` are plain text, and `@` tags the room
+   *  member who answers. */
+  agentMode?: boolean;
 };
 
 export const Composer = memo(function Composer(props: ComposerProps) {
@@ -300,11 +371,14 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     draftMode,
     onDraftModelSelection,
     onRoutePreferenceApplied,
+    sessionChoices,
     modelAside,
-    queued,
-    hiddenQueueIds,
+    usageReadout,
+    contextBar,
+    steerItems,
     pendingSubmissionIds,
     onQueuedRestored,
+    onSlashHeld,
     promptRestore,
     userMessages,
     submit,
@@ -315,8 +389,10 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     dropTargetRef,
     paneActive = true,
     placeholderOverride,
+    agentMode = false,
   } = props;
-  const [draft, setDraft] = useState('');
+  // A page reloaded or relaunched while a prompt was half-typed opens with it.
+  const [draft, setDraft] = useState(() => stashedComposerDraft(identityScope));
   const [submitting, setSubmitting] = useState(false);
   const [submissionRecoveryVersion, setSubmissionRecoveryVersion] = useState(0);
   const submittingRef = useRef(false);
@@ -334,6 +410,8 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   }, []);
   const [composerFocused, setComposerFocused] = useState(false);
   const activeIdentityScope = useRef(identityScope);
+  const recoveryScopeRef = useRef(recoveryScope);
+  recoveryScopeRef.current = recoveryScope;
   const skillSelection = useComposerSkill(identityScope);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const paletteAnchor = useRef<HTMLFormElement>(null);
@@ -364,6 +442,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   const {
     attachments,
     attachmentsRef,
+    pendingLoads,
     attachmentError,
     setAttachmentError,
     draggingFiles,
@@ -398,6 +477,15 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     showComposerNotice(attachmentError, 'error');
     setAttachmentError('');
   }, [attachmentError, setAttachmentError, showComposerNotice]);
+  // Large PDF sets get one size notice before sending, again only when the
+  // estimate changes.
+  const attachmentNotice = attachmentContextNotice(attachments);
+  const shownAttachmentNotice = useRef('');
+  useEffect(() => {
+    if (attachmentNotice === shownAttachmentNotice.current) return;
+    shownAttachmentNotice.current = attachmentNotice;
+    if (attachmentNotice) showComposerNotice(attachmentNotice, 'info');
+  }, [attachmentNotice, showComposerNotice]);
   useComposerExternalDraft({
     draftRef,
     setDraft,
@@ -411,31 +499,58 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     applySnapshot,
     sessionId,
   });
-  const queueTray = useContext(ComposerQueueTrayContext);
-  const queue = useComposerQueue({
-    queued,
-    hiddenQueueIds,
-    pendingSubmissionIds,
-    draftMode,
-    turnBusy,
-    draftRef,
-    setDraft,
-    textarea,
-    composingRef,
-    historyNavigation: history.navigation,
-    invokeCapability,
-    abort,
+  // The message selector's rewind holds the editor while it runs; a scope
+  // switch releases it.
+  const [restoring, setRestoring] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: historyScope is the reset trigger; the body does not read it
+  useEffect(() => setRestoring(false), [historyScope]);
+  // The prompt this pane sent last that has not settled: Esc interrupts it
+  // before the busy snapshot paints.
+  const pendingSubmissionId =
+    !draftMode && Array.isArray(pendingSubmissionIds)
+      ? String(pendingSubmissionIds[pendingSubmissionIds.length - 1] || '').trim()
+      : '';
+  // A message taken back from the transcript (✕ on an unread bubble, an
+  // answer that did not go out) returns to this editor.
+  const steer = useContext(SteerContext);
+  useEffect(() => {
+    if (!steer) return undefined;
+    const handoff: typeof steer.draft.current = {
+      scope: () => activeIdentityScope.current,
+      recoveryScope: () => recoveryScopeRef.current,
+      restore(value, { ifEmpty = false, replace = false, notice } = {}) {
+        if (
+          !restoreDraftHandoff(
+            { draftRef, attachmentsRef, replaceAttachments, restoredAttachments, mergeRestoredAttachments, setDraft },
+            value,
+            { ifEmpty, replace }
+          )
+        )
+          return false;
+        history.navigation.current = { index: -1, seed: '' };
+        if (notice) showComposerNotice(notice);
+        window.setTimeout(() => textarea.current?.focus(), 0);
+        return true;
+      },
+    };
+    steer.draft.current = handoff;
+    return () => {
+      if (steer.draft.current === handoff) steer.draft.current = null;
+    };
+  }, [
+    steer,
+    attachmentsRef,
+    replaceAttachments,
     restoredAttachments,
     mergeRestoredAttachments,
-    showNotice: showComposerNotice,
-    onQueuedRestored,
-    scope: historyScope,
-  });
+    showComposerNotice,
+    history.navigation,
+  ]);
   useComposerPromptRestore({ promptRestore, setDraft, draftRef, textarea, onQueuedRestored });
   const selector = useComposerMessageSelector({
     userMessages,
-    restoring: queue.restoring,
-    setRestoring: queue.setRestoring,
+    restoring,
+    setRestoring,
     invokeCapability,
     setDraft,
     textarea,
@@ -444,6 +559,16 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   });
   const skillCatalog = useSkillCatalog(sessionId, projectScope);
   const isEnabledSkill = useCallback((name: string) => skillCatalog.enabled.has(name), [skillCatalog]);
+  // A group room's members: /ask and the + menu address one of them.
+  const roomMembers = useComposerRoomMembers(sessionId);
+  const askTargets = roomAskTargets(draft, roomMembers);
+  const askCandidates = composerFocused && paneActive && !agentMode ? roomAskCandidates(draft, roomMembers) : [];
+  const askMember = (agentId: string) => {
+    const next = draftAskingMore(draftRef.current, agentId);
+    draftRef.current = next;
+    setDraft(next);
+    queueMicrotask(() => textarea.current?.focus());
+  };
   const palettes = useComposerPalettes({
     draft,
     projectScope,
@@ -452,13 +577,84 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     composerFocused,
     selectorOpen: selector.open,
     skills: skillCatalog.selectable,
+    room: Boolean(roomMembers),
+    plain: agentMode,
   });
   const { setCaretOffset, slash, mention, skillMention } = palettes;
+  // Agent mode's `@` in a room: pick members, who then answer the message
+  // once each in pick order (sent on the room's `/ask` path). A 1:1 thread's
+  // `@` opens nothing yet.
+  const [tagged, setTagged] = useState<string[]>(() => takeStashedComposerTags(identityScope));
+  const taggedRef = useRef(tagged);
+  taggedRef.current = tagged;
+  const taggedScope = useRef(identityScope);
+  const [tagDismissed, setTagDismissed] = useState('');
+  // The highlighted candidate; ↑/↓ move it, Enter/Tab pick it.
+  const [tagIndex, setTagIndex] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new `@` query starts from the first candidate
+  useEffect(() => setTagIndex(0), [mention.signature]);
+  // Tags picked in the tab being left are parked with its text; the incoming
+  // tab gets back the tags it parked.
+  useEffect(() => {
+    if (taggedScope.current === identityScope) return;
+    stashComposerTags(taggedScope.current, taggedRef.current);
+    taggedScope.current = identityScope;
+    setTagged(takeStashedComposerTags(identityScope));
+  }, [identityScope]);
+  // A composer that goes away inside the app run (pane closed or rebuilt)
+  // parks what it holds exactly as a tab switch does, and a fresh one opens
+  // with what its identity parked.
+  useLayoutEffect(() => {
+    const restored = takeStashedComposerAttachments(activeIdentityScope.current);
+    if (restored.length) replaceAttachments(restored);
+    return () => {
+      const scope = activeIdentityScope.current;
+      const element = textarea.current;
+      stashComposerDraft(scope, document.activeElement === element && element ? element.value : draftRef.current);
+      stashComposerAttachments(scope, attachmentsRef.current);
+      stashComposerTags(scope, taggedRef.current);
+    };
+  }, [attachmentsRef, replaceAttachments]);
+  const taggedMembers = roomTaggedMembers(tagged, roomMembers);
+  // An `@` inside Markdown code (a fence or inline span) is text, not a tag.
+  const tagMatch =
+    agentMode && roomMembers && mention.match && !isInMarkdownCode(draft, mention.match.start) ? mention.match : null;
+  const tagCandidates =
+    tagMatch && composerFocused && paneActive && tagDismissed !== mention.signature
+      ? roomTagCandidates(tagMatch.query, roomMembers).filter((member) => !tagged.includes(member.id))
+      : [];
+  const tagMember = (agentId: string) => {
+    const match = tagMatch;
+    if (!match) return;
+    const current = draftRef.current;
+    const next = `${current.slice(0, match.start)}${current.slice(match.end)}`.replace(/^\s+/, '');
+    draftRef.current = next;
+    setDraft(next);
+    setTagged((current) => (current.includes(agentId) ? current : [...current, agentId]));
+    queueMicrotask(() => {
+      const field = textarea.current;
+      if (!field) return;
+      field.focus();
+      const caret = Math.min(match.start, next.length);
+      field.setSelectionRange(caret, caret);
+      setCaretOffset(caret);
+    });
+  };
+  const submitTagged: typeof submit = taggedMembers.length
+    ? async (content, options) => {
+        const accepted = await submit(
+          contentAsking(content, roomTagTargets(taggedMembers, roomMembers ?? [])),
+          options
+        );
+        if (accepted === true) setTagged([]);
+        return accepted;
+      }
+    : submit;
   const skillHighlight = useComposerSkillHighlight({
     textarea,
     text: draft,
     isSkill: isEnabledSkill,
-    disabled: transitioning,
+    disabled: transitioning || agentMode,
   });
   const offSkills = disabledMentionedSkills(draft, skillCatalog);
   useComposerIme({ textarea, composingRef, suppressImeLineBreakRef, draftRef, setDraft, setCaretOffset });
@@ -475,7 +671,9 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       composingRef,
       suppressImeLineBreakRef,
       historyNavigation: history.navigation,
+      attachmentsRef,
       resetAttachments,
+      replaceAttachments,
       palettes,
       selector,
       setDraft,
@@ -488,8 +686,6 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     placeholderOverride ||
     composerPlaceholder({
       hasConversation,
-      turnBusy,
-      commandBusy,
       fallback: COMPOSER_PLACEHOLDERS[0],
     });
   // Autosize is CSS-native now (field-sizing: content). The old layout-effect
@@ -502,6 +698,31 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     setDraggingFiles(false);
   }, [transitioning]);
   useComposerFocus({ textarea, transitioning, focusRequest, paneActive });
+  // Lets a message taken back tell an empty composer from one in use.
+  const holdsContent = Boolean(draft.trim()) || attachments.length > 0;
+  useEffect(() => {
+    noteComposerContent(identityScope, holdsContent);
+    return () => noteComposerContent(identityScope, false);
+  }, [identityScope, holdsContent]);
+  // Leaving the screen (home button, app switch) is the last moment the page
+  // is sure to run: the OS may kill it or a deploy may reload it afterwards.
+  useEffect(() => {
+    const save = (event: Event): void => {
+      if (event.type === 'visibilitychange' && document.visibilityState !== 'hidden') return;
+      const element = textarea.current;
+      stashComposerDraft(
+        identityScope,
+        document.activeElement === element && element ? element.value : draftRef.current
+      );
+      persistComposerDrafts();
+    };
+    document.addEventListener('visibilitychange', save);
+    window.addEventListener('pagehide', save);
+    return () => {
+      document.removeEventListener('visibilitychange', save);
+      window.removeEventListener('pagehide', save);
+    };
+  }, [identityScope]);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
   const [addMenuRequest, setAddMenuRequest] = useState(0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: identityScope and paneActive are reset triggers; the effect body does not read them
@@ -510,9 +731,11 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: identityScope and paneActive are reset triggers; the effect body does not read them
   useEffect(() => setEditingPasteId(null), [identityScope, paneActive]);
   const editingPaste = attachments.find((attachment) => attachment.id === editingPasteId);
+  const btw = useBtwCard(sessionId, paneActive, selector.open || slash.open || mention.open || skillMention.open);
   const executeSlash = createSlashExecutor({
     draftMode,
     sessionId,
+    onBtw: btw.ask,
     turnBusy,
     provider,
     model,
@@ -537,24 +760,36 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     openGoalDialog: () => setGoalDialogOpen(true),
     openSkillMenu: () => setAddMenuRequest((request) => request + 1),
     onNewTask: props.onNewTask,
-    onClearToNewTask: props.onClearToNewTask,
+    // A bot room's thread is persistent: /clear empties it in place instead of
+    // swapping the tab for a New Task.
+    onClearToNewTask: agentMode ? undefined : props.onClearToNewTask,
     onResumeSession: props.onResumeSession,
     onOpenSessions: props.onOpenSessions,
     onOpenProjects: props.onOpenProjects,
     onOpenSettings,
     onOpenCommandSurface: props.onOpenCommandSurface,
     onInherit: props.onInherit,
+    onSlashHeld,
   });
+
+  // A bot chat that already runs on a model gives its still-empty bot route
+  // that model (never overwriting a configured route).
+  useEffect(() => {
+    if (!agentMode || !sessionId || !provider || !model) return;
+    void backfillAgentChatRoute(sessionId, { provider, model, ...(effort ? { effort } : {}) }).catch(() => {});
+  }, [agentMode, sessionId, provider, model, effort]);
 
   const { send, stop } = useComposerSubmission({
     turnBusy,
     commandBusy,
     draftMode,
-    queued,
+    queued: steerItems,
     recoveryScope,
+    identityScope,
     textarea,
     draftRef,
     attachmentsRef,
+    pendingLoads,
     transitioningRef,
     composingRef,
     submittingRef,
@@ -571,12 +806,14 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     restoredAttachments,
     executeSlash,
     rememberPrompt: history.rememberPrompt,
-    submit,
+    submit: submitTagged,
     abort,
     onQueuedRestored,
     selectedSkill: skillSelection.name,
     onSkillSubmitted: skillSelection.submitted,
     sessionId,
+    plainText: agentMode,
+    modelMissing: !(provider && model),
   });
   // Pins and picks queued from the session's visualize panel make a message
   // sendable on their own.
@@ -604,16 +841,10 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       attachmentsRef,
       replaceAttachments,
     },
-    queue: {
-      pendingSubmissionId: queue.pendingSubmissionId,
-      hasRestorableMessages: queue.hasRestorableQueuedMessages,
-      restore: (source) => {
-        void queue.restoreQueue('', source);
-      },
-    },
     runtime: {
       turnBusy,
       draftMode,
+      pendingSubmissionId,
       attachments,
       escapeClearAt: escapeClearAtRef,
       showNotice: showComposerNotice,
@@ -629,7 +860,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     },
   });
   // A dictation in flight owns the send disc even during a running turn, so
-  // the take is queued/steered instead of the press interrupting the turn.
+  // the take is sent into the turn instead of the press interrupting it.
   const stopOnly =
     dictation.dictationState === 'idle' &&
     !feedbackPending &&
@@ -681,6 +912,35 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       skillSelection.select('');
       return;
     }
+    const composing = composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229;
+    if (
+      tagCandidates.length > 0 &&
+      !composing &&
+      (event.key === 'Enter' ||
+        event.key === 'Tab' ||
+        event.key === 'Escape' ||
+        event.key === 'ArrowUp' ||
+        event.key === 'ArrowDown')
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      const count = tagCandidates.length;
+      if (event.key === 'Escape') setTagDismissed(mention.signature);
+      else if (event.key === 'ArrowDown') setTagIndex((index) => (index + 1) % count);
+      else if (event.key === 'ArrowUp') setTagIndex((index) => (index - 1 + count) % count);
+      else tagMember(tagCandidates[Math.min(tagIndex, count - 1)].id);
+      return;
+    }
+    if (
+      tagged.length > 0 &&
+      event.key === 'Backspace' &&
+      event.currentTarget.selectionStart === 0 &&
+      event.currentTarget.selectionEnd === 0
+    ) {
+      event.preventDefault();
+      setTagged((current) => current.slice(0, -1));
+      return;
+    }
     onKeyDown(event);
   };
   const onTextareaPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -692,26 +952,45 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     if (!target.closest('button, input, textarea, [role="listbox"]')) textarea.current?.focus();
   };
   const goalDisabled = turnBusy || commandBusy || submitting;
+  // A phone's coding composer is the two-row card: the typing band, then the
+  // +, the model with its gauge, the mic and send; a bot's 1:1 chat too.
+  // A group room keeps its one-line bar.
+  const phoneCard = useMobileRemoteSurface() && !roomMembers;
+  const modelControlProps: ComposerModelControlProps = {
+    modelAside,
+    agentMode,
+    transitioning,
+    commandBusy,
+    paneActive,
+    provider,
+    model,
+    effort,
+    fast,
+    fastCapable,
+    autoEffort,
+    modelParameters,
+    contextPercent,
+    contextTokens,
+    sessionId,
+    invokeResult,
+    applySnapshot,
+    onOpenSettings,
+    onDraftModelSelection,
+    onRoutePreferenceApplied,
+    sessionChoices,
+  };
   return (
     <>
-      {/* The queue's actions need this composer's draft, but the tray itself
-          belongs to the dock: attached to the input's top edge, under the
-          island. */}
-      {queueTray &&
-        createPortal(
-          <QueueList
-            queued={queue.visibleQueued}
-            restoring={queue.restoring}
-            onEdit={(id) => void queue.restoreQueue(id, 'queue-row')}
-            onSteer={(id) => void queue.steerQueuedNow(id)}
-            onRemove={(id) => void queue.discardQueued(id)}
-          />,
-          queueTray
-        )}
       <ComposerBanners draggingFiles={draggingFiles} transitioning={transitioning} dropTarget={dropTargetRef.current} />
+      {btw.card && <BtwCard card={btw.card} onClose={btw.close} onRetry={btw.retry} />}
+      {/* The phone's pickers line keeps its height after the first message,
+          so the card below it never moves when the chat starts. */}
+      {phoneCard && !agentMode && <div className="composer-context-line">{contextBar}</div>}
       <form
         ref={paletteAnchor}
         className="composer"
+        data-chat-mode={agentMode ? 'agent' : undefined}
+        data-phone-card={phoneCard ? '' : undefined}
         onSubmit={onSubmit}
         data-composer-palette-open={
           selector.open || slash.open || mention.open || skillMention.open ? 'true' : undefined
@@ -736,7 +1015,24 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             commands={slash.commands}
             index={slash.index}
             setIndex={slash.setIndex}
-            onSelect={(usage) => void send(usage)}
+            onSelect={(usage) => {
+              // /btw needs a question (and /ask a member): complete the command instead of sending it bare.
+              if (usage !== '/btw' && usage !== '/ask') return void send(usage);
+              draftRef.current = `${usage} `;
+              setDraft(`${usage} `);
+              textarea.current?.focus();
+            }}
+          />
+        )}
+        {askCandidates.length > 0 && !slash.open && (
+          <RoomAskPalette anchor={paletteAnchor} members={askCandidates} onSelect={askMember} />
+        )}
+        {tagCandidates.length > 0 && (
+          <RoomAskPalette
+            anchor={paletteAnchor}
+            members={tagCandidates}
+            selected={Math.min(tagIndex, tagCandidates.length - 1)}
+            onSelect={tagMember}
           />
         )}
         {mention.open && (
@@ -791,6 +1087,14 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           />
         )}
         <div className="composer-input-row">
+          {askTargets.length > 0 && <RoomAskChip members={askTargets} />}
+          {taggedMembers.map((member) => (
+            <RoomMentionChip
+              key={member.id}
+              member={member}
+              onRemove={() => setTagged((current) => current.filter((id) => id !== member.id))}
+            />
+          ))}
           {skillSelection.name && (
             <span className="composer-selected-skill">
               <button type="button" onClick={() => textarea.current?.focus()} title={skillSelection.name}>
@@ -836,11 +1140,16 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           goalDialogOpen={goalDialogOpen}
           setGoalDialogOpen={setGoalDialogOpen}
           addMenuRequest={addMenuRequest}
+          roomMembers={roomMembers}
+          onAskMember={
+            agentMode
+              ? (agentId) => setTagged((current) => (current.includes(agentId) ? current : [...current, agentId]))
+              : askMember
+          }
+          agentMode={agentMode}
           goalDisabled={goalDisabled}
           executeSlash={executeSlash}
           transitioning={transitioning}
-          commandBusy={commandBusy}
-          turnBusy={turnBusy}
           paneActive={paneActive}
           hasConversation={hasConversation}
           submitting={submitting}
@@ -853,25 +1162,18 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           attachments={attachments}
           feedbackPending={feedbackPending}
           onStop={() => void stop()}
-          modelAside={modelAside}
-          provider={provider}
-          model={model}
-          effort={effort}
-          fast={fast}
-          fastCapable={fastCapable}
-          autoEffort={autoEffort}
-          modelParameters={modelParameters}
-          contextPercent={contextPercent}
-          contextTokens={contextTokens}
           sessionId={sessionId}
-          invokeResult={invokeResult}
-          applySnapshot={applySnapshot}
           onOpenSettings={onOpenSettings}
-          onDraftModelSelection={onDraftModelSelection}
-          onRoutePreferenceApplied={onRoutePreferenceApplied}
+          modelControls={phoneCard ? <ComposerModelControls {...modelControlProps} /> : null}
         />
       </form>
-      {offSkills.length > 0 && (
+      <ComposerModelLine
+        {...modelControlProps}
+        usageReadout={phoneCard ? usageReadout : (contextBar ?? usageReadout)}
+        room={Boolean(roomMembers)}
+        controls={!phoneCard}
+      />
+      {offSkills.length > 0 && !agentMode && (
         <p className="composer-skill-status" role="status">
           {t('{{name}} skill is off, so it is sent as plain text. Turn it on in Settings › Skills.', {
             name: offSkills.join(', '),

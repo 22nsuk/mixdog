@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   autoEffortBase,
   autoEffortLadder,
+  clampAutoEffortBase,
   judgedStep,
   normalizeAutoEffortMode,
   resolveAutoEffort,
@@ -42,9 +43,9 @@ test('judge levels map to steps: easy -1, normal 0, hard +1, very hard +2', () =
     [-1, 0, 1, 2]
   );
   assert.deepEqual(judgedStep([0.1, 0.2, 0.6, 0.1]), { step: 1, level: 2, confidence: 0.6 });
-  // "Very hard" without a firm judge stays one step lower (high, not xhigh).
-  assert.deepEqual(judgedStep([0, 0.003, 0.4, 0.597]), { step: 1, level: 2, confidence: 0.597 });
-  assert.equal(judgedStep([0, 0.002, 0.169, 0.829]).step, 2);
+  // "Very hard" wins over "hard" once it outweighs "normal" and "hard" together.
+  assert.deepEqual(judgedStep([0, 0.003, 0.4, 0.597]), { step: 2, level: 3, confidence: 0.597 });
+  assert.deepEqual(judgedStep([0, 0.1, 0.45, 0.45]), { step: 1, level: 2, confidence: 0.45 });
 });
 
 test('a split judge avoids an opposite call instead of following the top level', () => {
@@ -68,10 +69,26 @@ test('an unsure judge keeps the default', () => {
   assert.equal(judgedStep([1, 2]).step, 0);
 });
 
-test('auto starts from medium whatever the chosen effort, except an explicit max/ultra', () => {
-  for (const chosen of ['low', 'medium', 'high', 'xhigh', '']) assert.equal(autoEffortBase(chosen), 'medium');
-  assert.equal(autoEffortBase('max'), 'max');
-  assert.equal(autoEffortBase('ULTRA'), 'ultra');
+test('auto base is the setting: low/medium/high, default medium for anything else', () => {
+  for (const level of ['low', 'medium', 'high']) assert.equal(autoEffortBase(level), level);
+  assert.equal(autoEffortBase('HIGH'), 'high');
+  for (const other of [undefined, '', 'xhigh', 'max', 'ultra', 'bogus']) assert.equal(autoEffortBase(other), 'medium');
+});
+
+test('the base is clamped to the model ladder, nearest level (lower on a tie)', () => {
+  const clamp = (base, options) => clampAutoEffortBase({ base, options });
+  assert.equal(clamp('low', ANTHROPIC), 'low');
+  assert.equal(clamp('low', ['medium', 'high']), 'medium');
+  assert.equal(clamp('high', ['low', 'medium']), 'medium');
+  assert.equal(clamp('medium', ['low', 'high']), 'low');
+  assert.equal(clamp('medium', ['max']), null);
+});
+
+test('a high base moves -1..+2 and clamps at the top of the ladder', () => {
+  const r = (level) => resolveAutoEffort({ base: 'high', options: ANTHROPIC, probs: at(level) })?.effort;
+  assert.equal(r(0), 'medium');
+  assert.equal(r(1), 'high');
+  assert.equal(r(3), autoEffortLadder(ANTHROPIC).at(-1));
 });
 
 test('moves are relative to the default and clamped to the ladder', () => {

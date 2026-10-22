@@ -15,14 +15,18 @@ import {
 import { abnormalEmptyFinishError } from '../render.mjs';
 import { createProgressWatchdogRegistry } from '../../agent-watchdog-registry.mjs';
 import {
+  isAgentProgressWatchdogAbortError,
   resolveHandoffMessageStartIndex,
   turnPartialHandoff,
   watchdogPartialHandoffFromError,
   watchdogStoppedHandoff,
 } from '../../../../runtime/agent/orchestrator/agent-runtime/agent-progress-watchdog.mjs';
+import { settledWorkerStatus } from '../worker-index/row-liveness.mjs';
 import { saveSessionAsync } from '../../../../runtime/agent/orchestrator/session/store.mjs';
 import { presetDescriptor } from './spawn-prep.mjs';
 import { workerStageForStatus } from '../worker-rows.mjs';
+import { handoffContent } from '../../../handoff-attachments.mjs';
+import { whileTurnDispatched } from '../../../../runtime/agent/orchestrator/session/manager/runtime-state.mjs';
 
 // Mid-turn worker persistence cadence. The watchdog sweep runs every second;
 // a transcript save is far more expensive than a bookkeeping stamp, so the
@@ -35,12 +39,15 @@ export function createSpawnRunner({
   notifyStatusChange = () => {},
   notifySessionCompletion,
   emitSubagentEvent,
-  scheduleReap,
   sessionSurface = null,
   createTurnReviewCollector,
+  onWorkerCompletionQueued = null,
 }) {
   // Owner/worker completion notification lives in ../notify.mjs.
-  const { workerNotifyFn, notifyOwnerAgentCompletionEarly } = createNotify(mgr, { notifySessionCompletion });
+  const { workerNotifyFn, notifyOwnerAgentCompletionEarly } = createNotify(mgr, {
+    notifySessionCompletion,
+    onWorkerCompletionQueued,
+  });
 
   // Idle-progress watchdogs (shared sweep timer) live in
   // agent-watchdog-registry.mjs.
@@ -112,11 +119,15 @@ export function createSpawnRunner({
   };
 
   async function runTurn(prepared, turnHooks) {
-    const { args, session, prompt, workerCwd } = prepared;
-    if (typeof sessionSurface?.runTurn === 'function' && sessionSurface.canRun?.(session) !== false) {
-      return sessionSurface.runTurn({ session, prompt, context: args.context || null, cwd: workerCwd, ...turnHooks });
-    }
-    return mgr.askSession(session.id, prompt, args.context || null, null, workerCwd, null, turnHooks);
+    const { args, session, workerCwd } = prepared;
+    // The caller's forwarded files ride along as attachment parts.
+    const prompt = handoffContent(prepared.prompt, args.attachmentParts);
+    return whileTurnDispatched(session.id, () => {
+      if (typeof sessionSurface?.runTurn === 'function' && sessionSurface.canRun?.(session) !== false) {
+        return sessionSurface.runTurn({ session, prompt, context: args.context || null, cwd: workerCwd, ...turnHooks });
+      }
+      return mgr.askSession(session.id, prompt, args.context || null, null, workerCwd, null, turnHooks);
+    });
   }
 
   async function runSpawn(prepared, notifyContext = null, job = null) {
@@ -128,6 +139,7 @@ export function createSpawnRunner({
     const turnReview = createTurnReviewCollector(session, tag, agent, notifyContext || {});
     const completionValue = completionValueFor(prepared);
     let finalStatus = 'idle';
+    let stalled = false;
     // SubagentStart: a worker session is about to run its first turn.
     emitSubagentEvent('start', agent, { session_id: session.id, tag });
     upsertWorkerSessionDeferred(session, tag, {
@@ -189,6 +201,7 @@ export function createSpawnRunner({
         settleCancelled(error);
         throw error;
       }
+      stalled = isAgentProgressWatchdogAbortError(error);
       const partial = watchdogPartialHandoffFromError(error, mgr.getSession(session.id), handoffMsgStart);
       if (partial) {
         finalStatus = 'idle';
@@ -211,13 +224,11 @@ export function createSpawnRunner({
       watchdog?.stop?.();
       upsertWorkerSessionDeferred(session, tag, {
         ...presetDescriptor(agent, preset, presetName),
-        status: finalStatus,
-        stage: finalStatus,
+        ...settledWorkerStatus(finalStatus, stalled, job),
         finishedAt: new Date().toISOString(),
       });
       setImmediate(notifyStatusChange);
       reconcileJobFinally(job, finalStatus);
-      scheduleReap(session.id);
       // SubagentStop: worker finished (terminal), regardless of outcome.
       emitSubagentEvent('stop', agent, { session_id: session.id, tag, status: finalStatus });
       // Keep the durable session/tag for same-tag follow-ups, but release every

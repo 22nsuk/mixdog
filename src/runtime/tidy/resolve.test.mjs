@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import fs, { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 import { platformAssetKey } from './install.mjs';
 import {
@@ -30,11 +31,48 @@ function touch(path) {
 function fakeBin(dir, name) {
   mkdirSync(dir, { recursive: true });
   const target = join(dir, name);
-  writeFileSync(target, '');
+  writeFileSync(target, 'fake engine');
   return target;
 }
 
 const noPathEnv = { PATH: '', Path: '' };
+
+// The desktop's Code Tidy status resolves the whole catalog synchronously on
+// the daemon loop at startup (the 1.5–1.8 s `getTidyEngineStatus` stalls):
+// one stat per PATH dir × PATHEXT extension × engine name is far too many.
+test('resolving the catalog reads each PATH dir once instead of stat-probing every candidate', async (t) => {
+  const root = workspace(t);
+  const dirs = Array.from({ length: 30 }, (_, index) => {
+    const dir = join(root, `path-${index}`);
+    mkdirSync(dir);
+    return dir;
+  });
+  const biome = fakeBin(dirs[17], process.platform === 'win32' ? 'biome.exe' : 'biome');
+  const env = { PATH: dirs.join(delimiter), Path: dirs.join(delimiter) };
+  const statSync = fs.statSync;
+  let stats = 0;
+  fs.statSync = (...args) => {
+    stats += 1;
+    return statSync(...args);
+  };
+  syncBuiltinESMExports();
+  let engines;
+  try {
+    ({ engines } = await resolveEngines({
+      cwd: root,
+      engineIds: Object.keys(ENGINE_CATALOG),
+      env,
+      probeVersions: false,
+    }));
+  } finally {
+    fs.statSync = statSync;
+    syncBuiltinESMExports();
+  }
+  const found = engines.find((engine) => engine.id === 'biome');
+  assert.equal(found.source, 'path');
+  assert.equal(found.path, biome);
+  assert.ok(stats <= dirs.length, `PATH probes made ${stats} stat calls`);
+});
 
 test('project config beats every other source', async (t) => {
   const root = workspace(t);
@@ -88,7 +126,7 @@ test('a managed install resolves under <pluginData>/tools/<engine>/<version>', a
   const root = workspace(t);
   const pluginData = join(root, 'data');
   const binName = process.platform === 'win32' ? 'stylua.exe' : 'stylua';
-  fakeBin(join(pluginData, 'tools', 'stylua', '0.20.0'), binName);
+  const managedBin = fakeBin(join(pluginData, 'tools', 'stylua', '0.20.0'), binName);
   const manifest = {
     version: 1,
     engines: {
@@ -119,6 +157,17 @@ test('a managed install resolves under <pluginData>/tools/<engine>/<version>', a
   });
   assert.equal(engines[0].source, 'managed');
   assert.equal(engines[0].version, '0.20.0');
+  // A binary a crash left NUL-filled is not an install.
+  writeFileSync(managedBin, Buffer.alloc(32));
+  const damaged = await resolveEngines({
+    cwd: root,
+    engineIds: ['stylua'],
+    pluginData,
+    manifest,
+    probeVersions: false,
+    env: noPathEnv,
+  });
+  assert.notEqual(damaged.engines[0].source, 'managed');
 });
 
 test('an unresolved engine reports its install hint and whether tidy can fetch it', async (t) => {

@@ -5,6 +5,7 @@
 // (runAskAgentLoop). Provider-not-available and trim failures throw here so
 // the caller marks the session errored instead of leaving stage='connecting'.
 import { getProvider } from '../../providers/registry.mjs';
+import { pinSessionWireRoute } from '../../providers/wire-route.mjs';
 import { notifySkillsApplied, prepareExplicitSkills, recordAppliedSkills } from '../explicit-skills.mjs';
 import { prepareTurnEffortConfiguration } from '../../providers/effort-configuration.mjs';
 import { resolveTurnAutoEffort, turnStepAutoEffort } from './ask-turn-auto-effort.mjs';
@@ -14,19 +15,31 @@ import { filterModelVisibleSessionMessages } from './message-sanitize.mjs';
 import { _getAgentLoop } from './runtime-loaders.mjs';
 import { runAbortable, throwIfAborted } from '../../../../shared/abort-race.mjs';
 import { applyTurnContextMeta, buildUserTurn, startProviderPrewarm, traceTurnContext } from './ask-turn-prepare.mjs';
-import { rewindUnansweredPrompt } from './failed-turn-rewind.mjs';
+import { withAgentListingNotice } from './agent-listing-notice.mjs';
+import { retainedFailedTurnInput, rewindUnansweredPrompt } from './failed-turn-rewind.mjs';
 import { buildAgentLoopOptions, trackedToolCallHook } from './ask-turn-loop-options.mjs';
 import { _api_call_with_interrupt } from './ask-call-interrupt.mjs';
+import { backfillFallbackSessionTitle } from './session-fallback-title.mjs';
+import { stampTurnHop } from '../../../../shared/bot-hops.mjs';
 
 /** Resolves the provider, builds the user turn and pre-commits it; returns
  *  what the loop and the commit need from this preparation. */
-export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, transcriptMeta }) {
+export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, transcriptMeta, currentAgents }) {
   const { turn, runtime, turnSignal, askGeneration, checkpoint, turnToken, startedAt, codexTurnId } = opened;
   const session = turn.session;
+  // Where the turn sits in a bot-to-bot chain (session-runtime/bot-hops.mjs).
+  stampTurnHop(session, transcriptMeta);
+  const retained = input.retryTurnId
+    ? retainedFailedTurnInput(session.messages, input.retryTurnId, input.retryAttemptId)
+    : null;
   const provider = getProvider(session.provider);
   // Register the live session object for synchronous close snapshots.
   runtime.session = session;
   if (!provider) throw new Error(`Provider "${session.provider}" not available`);
+  // The session's wire is pinned before its first request (an existing
+  // session keeps the wire it started on); read from the history as the turn
+  // found it, awaited with the user turn below.
+  const wireRoutePending = pinSessionWireRoute(session, provider);
   // The turn-level judgment runs while the rest of the turn is prepared; it
   // reads the session as the turn found it (synchronously, on this call).
   // The first request still carries its decision: it is awaited below,
@@ -38,7 +51,7 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
   // A failed-turn retry resubmits the prompt the failure left unanswered;
   // rewind that copy so the model sees the prompt once (an answered tail is
   // kept and the retry continues from it).
-  if (input.retryFailedTurn === true) rewindUnansweredPrompt(session, input.prompt);
+  if (input.retryFailedTurn === true && !input.retryTurnId) rewindUnansweredPrompt(session, input.prompt);
   if (session.sessionStartMetaInjected !== true && !hasUserConversationMessage(session.messages)) {
     refreshSessionBp3Environment(session, effectiveCwd);
   }
@@ -55,16 +68,46 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
   });
   const [autoEffort, userTurn] = await Promise.all([
     autoEffortPending,
-    buildUserTurn({
-      session,
-      prompt: input.prompt,
-      context: input.context,
-      explicitPrefetch: input.explicitPrefetch,
-      turnSignal,
-      transcriptMeta,
-      turnPromptSource: input.promptSource,
-      effortConfiguration: null,
-    }),
+    retained
+      ? (() => {
+          const historyMessages = filterModelVisibleSessionMessages(session.messages.slice(0, retained.index));
+          const { completion, ...previousTranscript } = retained.message.meta.transcript;
+          // The retained message keeps its input; agents enabled or switched
+          // off since it was built ride its runtime context.
+          const userTurnMessage = withAgentListingNotice(
+            session,
+            retained.index,
+            {
+              ...retained.message,
+              meta: {
+                ...retained.message.meta,
+                transcript: {
+                  ...previousTranscript,
+                  ...transcriptMeta,
+                  messageId: previousTranscript.messageId,
+                  previousCompletions: [
+                    ...(previousTranscript.previousCompletions || []),
+                    { ...completion, at: completion.at ?? previousTranscript.at },
+                  ],
+                },
+              },
+            },
+            currentAgents
+          );
+          return { historyMessages, userTurnMessage, outgoing: [...historyMessages, userTurnMessage] };
+        })()
+      : buildUserTurn({
+          session,
+          prompt: input.prompt,
+          context: input.context,
+          explicitPrefetch: input.explicitPrefetch,
+          turnSignal,
+          transcriptMeta,
+          turnPromptSource: input.promptSource,
+          effortConfiguration: null,
+          currentAgents,
+        }),
+    wireRoutePending,
   ]);
   const turnEffort = autoEffort?.applied ? autoEffort.effort : session.effort || null;
   const effortConfiguration = prepareTurnEffortConfiguration(
@@ -107,6 +150,14 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
   // user turn is introduced.
   session.messages = filterModelVisibleSessionMessages(outgoing);
   session.liveTurnMessages = outgoing;
+  // Name a titleless session from its first human prompt before the first
+  // save, so the title outlives any later compaction of the transcript. The
+  // earliest human turn already in the history wins; this turn's prompt is the
+  // fallback (runtime-injected turns carrying a promptSource never name it).
+  backfillFallbackSessionTitle(session, [
+    ...historyMessages,
+    ...(input.promptSource ? [] : [{ role: 'user', content: input.prompt }]),
+  ]);
   session.activeTurnCheckpoint = {
     version: 1,
     turnToken,
@@ -147,7 +198,10 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
     beforeCount: historyMessages.length + 1,
     deferredToolDelta: userTurn.deferredToolDelta,
     goalReminder: userTurn.goalReminder,
+    workflowNotice: userTurn.workflowNotice,
+    orchestrationModeNotice: userTurn.orchestrationModeNotice,
     workspaceNotice: userTurn.workspaceNotice,
+    setupNotice: userTurn.setupNotice,
   };
 }
 
@@ -171,7 +225,7 @@ export async function runAskAgentLoop({
     session.toolApprovalHook = askOpts.onToolApproval;
   }
   try {
-    if (!input.promptSource) {
+    if (!input.promptSource && !input.retryTurnId) {
       const applied = await prepareExplicitSkills(input.prompt, outgoing, session, {
         cwd: effectiveCwd,
         signal: turnSignal,

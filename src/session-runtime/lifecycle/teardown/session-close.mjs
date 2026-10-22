@@ -47,6 +47,8 @@ export function closeOwnSession(deps, closeSurfaceSession, reason) {
     clearRuntimeNotifications,
     notificationListeners,
   } = deps;
+  // The close's answer: a boolean, or the promise of one when the closer
+  // retries a refused barrier rename on timers (callers await it).
   let ok = false;
   const session = getSession();
   if (session?.id) {
@@ -60,21 +62,22 @@ export function closeOwnSession(deps, closeSurfaceSession, reason) {
   return ok;
 }
 
-/** Plant the ordinary manager/store tombstone barrier for a canonical
- *  child session without running whole-process teardown. */
-export function closeCanonicalSession(deps, reason = 'canonical-session-close') {
+/** Fence a canonical runtime without deleting its conversation.
+ *  Explicit deletion may request a tombstone; blank scratch follows ordinary policy. */
+export function closeCanonicalSession(deps, reason = 'canonical-session-close', options = {}) {
   const { getSession, setSession, mgr, invalidateContextStatusCache, beginCanonicalClose, finishCanonicalClose } = deps;
   // Already terminal: closing is idempotent and keeps the address.
   if (deps.isCanonicallyClosed?.() === true) return true;
   const session = getSession?.();
-  if (!session?.id || session.remoteAttached === true) return false;
+  if (!session?.id) return false;
   // Fence execution admission BEFORE the manager close: that close cancels the
   // session's shells synchronously, and their completions must not be able to
   // enqueue model work or create a conversation.
   const fence = beginCanonicalClose?.(session.id);
   let closed = false;
   try {
-    closed = mgr.closeSession(session.id, reason, { tombstone: true }) === true;
+    closed =
+      mgr.closeSession(session.id, reason, { tombstone: options.tombstone ?? isScratchSession(session) }) === true;
   } finally {
     // Terminal after a durable close; admission restored when it failed.
     finishCanonicalClose?.(fence, closed);

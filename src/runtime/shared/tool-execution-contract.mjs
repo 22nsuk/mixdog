@@ -1,4 +1,5 @@
 import { clean } from './clean.mjs';
+import { hopOf } from './bot-hops.mjs';
 import {
   parseTaskNotification,
   renderTaskCompletionEnvelope,
@@ -113,6 +114,8 @@ export function normalizeToolNotifyContext(context = {}) {
     callerSessionId: callerSessionId || null,
     routingSessionId: routingSessionId || null,
     clientHostPid,
+    // The bot-chain hop of the turn that launched the work (bot-hops.mjs).
+    ...(hopOf(context.hop) ? { hop: context.hop } : {}),
   };
 }
 
@@ -133,6 +136,7 @@ function toolCompletionMeta({ surface = 'tool', id, status, resultType, instruct
       ? { routing_session_id: ctx.routingSessionId }
       : {}),
     ...(ctx.clientHostPid ? { client_host_pid: String(ctx.clientHostPid) } : {}),
+    ...(ctx.hop ? { hop: ctx.hop } : {}),
   };
 }
 
@@ -236,6 +240,12 @@ export function isTranscriptHiddenToolItem(item) {
 // stopped, and the restored transcript must keep that row
 // (scripts/turn-checkpoint-crash-test.mjs).
 const INTERNAL_TRANSCRIPT_INTERRUPT_RE = /^\[request interrupted by user(?: for tool use)?\]$/i;
+// Every runtime control row written as a user turn when a turn is cut short
+// (including the bare "[Request interrupted]" a kept Stop prompt gets). One
+// pattern for "not real conversation": realTurnCount and the preview/title
+// noise filter both use it.
+export const CONTROL_MARKER_RE =
+  /^\[(?:truncated|request interrupted(?: by user(?: for tool use)?| by process restart)?)\]$/i;
 const TRANSCRIPT_CANCELLED_STATUS_RE = /^\[request interrupted(?: by process restart)?\]$/i;
 
 // Crash/implicit interruption markers remain in model-visible history for

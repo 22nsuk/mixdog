@@ -25,6 +25,14 @@ const PROVIDERS = fileURLToPath(new URL('../../../../src/runtime/agent/orchestra
  *  options in that file (helper arguments that share a name), with the reason. */
 const NOT_SEND_OPTIONS = new Map([
   ['auto-effort.mjs::map', '`options` is the array of supported effort levels'],
+  ['openai-ws-connect.mjs::all', '`options` is the dns.lookup options object of the cached lookup'],
+  ['openai-ws-connect.mjs::family', '`options` is the dns.lookup options object of the cached lookup'],
+  ['openai-ws-connect.mjs::hints', '`options` is the dns.lookup options object of the cached lookup'],
+  ['openai-ws-connect.mjs::host', "`options` is the ws library's socket connect options (createConnection)"],
+  ['openai-ws-connect.mjs::port', "`options` is the ws library's socket connect options (createConnection)"],
+  ['openai-ws-connect.mjs::protocol', "`options` is the ws library's socket connect options (createConnection)"],
+  ['openai-ws-connect.mjs::servername', "`options` is the ws library's socket connect options (createConnection)"],
+  ['openai-ws-connect.mjs::socketPath', "`options` is the ws library's socket connect options (createConnection)"],
   [
     'effort-configuration.mjs::protocol',
     "the custom route's wire protocol, set by the adapter itself from its own provider config",
@@ -34,6 +42,10 @@ const NOT_SEND_OPTIONS = new Map([
   ['oauth-usage.mjs::allowStale', 'usage-snapshot read options'],
   ['oauth-usage.mjs::expectedOfferRevision', 'usage-offer helper argument'],
   ['oauth-usage.mjs::force', 'usage refresh helper argument'],
+  [
+    'openai-compat-retry-profile.mjs::backoffMs',
+    "`options` is the provider's own retry profile (compatRetryOptions), resolved on the host that runs the adapter",
+  ],
   ['openai-compat-wire.mjs::includeSystem', 'message-conversion helper argument'],
   ['openai-compat-wire.mjs::model', 'message-conversion helper argument'],
   ['openai-compat-wire.mjs::provider', 'message-conversion helper argument'],
@@ -51,6 +63,26 @@ const NOT_SEND_OPTIONS = new Map([
   ['openai-ws-send/send-context.mjs::sendOpts', 'internal WS send context carrying the send options themselves'],
   ['openai-ws-send/send-context.mjs::traceProvider', 'internal WS send context'],
   ['openai-ws-send/send-context.mjs::useModel', 'internal WS send context'],
+  ['openai-compat-wire.mjs::cacheControl', 'toOpenAIMessages internal options built by the adapter'],
+  ['openai-compat-wire.mjs::nativeDeferredTools', 'toOpenAIMessages internal options built by the adapter'],
+  ['openai-compat-wire.mjs::developerRole', 'toOpenAIMessages internal options built by the adapter'],
+  [
+    'openai-compat-wire.mjs::preserveToolCallIds',
+    'toOpenAIMessages internal option set by the Cursor adapter, not a provider send option',
+  ],
+  ['openai-compat-wire.mjs::reasoningShape', 'toOpenAIMessages internal options built by the adapter'],
+  [
+    'wire-gateway.mjs::messagesEffortProjection',
+    "the gateway's own effort projection function, set by the adapter from its provider config",
+  ],
+  ['openai-compat-wire.mjs::nativeLowering', 'toOpenAIMessages internal options built by the Responses adapter'],
+  ['openai-compat-wire.mjs::providerName', 'toOpenAIMessages internal options built by the adapter from its own name'],
+  ['openai-compat-wire.mjs::serverToolSearch', 'toOpenAIMessages internal options built by the adapter'],
+  ['openai-responses-input.mjs::includeSystem', 'message-lowering helper argument built by the adapter'],
+  ['openai-responses-input.mjs::reasoningByMessageIndex', 'message-lowering helper argument built by the adapter'],
+  ['openai-responses-input.mjs::replayOwnedReasoning', 'message-lowering helper argument built by the adapter'],
+  ['openai-responses-input.mjs::splitToolContent', 'message-lowering helper argument built by the adapter'],
+  ['openai-responses-input.mjs::startIndex', 'message-lowering helper argument built by the adapter'],
   ['openai-ws.mjs::enabled', 'HTTP-fallback policy helper argument'],
   ['registry.mjs::force', 'registry refresh helper argument'],
   ['retry-executor.mjs::backoffMs', 'withRetry helper argument built by the adapter'],
@@ -65,12 +97,22 @@ const NOT_SEND_OPTIONS = new Map([
   ['retry-executor.mjs::stopAfterRepeated529', 'withRetry retry-policy argument built by the adapter'],
   ['retry-executor.mjs::overloadFallbackAfter', 'withRetry retry-policy argument built by the adapter'],
   ['retry-executor.mjs::finalOnExhaust', 'withRetry retry-policy argument built by the adapter'],
+  ['retry-executor.mjs::maxRetryAfterMs', 'withRetry retry-policy argument built by the adapter'],
   ['retry-executor.mjs::recycleDispatcherOn5xx', 'withRetry retry-policy argument built by the adapter'],
   ['retry-classification.mjs::retry499', 'classifyError policy argument, never a send option'],
   ['account-pool.mjs::useCredits', 'account-exhaustion helper option built from the pool, never a send option'],
   ['provider-error-kind.mjs::legacyQuotaWording', 'providerErrorKind presentation option, never a send option'],
   ['provider-error-kind.mjs::quotaFlags', 'providerErrorKind classifier option, never a send option'],
   ['provider-error-kind.mjs::text', 'providerErrorKind classifier option, never a send option'],
+]);
+
+/** `file::key` session reads the scan finds in a file whose `session` variable
+ *  is also the daemon's full session (not the projected send-option one). */
+const NOT_PROJECTED_SESSION_READS = new Map([
+  [
+    'wire-route.mjs::messages',
+    'read by pinSessionWireRoute (daemon-side session) AND by the send path (legacy detection, lowering count), which on a projected session falls back to the request messages',
+  ],
 ]);
 
 /** `file::expression` computed reads off send options, with why they are safe. */
@@ -100,7 +142,7 @@ const FALLBACK_OPERATORS = new Set([ts.SyntaxKind.BarBarToken, ts.SyntaxKind.Que
  *  nested `session` patterns), through aliases (`const o = opts`,
  *  `opts || {}`, `{ ...opts }`, `...rest`, reassignment). An element read with
  *  a computed key is reported as dynamic. */
-export function scanSendOptionReads(text, fileName = 'fixture.mjs') {
+function scanSendOptionReads(text, fileName = 'fixture.mjs') {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const aliases = new Set(SEEDS);
   const sessionAliases = new Set();
@@ -304,8 +346,12 @@ test('every computed read off send options is reviewed', () => {
 });
 
 test('every session field an adapter reads crosses with the projected session', () => {
-  const missing = [...readSessionKeys.keys()].filter((key) => !MODEL_PROXY_SESSION_KEYS.has(key));
-  assert.deepEqual(missing, []);
+  const missing = [];
+  for (const [key, files] of readSessionKeys) {
+    if (MODEL_PROXY_SESSION_KEYS.has(key)) continue;
+    for (const file of files) if (!NOT_PROJECTED_SESSION_READS.has(`${file}::${key}`)) missing.push(`${file}::${key}`);
+  }
+  assert.deepEqual(missing.sort(), []);
 });
 
 test('the classification lists stay disjoint, reasoned and current', () => {
@@ -318,6 +364,15 @@ test('the classification lists stay disjoint, reasoned and current', () => {
     assert.equal(classified(key), false, `${entry} is classified; the exemption is not needed`);
     assert.ok(reason, `${entry} needs a reason`);
     assert.ok(readKeys.get(key)?.has(file), `${entry} is no longer read; remove it from NOT_SEND_OPTIONS`);
+  }
+  for (const [entry, reason] of NOT_PROJECTED_SESSION_READS) {
+    const [file, key] = entry.split('::');
+    assert.equal(MODEL_PROXY_SESSION_KEYS.has(key), false, `${entry} is projected; the exemption is not needed`);
+    assert.ok(reason, `${entry} needs a reason`);
+    assert.ok(
+      readSessionKeys.get(key)?.has(file),
+      `${entry} is no longer read; remove it from NOT_PROJECTED_SESSION_READS`
+    );
   }
   for (const [entry, reason] of DYNAMIC_READS) {
     assert.ok(reason, `${entry} needs a reason`);

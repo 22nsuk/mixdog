@@ -3,10 +3,10 @@
  * Sessions are saved to disk so CLI and MCP server can share state,
  * and sessions survive server restarts (resume).
  */
-import { writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, openSync, writeFileSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
-import { sessionPath } from './store/paths-heartbeat.mjs';
+import { sessionPath } from './store/session-paths.mjs';
 import {
   guardedSaveOptions as _guardedSaveOptions,
   cancelSessionWrites as _cancelSessionWrites,
@@ -30,17 +30,6 @@ export {
   _upsertSessionSummary,
   _removeSessionSummary,
 } from './store-summary-index.mjs';
-export {
-  publishHeartbeat,
-  deleteHeartbeat,
-  publishSessionPresence,
-  deleteSessionPresence,
-  readSessionPresenceMtime,
-  isSessionPresenceOwnerDead,
-  readSessionHeartbeatOwnerPid,
-  isSessionHeartbeatOwnerDead,
-  isProcessAlive,
-} from './store/paths-heartbeat.mjs';
 import { _sessionForDisk, _ensureLifecycleFields } from './store/serialize.mjs';
 import {
   _cacheSessionSummary,
@@ -55,11 +44,9 @@ import {
   withdrawPendingOwnCommit as _withdrawPendingOwnCommit,
   recordOwnSessionCommit as _recordOwnSessionCommit,
 } from './store/canonical-reader.mjs';
-// Durable lifecycle reads, heartbeat freshness and live-cache reclamation are
-// owned by dedicated modules; re-exported so prior importers of store.mjs
-// stay unchanged.
+// Durable lifecycle reads and live-cache reclamation are owned by dedicated
+// modules; re-exported so prior importers of store.mjs stay unchanged.
 export { readSessionLifecycleFromDisk, readSessionLifecycleStateFromDisk } from './store/lifecycle-read.mjs';
-export { readSessionHeartbeatMtime } from './store/liveness-veto.mjs';
 export { evictLiveSession, evictIdleLiveSessions } from './store/live-cache-eviction.mjs';
 import {
   setLiveSession,
@@ -354,7 +341,15 @@ function _doSaveSync(payload) {
       attempted = JSON.stringify(disk);
       // The lifecycle these exact bytes carry, recorded with the commit stamp.
       const lifecycle = _lifecycleOfSessionDocument(disk);
-      writeFileSync(tmp, attempted, 'utf-8');
+      // fsync before the rename: without it an OS crash can publish the
+      // renamed file with its data blocks never written (all-NUL record).
+      const fd = openSync(tmp, 'w');
+      try {
+        writeFileSync(fd, attempted, 'utf-8');
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
       if (_shouldDrop(id, opts, attempt)) {
         _discardSaveTmp(tmp);
         if (mayMutate()) _recordSaveDrop(id, epoch);
@@ -636,7 +631,14 @@ async function _doSave(payload) {
     attempted = JSON.stringify(disk);
     // Captured before the await: the lifecycle of exactly these bytes.
     const lifecycle = _lifecycleOfSessionDocument(disk);
-    await fsp.writeFile(tmp, attempted, 'utf-8');
+    // fsync before the rename (see _doSaveSync).
+    const handle = await fsp.open(tmp, 'w');
+    try {
+      await handle.writeFile(attempted, 'utf-8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     // Second check: between the temp write and the rename, closeSession()
     // may have planted a tombstone. Re-check on disk; if a newer tombstone
     // now exists, discard our temp file rather than let rename clobber it.
@@ -699,17 +701,26 @@ async function _doSave(payload) {
 // Durable lifecycle barriers (tombstone plant + detach generation bump) live
 // in store/lifecycle-barriers.mjs; re-exported so prior importers of
 // store.mjs stay unchanged.
-export { markSessionClosed, bumpSessionGeneration } from './store/lifecycle-barriers.mjs';
+export {
+  markSessionClosed,
+  bumpSessionGeneration,
+  markSessionClosedAsync,
+  markSessionClosedAttempt,
+  bumpSessionGenerationAttempt,
+  isLifecycleRetry,
+} from './store/lifecycle-barriers.mjs';
 // Session reads live in store/load-session.mjs, same facade contract.
-export { loadSession } from './store/load-session.mjs';
+export { loadSession, loadSessionStatus } from './store/load-session.mjs';
 
 // Hard delete + owned-agent enumeration live in store/session-delete.mjs;
 // re-exported here so prior importers of store.mjs stay unchanged.
 export { deleteSession, listOwnedAgentSessionIds } from './store/session-delete.mjs';
+export { fenceSessionWrites } from './store/live-state.mjs';
 
 // Listing / summaries live in store/listing.mjs and the stale sweep in
 // store/sweep/stale-sweep.mjs; re-exported here so importers keep one
 // session-store entry point.
 export { listStoredSessions, listStoredSessionSummaries, getStoredSessionsRaw } from './store/listing.mjs';
 export { sweepStaleSessions, sweepStaleSessionsCooperative } from './store/sweep/stale-sweep.mjs';
+export { applySubAgentRetention } from './store/sweep/sub-agent-retention.mjs';
 export { _savePending } from './store/pending-saves.mjs';

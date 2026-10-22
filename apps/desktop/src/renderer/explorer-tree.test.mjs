@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import React, { act } from 'react';
 import { installTestDom } from './test-support/test-dom.mjs';
+const { overrideConfirmAction } = await import('./app-confirm.tsx');
 
 // React DOM decides ONCE, at module evaluation, whether the host supports
 // native input events; evaluated without a document it falls back to the IE
@@ -219,10 +220,9 @@ test('a failed delete keeps exactly the failed entry selected and surfaces the m
       },
     },
   });
-  const previousConfirm = window.confirm;
-  window.confirm = () => true;
+  overrideConfirmAction(() => true);
   t.after(() => {
-    window.confirm = previousConfirm;
+    overrideConfirmAction(null);
   });
   await view.render();
   await click(rowFor('locked.txt'));
@@ -278,6 +278,26 @@ test('the multi-select delete menu item resolves through the translation catalog
 
   const remove = document.querySelector('.dock-file-menu button.danger span');
   assert.equal(remove.textContent, 'Discard 2 items');
+});
+
+test('menu shortcut hints show on desktop and are hidden on the phone surface', async (t) => {
+  const view = fixture(t, { listings: { '': [{ name: 'a.txt', dir: false }] } });
+  await view.render();
+  const contextMenu = (element) =>
+    act(async () => element.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+  const hints = () => [...document.querySelectorAll('.dock-file-menu-key')].map((node) => node.textContent);
+  const root = document.documentElement;
+  t.after(() => root.removeAttribute('data-mixdog-mobile-tabs'));
+
+  await contextMenu(rowFor('a.txt'));
+  assert.ok(hints().includes('F2'), 'desktop keeps the F2 hint');
+  const itemCount = document.querySelectorAll('.dock-file-menu button').length;
+  await act(async () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+
+  root.setAttribute('data-mixdog-mobile-tabs', '');
+  await contextMenu(rowFor('a.txt'));
+  assert.deepEqual(hints(), [], 'phone surface shows no shortcut hints');
+  assert.equal(document.querySelectorAll('.dock-file-menu button').length, itemCount, 'no menu item is removed');
 });
 
 test('a right-click on empty tree space or on the root header opens the project-root menu', async (t) => {

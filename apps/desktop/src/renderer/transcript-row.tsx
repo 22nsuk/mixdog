@@ -1,15 +1,15 @@
-import { SlidersHorizontal } from 'lucide-react';
-import { Suspense, createContext, memo, useContext, useEffect, useRef, useState } from 'react';
-import { submissionIdentity } from './transcript-rows';
-import { fitImageThumbnail, onSessionPreviewsDeleted, persistentImagePreviews, previewKey } from './image-preview-store';
-import { AttachmentCard, composerCardMeta } from './attachment-card';
-import { extractFileMarkers, fileChipKind, sentFileSource, sentPastedTextSource } from './attachment-menu';
+import { ChevronDown, GitCommitHorizontal, GitPullRequest, SlidersHorizontal, Upload } from 'lucide-react';
+import { parseIslandGitRequestText } from './island-git-request';
+import { Suspense, createContext, memo, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useAttachmentContextMenu } from './attachment-context-menu';
 import { MarkdownOpenFileContext, MarkdownSessionContext, MarkdownTranscriptItemContext } from './MarkdownLink';
 import type { TranscriptItem } from './desktop-types';
 import { isOtherDevice } from '../shared/session-devices';
 import { t, uiFormatLocale } from './i18n';
-import { VISUALIZE_TWEAKS_MARK } from './visualize-feedback-store';
+import { timeFormatOptions } from './time-format-preference';
+import { useRoomContacts } from './agent-room-parts';
+import { stripAgentMessageEnvelope } from '../../../../src/runtime/shared/agent-message-envelope.mjs';
+import { localizeRouteFallbackNotice } from './error-notice-copy';
 import MarkdownBody from './MarkdownBody';
 import {
   createStreamingMarkdownCache,
@@ -18,36 +18,136 @@ import {
   resolveStreamingMarkdownChunks,
 } from './streaming-markdown';
 import StreamingMarkdownBody from './StreamingMarkdownBody';
-import { imagePreviewCache, imagePreviewKey } from './transcript-metrics';
+import { dropStreamFadeTimeline, STREAM_FADE_SETTLE_MS, streamFadeTimeline } from './markdown-stream-fade';
+import { preloadSyncMarkdownParser } from './markdown-worker-client';
 import { CopyControl } from './transcript-primitives';
+import { noteStreamCommit } from './transcript-stream-metrics';
+import { useTranscriptTextReveal } from './use-transcript-text-reveal';
 import { type BackgroundWorkCounts, CompletionStatus } from './transcript-status';
 import { shouldSuppressFullyFailedToolItem } from './transcript-tool-model';
 import { ToolCard } from './transcript-tool-ui';
+import { SteerStatus } from './transcript-steer-status';
 import { AppliedSkills, SkillMentionText, appliedSkillsOf } from './composer-skill-mentions';
 // biome-ignore format: @ts-expect-error must precede the specifier
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
 import { isInternalTranscriptDisplayText, isTranscriptCancelledStatusText, isTranscriptHiddenToolItem } from '../../../../src/runtime/shared/tool-execution-contract.mjs';
 import { stripInjectedDisplayText, stripSessionEnvelope } from '../shared/session-title.mjs';
+import { routineNoticeText } from './routine-notice';
+import { RoomAddressChip, RoomTranscriptRow } from './agent-room-transcript';
+import { HeldRequestCard } from './ApprovalCard';
+import { AgentTaskLine } from './agent-task-line';
+import { asRecord } from './text-format';
+
+export { routineNoticeText };
+export { loadAttachmentThumbnail, ReturnedAttachments } from './transcript-attachments';
+import {
+  extractEscapedFileMarkers,
+  extractImageMarkers,
+  extractPastedTextMarkers,
+  extractTweaksLines,
+  type PastedTextChip,
+  ReturnedAttachments,
+  SentAttachments,
+  splitInlinePastes,
+  stripImagePlaceholders,
+  stripImageTokens,
+  useSentPastedTexts,
+} from './transcript-attachments';
 
 // StreamingMarkdownBody already loads the same renderer in this module.
 // Wrapping history in React.lazy suspended even after preloading completed,
 // holding the first transcript behind React's fallback reveal throttle.
 export { MarkdownBody };
 
+const SENT_PASTE_PREVIEW_LINES = 20;
+
+/** A sent paste inline; past 20 lines only the first 20 are rendered until expanded. */
+function SentPasteBlock({ text }: { text?: string }) {
+  const id = useId();
+  const [expanded, setExpanded] = useState(false);
+  const full = text ?? '';
+  const lines = full.split('\n');
+  const long = lines.length > SENT_PASTE_PREVIEW_LINES;
+  const collapsed = long && !expanded;
+  return (
+    <>
+      <p
+        id={id}
+        className={collapsed ? 'message-pasted-text message-pasted-text-collapsed' : 'message-pasted-text'}
+      >
+        {collapsed ? lines.slice(0, SENT_PASTE_PREVIEW_LINES).join('\n') : full}
+      </p>
+      {long && (
+        <button
+          type="button"
+          className="message-pasted-toggle"
+          aria-expanded={expanded}
+          aria-controls={id}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {t(expanded ? 'Show less' : 'Show more')}
+          <ChevronDown size={12} aria-hidden="true" />
+        </button>
+      )}
+    </>
+  );
+}
+
 const StableMarkdownBody = memo(function StableMarkdownBody({ text }: { text: string }) {
   if (isPlainTextMarkdown(text)) return <p>{text}</p>;
   return <MarkdownBody text={text} copyControl={CopyControl} />;
 });
 
-const MarkdownResponse = memo(function MarkdownResponse({ text, streaming }: { text: string; streaming: boolean }) {
+const MarkdownResponse = memo(function MarkdownResponse({
+  text,
+  streaming,
+  fadeKey,
+  fadeRevision = 0,
+}: {
+  text: string;
+  streaming: boolean;
+  /** Row identity of the reply's word-fade timeline (markdown-stream-fade);
+   *  empty: nothing fades. */
+  fadeKey: string;
+  /** The reveal's last rewrite of `text` (use-transcript-text-reveal). */
+  fadeRevision?: number;
+}) {
   const markdownCache = useRef(createStreamingMarkdownCache());
   const workerPipeline = useRef(streaming);
+  // Every chunk, frozen ones included, fades on the reply's one timeline. A
+  // settled reply keeps it STREAM_FADE_SETTLE_MS, so the rest it then shows
+  // at once still fades; after that its words show unwrapped.
+  const [fadeSettled, setFadeSettled] = useState(false);
+  const fadeTimeline = fadeKey && !fadeSettled ? streamFadeTimeline(fadeKey, streaming) : null;
+  fadeTimeline?.sync(text, performance.now(), fadeRevision);
+  useEffect(() => {
+    if (streaming || !fadeTimeline) return;
+    const timer = setTimeout(() => {
+      dropStreamFadeTimeline(fadeKey);
+      setFadeSettled(true);
+    }, STREAM_FADE_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [streaming, fadeTimeline, fadeKey]);
+  useLayoutEffect(() => {
+    if (streaming) noteStreamCommit(text.length);
+  }, [streaming, text]);
   if (streaming) workerPipeline.current = true;
+  // Every reply loads the main-thread parser: a reply that arrives whole, or
+  // the next settled row, then paints parsed in its first commit.
+  useEffect(() => {
+    void preloadSyncMarkdownParser();
+  }, []);
   const markdownParts = resolveStreamingMarkdownChunks(text, streaming, markdownCache.current);
   const renderedChunks = markdownParts.stableChunks.map((chunk, index) => (
     <Suspense fallback={<span hidden data-transcript-pending />} key={markdownParts.stableChunkKeys[index]}>
       {workerPipeline.current ? (
-        <StreamingMarkdownBody text={chunk} copyControl={CopyControl} />
+        <StreamingMarkdownBody
+          text={chunk}
+          sync
+          fadeTimeline={fadeTimeline}
+          fadeChunk={markdownParts.stableChunkKeys[index]}
+          copyControl={CopyControl}
+        />
       ) : (
         <StableMarkdownBody text={chunk} />
       )}
@@ -64,6 +164,9 @@ const MarkdownResponse = memo(function MarkdownResponse({ text, streaming }: { t
             text={markdownParts.unstableText}
             parseText={unstableParseText}
             parse={markdownParts.parseUnstable}
+            sync
+            fadeTimeline={fadeTimeline}
+            fadeChunk={markdownParts.unstableKey}
             copyControl={CopyControl}
           />
         ) : (
@@ -72,7 +175,13 @@ const MarkdownResponse = memo(function MarkdownResponse({ text, streaming }: { t
       </Suspense>
     );
   }
-  return <div className={`markdown ${streaming ? 'streaming' : ''}`}>{renderedChunks}</div>;
+  // `streamed`: this mount watched the reply arrive (22-markdown.css keeps its
+  // line breaks greedy, also once it settles).
+  return (
+    <div className={`markdown ${streaming ? 'streaming' : ''}${workerPipeline.current ? ' streamed' : ''}`}>
+      {renderedChunks}
+    </div>
+  );
 });
 
 export function transcriptItemsEqual(previous: TranscriptItem | undefined, next: TranscriptItem | undefined): boolean {
@@ -84,238 +193,9 @@ export function transcriptItemsEqual(previous: TranscriptItem | undefined, next:
 function messageMetadata(item: TranscriptItem) {
   const shortTime =
     typeof item.at === 'number' && Number.isFinite(item.at) && item.at > 0
-      ? new Date(item.at).toLocaleTimeString(uiFormatLocale(), { timeStyle: 'short' })
+      ? new Date(item.at).toLocaleTimeString(uiFormatLocale(), { timeStyle: 'short', ...timeFormatOptions() })
       : '';
   return { shortTime };
-}
-
-function stripImageTokens(text: string): string {
-  return text
-    .replace(/ ?\[Image #\d+(?::[^\]]*)?\] ?/g, ' ')
-    .replace(/ {2,}/g, ' ')
-    .trim();
-}
-
-interface PastedTextChip {
-  name: string;
-  token: string;
-  lines: number;
-}
-
-function extractPastedTextMarkers(text: string): { text: string; chips: PastedTextChip[] } {
-  const chips: PastedTextChip[] = [];
-  const stripped = String(text || '').replace(/ ?(\[Pasted text #\d+ \+(\d+) lines\]) ?/g, (_match, token, lines) => {
-    chips.push({ name: `Pasted text · ${lines} lines`, token, lines: Number(lines) });
-    return ' ';
-  });
-  if (chips.length === 0) return { text, chips };
-  const cleaned = stripped
-    .split(/\r?\n/)
-    .map((line) => line.replace(/ {2,}/g, ' ').trim())
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  return { text: cleaned, chips };
-}
-
-/** Tweaks lines of a feedback message (`<mark> accent: #fff (was #000)`) come out of the text, to be drawn with an icon. */
-function extractTweaksLines(text: string): { text: string; lines: string[] } {
-  const lines: string[] = [];
-  const kept: string[] = [];
-  for (const line of String(text || '').split('\n')) {
-    if (line.startsWith(`${VISUALIZE_TWEAKS_MARK} `)) lines.push(line.slice(VISUALIZE_TWEAKS_MARK.length + 1).trim());
-    else kept.push(line);
-  }
-  return lines.length ? { text: kept.join('\n').trim(), lines } : { text, lines };
-}
-
-interface ImageMarkerChip {
-  name: string;
-  dims: string;
-  title: string;
-  /** The `[Image: …]` line the chip comes from: restored rows name each
-   *  image's stored original by it. */
-  line?: string;
-}
-
-/** Each marker chip's stored original: the next unused `imageRefs` entry drawn
- *  by the chip's line. Chips with no such entry (omitted images, bare `#N`
- *  references) get none. */
-function markerChipRefs(
-  chips: readonly ImageMarkerChip[],
-  refs: TranscriptItem['imageRefs']
-): Array<string | undefined> {
-  const pool = Array.isArray(refs) ? [...refs] : [];
-  return chips.map((chip) => {
-    const at = chip.line ? pool.findIndex((entry) => entry?.line === chip.line) : -1;
-    return at < 0 ? undefined : pool.splice(at, 1)[0]?.ref;
-  });
-}
-
-const inflightThumbnails = new Map<string, Promise<string | undefined>>();
-const failedThumbnails = new Set<string>();
-
-// A deleted session's attachments are gone with it: forget their misses.
-onSessionPreviewsDeleted((session) => {
-  const prefix = previewKey(session, '');
-  for (const key of failedThumbnails) if (key.startsWith(prefix)) failedThumbnails.delete(key);
-});
-
-/** The cached thumbnail of a stored attachment; on a miss it is rebuilt from
- *  the stored original through the host (one host call per ref at a time). A
- *  ref the host has no picture for is not asked again in this run; a failed
- *  call (host unreachable) is retried on the next render that needs it. */
-export function loadAttachmentThumbnail(
-  session: string,
-  ref: string,
-  fit: (dataUrl: string) => Promise<string> = fitImageThumbnail
-): Promise<string | undefined> {
-  const key = previewKey(session, `attachment:${ref}`);
-  const pending = inflightThumbnails.get(key);
-  if (pending) return pending;
-  const request = (async () => {
-    const cached = await persistentImagePreviews.get(key).catch(() => undefined);
-    if (cached) return cached;
-    if (failedThumbnails.has(key)) return undefined;
-    const read = window.mixdogDesktop?.readAttachmentThumbnail;
-    if (!read) return undefined;
-    let picture: string | null;
-    try {
-      picture = await read(ref);
-    } catch {
-      return undefined;
-    }
-    // A phone gets the original: fit it to thumbnail size before it is cached.
-    const url = picture ? await fit(picture).catch(() => undefined) : undefined;
-    if (!url) {
-      failedThumbnails.add(key);
-      return undefined;
-    }
-    await persistentImagePreviews.put(key, session, url).catch(() => undefined);
-    return url;
-  })().finally(() => inflightThumbnails.delete(key));
-  inflightThumbnails.set(key, request);
-  return request;
-}
-
-/** The thumbnail of a sent image, by its stored attachment ref. Loaded async;
- *  the card keeps its size meanwhile. */
-function useStoredImagePreview(session: string, attachmentRef: string | undefined): string | undefined {
-  const key = attachmentRef ? previewKey(session, `attachment:${attachmentRef}`) : '';
-  const sync = key ? persistentImagePreviews.peek(key) : undefined;
-  const [loaded, setLoaded] = useState<{ key: string; url: string } | null>(null);
-  useEffect(() => {
-    if (!key || !attachmentRef) return;
-    let active = true;
-    void loadAttachmentThumbnail(session, attachmentRef).then((url) => {
-      if (url && active) setLoaded({ key, url });
-    });
-    return () => {
-      active = false;
-    };
-  }, [key, session, attachmentRef]);
-  return sync ?? (loaded?.key === key ? loaded.url : undefined);
-}
-
-function SentImageCard({
-  session,
-  attachmentRef,
-  live,
-  name,
-  dims,
-  tooltip,
-  menuProps,
-}: {
-  session: string;
-  /** Reference of the stored original, from which the host rebuilds the thumbnail. */
-  attachmentRef?: string;
-  live?: string;
-  name: string;
-  dims?: string;
-  tooltip?: string;
-  menuProps: ReturnType<typeof useAttachmentContextMenu>['menuProps'];
-}) {
-  const stored = useStoredImagePreview(session, attachmentRef);
-  const preview = live || stored;
-  return (
-    <AttachmentCard
-      kind="image"
-      name={name}
-      imageUrl={preview || undefined}
-      tooltip={tooltip}
-      meta={preview ? undefined : dims}
-      menu={menuProps(preview ? { kind: 'image', name, dataUrl: preview } : { kind: 'image-marker', name })}
-      onOpen={
-        preview
-          ? () => void window.mixdogDesktop?.openAttachmentImage?.(preview, name)?.catch(() => undefined)
-          : undefined
-      }
-    />
-  );
-}
-
-// Chip for an `[Image: …]` / `[Image source: …]` metadata line: the file name
-// from its source path and its dimensions.
-function imageMetaChip(meta: string, line: string): ImageMarkerChip {
-  // A visualize pin's crop (`[Image: visualize pin N · label, WxH]`): named
-  // like its composer card (number · label; history written before the emoji went still reads this way). Restored history has no crop thumbnail to show.
-  const pin = /^visualize pin (\d+) · (.+), (\d+)x(\d+)$/.exec(meta);
-  if (pin) return { name: `${pin[1]} · ${pin[2]}`, dims: `${pin[3]}\u00D7${pin[4]}`, title: line, line };
-  const parts = meta.split(/,\s*/);
-  const source =
-    (parts.find((part) => part.startsWith('source: ')) || '').slice(8).trim() ||
-    (line.startsWith('[Image source:') ? meta.trim() : '');
-  const dims = parts.find((part) => /^\d+x\d+$/.test(part)) || '';
-  const name = source
-    ? source
-        .replace(/[\\/]+$/, '')
-        .split(/[\\/]/)
-        .pop() || 'Image'
-    : 'Image';
-  return { name, dims: dims.replace('x', '\u00D7'), title: source || line, line };
-}
-
-function extractImageMarkers(text: string): { text: string; chips: ImageMarkerChip[] } {
-  const chips: ImageMarkerChip[] = [];
-  const kept: string[] = [];
-  let pendingRefs = 0;
-  let lastWasMeta = false;
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (/^\[Image #\d+(?::[^\]]*)?\]$/.test(line)) {
-      pendingRefs += 1;
-      lastWasMeta = false;
-      continue;
-    }
-    const meta = /^\[Image(?::| source:) ([^\]]+)\]$/.exec(line);
-    if (meta && !/^omitted\b/i.test(meta[1])) {
-      chips.push(imageMetaChip(meta[1], line));
-      if (pendingRefs > 0) pendingRefs -= 1;
-      lastWasMeta = true;
-      continue;
-    }
-    if (/^\[Image omitted from stored history[^\]]*\]$/.test(line)) {
-      if (!lastWasMeta) {
-        chips.push({ name: 'Image', dims: '', title: line });
-        if (pendingRefs > 0) pendingRefs -= 1;
-      }
-      lastWasMeta = false;
-      continue;
-    }
-    lastWasMeta = false;
-    const inlineRefs = rawLine.match(/\[Image #\d+(?::[^\]]*)?\]/g);
-    if (inlineRefs && inlineRefs.length > 0) {
-      pendingRefs += inlineRefs.length;
-      const strippedLine = stripImageTokens(rawLine);
-      if (strippedLine) kept.push(strippedLine);
-      continue;
-    }
-    kept.push(rawLine);
-  }
-  for (let index = 0; index < pendingRefs; index += 1) {
-    chips.push({ name: t('Image'), dims: '', title: t('Attached image') });
-  }
-  return { text: kept.join('\n').trim(), chips };
 }
 
 const WEBHOOK_FENCE_RE =
@@ -331,7 +211,9 @@ function extractWebhookPayload(text: string): { text: string; payload: string } 
 }
 
 function userTranscriptDisplayText(item: TranscriptItem): string {
-  return stripInjectedDisplayText(stripSessionEnvelope(String(item.text || '')))
+  // A bot's message shows what it said, not the envelope it travelled in.
+  const said = item.fromAgent ? stripAgentMessageEnvelope(item.text) : String(item.text || '');
+  return stripInjectedDisplayText(stripSessionEnvelope(said))
     .replace(/[ \t]+\r?\n/g, '\n')
     .replace(/\r?\n{3,}/g, '\n\n')
     .trim();
@@ -372,8 +254,15 @@ export function isVisibleTranscriptItem(item: TranscriptItem | undefined): boole
 // label is pure noise above a bubble that already reads as theirs. The `sender`
 // metadata stays intact for every message — this is a display rule only.
 export function transcriptSourceLabel(item: TranscriptItem): string {
-  if (item.kind !== 'user') return '';
+  if (item.kind !== 'user' || item.fromAgent) return '';
   return String(item.sender || '').toLowerCase() === 'lead' ? 'LEAD' : '';
+}
+
+/** The name of the bot that sent a user-kind row (trusted romAgent metadata), where a
+ *  lead's brief would read LEAD. */
+function BotSourceLabel({ agentId }: { agentId: string }) {
+  const { label } = useRoomContacts(true);
+  return <small className="message-source">{label(agentId).name}</small>;
 }
 
 /** Whether the conversation was used from more than one device. Only then does
@@ -384,96 +273,49 @@ export const TranscriptDevicesContext = createContext(false);
  *  sent from this device is never labelled "from <this device>". */
 export const TranscriptViewerDeviceContext = createContext<string | null>('');
 
-/** The cards above a sent prompt: its images, pasted text and files. */
-function SentAttachments({
+/** Whether a settled reply carries a response footer (status line + copy). */
+export function showsResponseFooter(item: TranscriptItem, completion?: TranscriptItem): boolean {
+  return item.kind === 'assistant' && !item.streaming && Boolean(completion) && isVisibleTranscriptItem(item);
+}
+
+/** The response footer: the turn's status line, time and copy control. One
+ *  element for waiting and complete alike, so the swap never remounts it. */
+export function TranscriptResponseFooter({
   item,
-  session,
-  images,
-  markerChips,
-  pastedChips,
-  fileChips,
-  menuProps,
+  completion,
+  animateComplete,
+  completionActivityKey,
+  backgroundWork,
+  trailing = false,
 }: {
   item: TranscriptItem;
-  session: string;
-  images: NonNullable<TranscriptItem['images']>;
-  markerChips: readonly ImageMarkerChip[];
-  pastedChips: readonly PastedTextChip[];
-  fileChips: ReturnType<typeof extractFileMarkers>['chips'];
-  menuProps: ReturnType<typeof useAttachmentContextMenu>['menuProps'];
+  completion: TranscriptItem;
+  animateComplete?: boolean;
+  completionActivityKey?: string;
+  backgroundWork?: BackgroundWorkCounts;
+  /** Rendered after the turn's cards rather than inside the message. */
+  trailing?: boolean;
 }) {
-  const markerRefs = markerChipRefs(markerChips, item.imageRefs);
+  // Only the footer shows the time. Formatting it per render cost the live
+  // row a locale lookup on every streamed commit.
+  const metadata = messageMetadata(item);
+  const text = String(item.text || '');
   return (
-    // biome-ignore lint/a11y/useSemanticElements: a <fieldset> brings its own border, padding and min-width into the card row.
-    <div className="message-attachments" role="group" aria-label={t('Attachments')}>
-      {images.map((image, index) => {
-        const preview = imagePreviewCache.peek(
-          imagePreviewKey(submissionIdentity(String(item.id ?? '')), image.id, image.bytes)
-        );
-        const name = image.name || t('Attached image');
-        return (
-          <SentImageCard
-            // biome-ignore lint/suspicious/noArrayIndexKey: a sent message's attachments never reorder; the index separates images without an id.
-            key={`${image.id ?? 'img'}-${index}`}
-            session={session}
-            attachmentRef={image.attachmentRef}
-            live={preview || undefined}
-            name={preview ? name : image.name || 'Image'}
-            menuProps={menuProps}
-          />
-        );
-      })}
-      {markerChips.map((chip, index) => (
-        <SentImageCard
-          // biome-ignore lint/suspicious/noArrayIndexKey: chips are parsed from a sent message and never reorder.
-          key={`marker-${index}`}
-          session={session}
-          attachmentRef={markerRefs[index]}
-          name={chip.name}
-          tooltip={chip.title}
-          dims={chip.dims}
-          menuProps={menuProps}
-        />
-      ))}
-      {pastedChips.map((chip, index) => {
-        const stored = sentPastedTextSource(chip.token, chip.name, item.id);
-        return (
-          <AttachmentCard
-            // biome-ignore lint/suspicious/noArrayIndexKey: chips are parsed from a sent message and never reorder.
-            key={`pasted-${index}`}
-            kind="pasted"
-            name={chip.name}
-            content={stored.kind === 'pasted-text' ? stored.text : undefined}
-            meta={t('{{count}} lines', { count: chip.lines })}
-            menu={menuProps(() => sentPastedTextSource(chip.token, chip.name, item.id))}
-          />
-        );
-      })}
-      {fileChips.map((chip, index) => {
-        const kind = fileChipKind(chip);
-        const stored = sentFileSource(chip, item.id);
-        let meta = '';
-        let content: string | undefined;
-        if (stored.kind === 'text-file' && stored.text !== undefined) {
-          content = stored.text;
-          meta = composerCardMeta({ kind: 'text', data: stored.text });
-        } else if ((stored.kind === 'pdf' || stored.kind === 'office') && stored.dataUrl) {
-          content = stored.dataUrl.split(',')[1] || '';
-          meta = composerCardMeta({ kind: stored.kind, data: content });
-        }
-        return (
-          <AttachmentCard
-            // biome-ignore lint/suspicious/noArrayIndexKey: chips are parsed from a sent message and never reorder.
-            key={`file-${index}`}
-            kind={kind === 'text-file' ? 'text' : kind}
-            name={chip.name}
-            content={content}
-            meta={meta}
-            menu={menuProps(() => sentFileSource(chip, item.id))}
-          />
-        );
-      })}
-    </div>
+    // biome-ignore lint/a11y/useSemanticElements: the footer names a group of response details; a <fieldset> would restyle it.
+    <footer
+      className={trailing ? 'response-footer response-footer-trailing' : 'response-footer'}
+      role="group"
+      aria-label={t('Response details')}
+    >
+      <CompletionStatus
+        item={completion}
+        animateComplete={animateComplete}
+        completionActivityKey={completionActivityKey}
+        backgroundWork={backgroundWork}
+      />
+      {metadata?.shortTime && <time className="message-time">{metadata.shortTime}</time>}
+      {text && <CopyControl value={text} label="Copy response" className="message-actions response-copy" />}
+    </footer>
   );
 }
 
@@ -486,8 +328,20 @@ export const TranscriptRow = memo(
     backgroundWork,
     attachedUser = false,
     disclosureScope = '',
+    revealKey = '',
+    paced = false,
+    footerAfterCards = false,
   }: {
+    /** The turn's cards follow this row: its response footer is rendered by the
+     *  caller after them (TranscriptResponseFooter), not inside the message. */
+    footerAfterCards?: boolean;
+    /** Background work still running; passed only to the latest completion. */
     backgroundWork?: BackgroundWorkCounts;
+    /** Row key of an assistant part: its reveal and fade identity. */
+    revealKey?: string;
+    /** The coding transcript: a live part reveals in paced steps and its new
+     *  words fade in; elsewhere received text shows whole, unfaded. */
+    paced?: boolean;
     item: TranscriptItem;
     completion?: TranscriptItem;
     animateComplete?: boolean;
@@ -498,11 +352,20 @@ export const TranscriptRow = memo(
     const multiDevice = useContext(TranscriptDevicesContext);
     const viewerDevice = useContext(TranscriptViewerDeviceContext);
     const sessionScope = useContext(MarkdownSessionContext);
-    const previousStreaming = useRef(Boolean(item.streaming));
-    const announceSettled = previousStreaming.current && !item.streaming;
+    const { texts: pastedTexts, records: pastedTokenRecords } = useSentPastedTexts(item, sessionScope);
+    const assistant = item.kind === 'assistant';
+    const revealed = useTranscriptTextReveal({
+      key: assistant ? revealKey : '',
+      text: assistant ? String(item.text || '') : '',
+      streaming: Boolean(item.streaming),
+      paced,
+    });
+    const streaming = Boolean(item.streaming);
+    const previousStreaming = useRef(streaming);
+    const announceSettled = previousStreaming.current && !streaming;
     useEffect(() => {
-      previousStreaming.current = Boolean(item.streaming);
-    }, [item.streaming]);
+      previousStreaming.current = streaming;
+    }, [streaming]);
     const { menuProps, menuElement } = useAttachmentContextMenu(useContext(MarkdownOpenFileContext));
     if (item.kind === 'tool') {
       if (shouldSuppressFullyFailedToolItem(item)) return null;
@@ -512,12 +375,31 @@ export const TranscriptRow = memo(
       return <CompletionStatus item={item} backgroundWork={backgroundWork} />;
     }
     if (item.kind === 'notice') {
+      if (item.room) {
+        return (
+          <>
+            <RoomTranscriptRow item={item} />
+            {/* The files a member's turn produced, under its speech. */}
+            {item.room.kind === 'speech' ? <ReturnedAttachments records={item.attachments} /> : null}
+          </>
+        );
+      }
+      // A held request of an unattended run waits as an approval card.
+      const held = asRecord(item.heldRequest);
+      if (held?.status === 'pending') return <HeldRequestCard held={held} sessionId={sessionScope} />;
+      const task = asRecord(item.routine);
+      // A task report's files stay in its session: the card says how many.
+      if (task?.kind === 'task') return <AgentTaskLine routine={task} />;
       const tone = item.tone === 'error' || item.tone === 'warn' ? item.tone : '';
+      const routine = routineNoticeText(item.routine);
       return (
         <div className={`notice ${tone}`} role={item.tone === 'error' ? 'alert' : 'status'}>
-          {item.text === 'The model refused to respond (safety refusal) — retry or rephrase your prompt.'
-            ? t('The model refused to respond (safety refusal) — retry or rephrase your prompt.')
-            : item.text}
+          {routine ??
+            (item.text === 'The model refused to respond (safety refusal) — retry or rephrase your prompt.'
+              ? t('The model refused to respond (safety refusal) — retry or rephrase your prompt.')
+              : item.text === 'Allowed this once. The setting could not be saved.'
+                ? t('Allowed this once. The setting could not be saved.')
+                : (localizeRouteFallbackNotice(String(item.text || '')) ?? item.text))}
         </div>
       );
     }
@@ -529,15 +411,34 @@ export const TranscriptRow = memo(
       return <CompletionStatus item={{ kind: 'turndone', status: 'cancelled', elapsedMs: 0 } as TranscriptItem} />;
     }
     if (!isVisibleTranscriptItem(item)) return null;
-    const metadata = messageMetadata(item);
+    const gitRequest = user ? parseIslandGitRequestText(text) : null;
+    if (gitRequest) {
+      const RequestIcon =
+        gitRequest.action === 'pr'
+          ? GitPullRequest
+          : gitRequest.action === 'commit-push'
+            ? Upload
+            : GitCommitHorizontal;
+      return (
+        <article className={`message user ${item.pending ? 'pending' : ''}`}>
+          <div className="message-body island-git-request">
+            <RequestIcon size={15} aria-hidden="true" />
+            <b>{gitRequest.label}</b>
+            {gitRequest.meta ? <span className="island-git-request-meta">{gitRequest.meta}</span> : null}
+          </div>
+        </article>
+      );
+    }
+    const showFooter = !user && !streaming && Boolean(completion);
     const attachedImages = user && Array.isArray(item.images) ? item.images : [];
     const imageMarkers = user ? extractImageMarkers(text) : { text, chips: [] };
     const markerChips = attachedImages.length > 0 ? [] : imageMarkers.chips;
-    const userDisplayText = attachedImages.length > 0 ? stripImageTokens(imageMarkers.text) : imageMarkers.text;
+    const userDisplayText =
+      attachedImages.length > 0 ? stripImagePlaceholders(stripImageTokens(imageMarkers.text)) : imageMarkers.text;
     const pastedFold = user
-      ? extractPastedTextMarkers(userDisplayText)
+      ? extractPastedTextMarkers(userDisplayText, pastedTexts)
       : { text: userDisplayText, chips: [] as PastedTextChip[] };
-    const fileFold = user ? extractFileMarkers(pastedFold.text) : { text: pastedFold.text, chips: [] };
+    const fileFold = user ? extractEscapedFileMarkers(pastedFold.text) : { text: pastedFold.text, chips: [] };
     const webhookFold = user ? extractWebhookPayload(fileFold.text) : { text: fileFold.text, payload: '' };
     const tweaksFold = user ? extractTweaksLines(webhookFold.text) : { text: webhookFold.text, lines: [] as string[] };
     // The runtime reports which `$name` mentions it applied; only those are
@@ -546,11 +447,13 @@ export const TranscriptRow = memo(
     return (
       <>
         <article
-          className={`message ${user ? 'user' : 'assistant'} ${sourceLabel ? 'sourced-message' : ''} ${item.streaming ? 'streaming' : 'settled'} ${item.pending ? 'pending' : ''} ${user && attachedUser ? 'attached-user' : ''}`}
-          aria-live={item.streaming || announceSettled ? 'off' : undefined}
+          className={`message ${user ? 'user' : 'assistant'} ${sourceLabel || (user && item.fromAgent) ? 'sourced-message' : ''} ${streaming ? 'streaming' : 'settled'} ${item.pending ? 'pending' : ''} ${user && attachedUser ? 'attached-user' : ''}`}
+          aria-live={streaming || announceSettled ? 'off' : undefined}
           aria-busy={item.pending === true ? 'true' : undefined}
         >
           {sourceLabel && <small className="message-source">{sourceLabel}</small>}
+          {user && item.fromAgent ? <BotSourceLabel agentId={item.fromAgent} /> : null}
+          {user && item.room?.to?.length ? <RoomAddressChip room={item.room} fromUser /> : null}
           {user &&
             (attachedImages.length > 0 ||
               markerChips.length > 0 ||
@@ -562,6 +465,7 @@ export const TranscriptRow = memo(
                 images={attachedImages}
                 markerChips={markerChips}
                 pastedChips={pastedFold.chips}
+                pastedRecords={pastedTokenRecords.filter((_, index) => pastedTexts[index] === undefined)}
                 fileChips={fileFold.chips}
                 menuProps={menuProps}
               />
@@ -570,11 +474,19 @@ export const TranscriptRow = memo(
           {(!user || tweaksFold.text || tweaksFold.lines.length > 0) && (
             // biome-ignore lint/a11y/noStaticElementInteractions: only suppresses native drag; the body is not an interactive control.
             <div className="message-body" onDragStart={(event) => event.preventDefault()}>
-              {user && tweaksFold.text ? (
-                <p>
-                  <SkillMentionText text={tweaksFold.text} isSkill={(name) => appliedSkills.includes(name)} />
-                </p>
-              ) : null}
+              {user && tweaksFold.text
+                ? splitInlinePastes(tweaksFold.text).map((part, index) =>
+                    'paste' in part ? (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: parts are parsed from a sent message and never reorder.
+                      <SentPasteBlock key={`paste-${index}`} text={pastedTexts[part.paste]} />
+                    ) : (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: parts are parsed from a sent message and never reorder.
+                      <p key={`text-${index}`}>
+                        <SkillMentionText text={part.text.trim()} isSkill={(name) => appliedSkills.includes(name)} />
+                      </p>
+                    )
+                  )
+                : null}
               {tweaksFold.lines.map((line, index) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: lines are parsed from a sent message and never reorder.
                 <p key={`tweaks-${index}`} className="message-tweaks-line">
@@ -583,8 +495,13 @@ export const TranscriptRow = memo(
               ))}
               {!user && (
                 // Only a settled reply's links can be downloaded by its row id.
-                <MarkdownTranscriptItemContext.Provider value={item.streaming ? '' : String(item.id ?? '')}>
-                  <MarkdownResponse text={text} streaming={Boolean(item.streaming)} />
+                <MarkdownTranscriptItemContext.Provider value={streaming ? '' : String(item.id ?? '')}>
+                  <MarkdownResponse
+                    text={revealed.text}
+                    streaming={streaming}
+                    fadeKey={paced ? revealKey : ''}
+                    fadeRevision={revealed.revision}
+                  />
                 </MarkdownTranscriptItemContext.Provider>
               )}
             </div>
@@ -593,18 +510,15 @@ export const TranscriptRow = memo(
           {user && multiDevice && isOtherDevice(item.device, viewerDevice) && (
             <small className="message-device">{t('from {{device}}', { device: item.device })}</small>
           )}
-          {!user && !item.streaming && completion && (
-            // biome-ignore lint/a11y/useSemanticElements: the footer names a group of response details; a <fieldset> would restyle it.
-            <footer className="response-footer" role="group" aria-label={t('Response details')}>
-              <CompletionStatus
-                item={completion}
-                animateComplete={animateComplete}
-                completionActivityKey={completionActivityKey}
-                backgroundWork={backgroundWork}
-              />
-              {metadata.shortTime && <time className="message-time">{metadata.shortTime}</time>}
-              {text && <CopyControl value={text} label="Copy response" className="message-actions response-copy" />}
-            </footer>
+          {user && <SteerStatus item={item} />}
+          {showFooter && completion && !footerAfterCards && (
+            <TranscriptResponseFooter
+              item={item}
+              completion={completion}
+              animateComplete={animateComplete}
+              completionActivityKey={completionActivityKey}
+              backgroundWork={backgroundWork}
+            />
           )}
         </article>
         {announceSettled && !completion && (
@@ -623,5 +537,8 @@ export const TranscriptRow = memo(
     previous.backgroundWork?.shell === next.backgroundWork?.shell &&
     previous.backgroundWork?.agent === next.backgroundWork?.agent &&
     previous.attachedUser === next.attachedUser &&
+    previous.footerAfterCards === next.footerAfterCards &&
+    previous.revealKey === next.revealKey &&
+    previous.paced === next.paced &&
     previous.disclosureScope === next.disclosureScope
 );

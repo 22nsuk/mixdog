@@ -1,11 +1,15 @@
 import { execFile } from 'node:child_process';
 import { watch, type FSWatcher } from 'node:fs';
+import { join } from 'node:path';
 
 import { childEnvironment } from './child-environment';
 import { listHostDirectories, listServerDirectories } from './host-directories';
 import * as editorBackups from './editor-backups';
 import * as gh from './gh-cli';
 import * as git from './git-cli';
+import * as gitRequestContext from './git-request-context';
+import * as gitPathspecChanges from './git-pathspec-changes';
+import * as remoteProjectFiles from './remote-project-files';
 import * as github from './github-cli';
 import { createGithubService } from './github-service';
 import { LanguageServerManager } from './language-server-manager';
@@ -27,6 +31,7 @@ import { listListeningPorts } from './server-ports';
 import { ACTIVITY_RAIL_PINS_EVENT } from '../shared/activity-rail-pins';
 import { PROVIDER_MODELS_EVENT } from '../shared/provider-models';
 import { TERMINAL_SIZE_OWNER_EVENT, type TerminalSizeOwner } from '../shared/terminal-size-owner';
+import { TERMINAL_ACTIVITY_EVENT } from '../shared/terminal-activity';
 import { readSettingsChange, SETTINGS_CHANGED_EVENT, UPDATER_STATE_EVENT } from '../shared/settings-changed';
 
 interface DesktopOperationEvent {
@@ -36,6 +41,7 @@ interface DesktopOperationEvent {
     | 'lsp-status'
     | 'terminal-data'
     | typeof TERMINAL_SIZE_OWNER_EVENT
+    | typeof TERMINAL_ACTIVITY_EVENT
     | typeof ACTIVITY_RAIL_PINS_EVENT
     | typeof PROVIDER_MODELS_EVENT
     | typeof SETTINGS_CHANGED_EVENT
@@ -44,7 +50,11 @@ interface DesktopOperationEvent {
 }
 
 interface DesktopOperationsOptions {
-  withRecoveryStore?<T>(root: string, action: 'write' | 'restore' | 'inspect' | 'discard', run: () => Promise<T>): Promise<T>;
+  withRecoveryStore?<T>(
+    root: string,
+    action: 'write' | 'restore' | 'inspect' | 'discard',
+    run: () => Promise<T>
+  ): Promise<T>;
   userDataPath: string;
   packaged?: boolean;
   resourcesPath?: string;
@@ -244,9 +254,12 @@ const STATIC_OPERATIONS = {
   gitRevertFile: git.gitRevertFile,
   gitReview: git.gitReview,
   gitReviewDiff: git.gitReviewDiff,
+  gitReviewDiffs: git.gitReviewDiffs,
   gitShow: git.gitShow,
   gitShowDiff: git.gitShowDiff,
   gitShowFile: git.gitShowFile,
+  gitRequestContext: gitRequestContext.gitRequestContext,
+  gitPathspecChanges: gitPathspecChanges.gitPathspecChanges,
   gitStage: git.gitStage,
   gitStash: git.gitStash,
   gitStashApply: git.gitStashApply,
@@ -261,6 +274,11 @@ const STATIC_OPERATIONS = {
   readLocalFileAbs: localFiles.readLocalFileAbs,
   statLocalEntryAbs: localFiles.statLocalEntryAbs,
   readProjectTextFileIn: projectFiles.readProjectTextFileIn,
+  readProjectTextFileAuthorized: remoteProjectFiles.readProjectTextFileAuthorized,
+  writeProjectTextFileAuthorized: remoteProjectFiles.writeProjectTextFileAuthorized,
+  readLocalFileAuthorized: remoteProjectFiles.readLocalFileAuthorized,
+  readScopedEditorSettingsAuthorized: remoteProjectFiles.readScopedEditorSettingsAuthorized,
+  writeWorkspaceFileAuthorized: remoteProjectFiles.writeWorkspaceFileAuthorized,
   readMarkdownDefaultView: workspaceConfig.readMarkdownDefaultView,
   readScopedEditorSettings: workspaceConfig.readScopedEditorSettings,
   writeMarkdownDefaultView: workspaceConfig.writeMarkdownDefaultView,
@@ -284,12 +302,16 @@ export function createDesktopOperations({
   loadDocumentPreview,
   emit,
 }: DesktopOperationsOptions) {
-  const recoveryOperation = <T,>(root: string, action: 'write' | 'restore' | 'inspect' | 'discard', run: () => Promise<T>) =>
+  const recoveryOperation = <T>(
+    root: string,
+    action: 'write' | 'restore' | 'inspect' | 'discard',
+    run: () => Promise<T>
+  ) =>
     withRecoveryStore(root, action, run).finally(() => {
       if (action !== 'inspect') emit({ name: 'folder-changed', value: root });
     });
   const languageServers = new LanguageServerManager();
-  const terminals = new TerminalManager();
+  const terminals = new TerminalManager({ shellIntegrationDir: join(userDataPath, 'shell-integration') });
   const settingsStore = new DesktopSettingsStore({
     packaged,
     resourcesPath,
@@ -322,23 +344,50 @@ export function createDesktopOperations({
   const unsubscribeSizeOwner = terminals.subscribeSizeOwner((value) => {
     emit({ name: TERMINAL_SIZE_OWNER_EVENT, value });
   });
+  const unsubscribeActivity = terminals.subscribeActivity((value) => {
+    emit({ name: TERMINAL_ACTIVITY_EVENT, value });
+  });
 
   async function invoke(name: string, args: unknown[] = []): Promise<unknown> {
     // Recovery storage belongs to the file host, never to an RPC argument.
     if (name === 'projectRecoveryIn') {
       const action = (args[1] as { action?: string })?.action;
-      return recoveryOperation(args[0] as string,
+      return recoveryOperation(
+        args[0] as string,
         action === 'restore' || action === 'discard' ? action : 'inspect',
-        () => projectRecoveryIn(userDataPath, args[0] as string, args[1]));
+        () => projectRecoveryIn(userDataPath, args[0] as string, args[1])
+      );
     }
     if (name === 'writeProjectTextFilesIn') {
-      return recoveryOperation(args[0] as string, 'write', () => projectFiles.writeProjectTextFilesIn(args[0] as string,
-        args[1] as Parameters<typeof projectFiles.writeProjectTextFilesIn>[1], userDataPath));
+      return recoveryOperation(args[0] as string, 'write', () =>
+        projectFiles.writeProjectTextFilesIn(
+          args[0] as string,
+          args[1] as Parameters<typeof projectFiles.writeProjectTextFilesIn>[1],
+          userDataPath
+        )
+      );
+    }
+    if (name === 'writeProjectTextFilesAuthorized') {
+      return recoveryOperation(args[0] as string, 'write', () =>
+        remoteProjectFiles.writeProjectTextFilesAuthorized(
+          args[0] as string,
+          args[1] as Parameters<typeof remoteProjectFiles.writeProjectTextFilesAuthorized>[1],
+          args[2],
+          userDataPath
+        )
+      );
     }
     if (name === 'replaceWorkspaceTextIn') {
-      return recoveryOperation(args[0] as string, 'write', () => workspaceSearch.replaceWorkspaceTextIn(args[0] as string,
-        args[1] as Parameters<typeof workspaceSearch.replaceWorkspaceTextIn>[1], args[2] as string,
-        args[3] as readonly string[] | undefined, undefined, userDataPath));
+      return recoveryOperation(args[0] as string, 'write', () =>
+        workspaceSearch.replaceWorkspaceTextIn(
+          args[0] as string,
+          args[1] as Parameters<typeof workspaceSearch.replaceWorkspaceTextIn>[1],
+          args[2] as string,
+          args[3] as readonly string[] | undefined,
+          undefined,
+          userDataPath
+        )
+      );
     }
     if (name === 'githubRequest') return executeGithub(args[0], args[1]);
     const staticOperation = STATIC_OPERATIONS[name as keyof typeof STATIC_OPERATIONS] as
@@ -433,6 +482,11 @@ export function createDesktopOperations({
       terminals.write(String(args[0] || ''), String(args[1] ?? ''));
       return null;
     }
+    if (name === 'termActivity') return terminals.activitySnapshot();
+    if (name === 'termFocus') {
+      terminals.focus(String(args[0] || ''), typeof args[2] === 'string' ? args[2] : '', args[1] === true);
+      return null;
+    }
     if (name === 'termResize') {
       terminals.resize(
         String(args[0] || ''),
@@ -480,6 +534,7 @@ export function createDesktopOperations({
     unsubscribeStatus();
     terminalOutput.dispose();
     unsubscribeSizeOwner();
+    unsubscribeActivity();
     folderWatchers.dispose();
     terminals.disposeAll();
     await languageServers.dispose();

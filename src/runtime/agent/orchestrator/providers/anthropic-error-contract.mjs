@@ -25,9 +25,11 @@ const STATUS_ERROR_TYPE = new Map([
   [401, 'authentication_error'],
   [403, 'permission_error'],
   [404, 'not_found_error'],
+  [409, 'conflict_error'],
   [413, REQUEST_TOO_LARGE],
   [429, 'rate_limit_error'],
   [500, 'api_error'],
+  [504, 'timeout_error'],
   [529, 'overloaded_error'],
 ]);
 
@@ -43,7 +45,7 @@ function lowered(value) {
 
 /** The lowercased error type named by an Anthropic error body (JSON text or parsed object). */
 export function anthropicErrorTypeFromBody(body) {
-  if (body && typeof body === 'object') return lowered((body.error && body.error.type) || body.type);
+  if (body && typeof body === 'object') return lowered(body.error?.type || body.type);
   const match = BODY_TYPE_RE.exec(String(body || ''));
   return match ? lowered(match[1]) : '';
 }

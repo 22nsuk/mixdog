@@ -4,7 +4,7 @@
 // compaction performance work (header hashed once per fit, cached prompt
 // lines, sliced estimate priming, per-message encoding comparison), then
 // recaptured when Compact began keeping opaque replay only on the newest
-// assistant message. Any change to the compacted messages, archive bytes,
+// assistant message and when the context ack began carrying its source. Any change to the compacted messages, archive bytes,
 // token numbers, summary prompts or trace byte counts breaks them. The trace
 // numbers are also checked against an independent JSON.stringify of the
 // transcripts.
@@ -211,15 +211,23 @@ const sha = (value) => createHash('sha256').update(value).digest('hex');
 const normalize = (text) =>
   text.split(JSON.stringify(dataDir).slice(1, -1)).join('<DATA>').split(dataDir).join('<DATA>');
 
+// Every archive file (dumps and the large messages they store once), pinned
+// by count, total size and a digest of the sorted name/size/sha listing.
 function archiveFiles(sessionId) {
   const dir = join(dataDir, 'tool-results', sessionId);
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .sort()
-    .map((file) => {
-      const bytes = readFileSync(join(dir, file));
-      return { file, bytes: bytes.length, sha256: sha(bytes) };
-    });
+  const files = existsSync(dir)
+    ? readdirSync(dir)
+        .sort()
+        .map((file) => {
+          const bytes = readFileSync(join(dir, file));
+          return { file, bytes: bytes.length, sha256: sha(bytes) };
+        })
+    : [];
+  return {
+    files: files.length,
+    bytes: files.reduce((total, file) => total + file.bytes, 0),
+    listingSha: sha(JSON.stringify(files)),
+  };
 }
 
 async function lastCompactTrace() {
@@ -274,8 +282,21 @@ async function compactFingerprint(session) {
     )
   );
   // `archive` is the display-only compaction archive's bookkeeping, not
-  // compaction output.
-  const { lastCheckedAt: _c, lastChangedAt: _g, lastCompactAt: _a, archive: _d, ...record } = session.compaction;
+  // compaction output; the last* timing fields are wall-clock measurements.
+  const {
+    lastCheckedAt: _c,
+    lastChangedAt: _g,
+    lastCompactAt: _a,
+    archive: _d,
+    lastStartedAt: _s,
+    lastCommittedAt: _m,
+    lastDurationMs: _u,
+    lastPipelineMs: _p,
+    lastSummaryMs: _y,
+    lastCommitMs: _o,
+    lastCompactMode: _k,
+    ...record
+  } = session.compaction;
   return {
     numbers,
     messages: session.messages.length,
@@ -318,8 +339,7 @@ const numbersFor = (handoffSource, window, target, values) => ({
   handoffSource,
   ...(handoffSource === 'rules' ? { usage: null } : {}),
 });
-const archive = (sha256, bytes) => ({ file: `${sha256}.txt`, bytes, sha256 });
-const RULES_ARCHIVE = archive('58f93144f35b7b3c601e15c792d3b8ee2de67839fc96cd5b4786124f9a488c34', 1_277_537);
+const archives = (files, bytes, listingSha) => ({ files, bytes, listingSha });
 
 const EXPECTED = {
   rules: {
@@ -327,72 +347,73 @@ const EXPECTED = {
       beforeMessages: 357,
       afterMessages: 181,
       beforeTokens: 480_145,
-      afterTokens: 43_061,
+      afterTokens: 43_072,
       beforeMessageTokens: 342_923,
-      afterMessageTokens: 30_720,
+      afterMessageTokens: 30_728,
       pressureTokens: 480_145,
     }),
     messages: 181,
-    messagesSha: '7aba7abf7e04219aa50bbc17b55441f71e54a8977b8f2dece2e840c070db62ad',
-    recordSha: '2ed6ed475f6eb135b5e6eec4134fc946cea6ca3e8abff259279538b785f4fe82',
+    messagesSha: '60f0e65a427fdb2ea2f8ee646f11c61cc1c943fbf4443e6966583ba585737f49',
+    recordSha: '9af03accb136319983b290a461281ce54bb69d92e8013876b3b5e416d4422904',
     sends: 0,
     promptsSha: '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
-    archives: [RULES_ARCHIVE],
-    traceBytes: [1_203_122, 105_750],
+    archives: archives(37, 1_210_506, '64055b96698722b5663e1ff09a204d4b8b3d77854916106ea37048420cf95c09'),
+    traceBytes: [1_203_122, 107_999],
   },
   repeat: {
     numbers: numbersFor('rules', 200_000, 35_714, {
       beforeMessages: 225,
-      afterMessages: 217,
-      beforeTokens: 80_483,
-      afterTokens: 46_089,
-      beforeMessageTokens: 57_450,
-      afterMessageTokens: 32_883,
-      pressureTokens: 80_483,
+      afterMessages: 216,
+      beforeTokens: 80_494,
+      afterTokens: 46_003,
+      beforeMessageTokens: 57_458,
+      afterMessageTokens: 32_821,
+      pressureTokens: 80_494,
     }),
-    messages: 217,
-    messagesSha: 'bf1795ce522c313ff517ad5d4688314f732ab1df9b55a0cd7f490697be06cbc3',
-    recordSha: '93c5811224a83b08d82663d1c5146f0b5e84e144c94d761b619281a507eb45bf',
+    messages: 216,
+    messagesSha: '605e488d01506974cc178263255c300d49f27b7a614fc161aeef6f719251982c',
+    recordSha: '459d7b38ae81793bf6ef10f2dd75fea2149c55e2f0d633029b33cc47ce02aa4a',
     sends: 0,
     promptsSha: '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
-    archives: [RULES_ARCHIVE, archive('cd92bdd7aeae02c9f69976e2d3cdad0cd5155f0289cad01f39cbd63b9577bf32', 218_569)],
-    traceBytes: [201_803, 115_191],
+    archives: archives(40, 1_390_293, '4f3011bc5e97f153b9bfc99bc04285d88a9e796ebde825a75a336b35fd7c29ff'),
+    traceBytes: [204_052, 117_069],
   },
   summary: {
     numbers: numbersFor('session-local', 60_000, 10_714, {
       beforeMessages: 572,
       afterMessages: 18,
       beforeTokens: 266_587,
-      afterTokens: 4_588,
+      afterTokens: 4_600,
       beforeMessageTokens: 190_381,
-      afterMessageTokens: 3_239,
+      afterMessageTokens: 3_248,
       pressureTokens: 266_587,
     }),
     messages: 18,
-    messagesSha: 'f57479daed33eea2d1f51d4892d6a389368025b753f24eaa3623c3decd77f750',
-    recordSha: '3a9873f764d37644d91eb75f3a318957968a45a171193f0323d9068b7e322139',
+    messagesSha: '7a3fd462b4dbd1e400b82903313f1576255c3878a012a0f455798f73ca458849',
+    recordSha: '5ab36533b09e563dc54dadc23243f1944f55625e138b37dcfbd4966732dd07b5',
     sends: 2,
-    promptsSha: 'f47b552495036c5098cf3aaf74e3ccabda7a60424d8157e0783f225364d8e098',
-    archives: [archive('bd4fed4e389f3f965b81f7d8b2bc43e178edc95943686e245c8592e161da93ae', 835_274)],
-    traceBytes: [714_283, 12_520],
+    // The summary input carries one bounded line per tool call.
+    promptsSha: '8c859542e9cf4d900807bb0f1809f03a47ede3795bb4e0ae950ea4b90b2921ae',
+    archives: archives(1, 712_408, '464b1d3a86d92f8da4a5ed4f643649b6affc8d52b86702c48bf9950288c28a02'),
+    traceBytes: [714_283, 12_694],
   },
   large: {
     numbers: numbersFor('session-local', 400_000, 71_428, {
       beforeMessages: 945,
       afterMessages: 36,
       beforeTokens: 1_351_475,
-      afterTokens: 28_774,
+      afterTokens: 28_785,
       beforeMessageTokens: 965_301,
-      afterMessageTokens: 20_515,
+      afterMessageTokens: 20_523,
       pressureTokens: 1_351_475,
     }),
     messages: 36,
-    messagesSha: 'b969af7d617a512a32d8bb6574ae9ed5fb2b02d5b6f26fc3204ca327ddd88357',
-    recordSha: '1000350f3cc26878a2902ea5d3bc8b1765b65fdbcbd43737517c11903a54b3f9',
+    messagesSha: '20fbb536eb69b0eb7a4170e191c42fbec9657a6dba1e6904fac49fcad461c0ea',
+    recordSha: '8ff0ce2f0652109ae6f9a443c3ff9e9738c0f54d24270fdd65c7633cc15f3181',
     sends: 1,
-    promptsSha: '48d26a7766c196e3365f6209046c1dc9a6b7b1b6451e76c2fb54f6d106ec9d59',
-    archives: [archive('a2430042581139bf089a8b606009bc5ede869e4cec25d543f4053bb515c12312', 3_577_119)],
-    traceBytes: [3_380_664, 72_485],
+    promptsSha: '5f8570a037261e645d4d55d65efd99cefac1a98f0e068d1040dfe42fa41e7fb1',
+    archives: archives(102, 3_402_411, '60bebec70ec783c2861c64afbd14a3f4dc03af2b38497aab7e7c221074c7e809'),
+    traceBytes: [3_380_664, 72_692],
   },
 };
 

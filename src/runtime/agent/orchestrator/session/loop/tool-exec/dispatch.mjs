@@ -15,6 +15,34 @@ import { executeInternalTool, isInternalTool } from '../../../internal-tools.mjs
 import { buildSkillsListResponse, viewSkill } from '../tool-helpers.mjs';
 import { isOnDeferredToolSurface } from '../deferred-call-through.mjs';
 import { _executeCodeGraphToolLazy } from '../../manager/runtime-loaders.mjs';
+import { requiresReadBody } from '../tool-classify.mjs';
+import { executeCursorNativeBuiltin } from '../../../tools/builtin/external-tool-adapters.mjs';
+import { providerModelVisionOverride, providerNativePdf, providerReadsImages } from '../../../providers/registry.mjs';
+import { getModelMetadataSync } from '../../../../../shared/llm/model-catalog.mjs';
+
+/**
+ * How read returns a PDF to this session's model. Native PDF support decides
+ * only whether a short PDF may arrive whole as a document block. A scanned
+ * page arrives as a page image whenever the model sees images — the provider
+ * sends image input (only the text-only local runtime does not) and the
+ * catalog does not say the model lacks it — and as OCR text otherwise. A
+ * custom model's own image-input setting (on or off) beats the catalog.
+ */
+export function pdfReadModes(
+  sessionRef,
+  {
+    nativePdf = providerNativePdf,
+    readsImages = providerReadsImages,
+    catalogRow = getModelMetadataSync,
+    visionOverride = providerModelVisionOverride,
+  } = {}
+) {
+  const provider = sessionRef?.provider;
+  const model = sessionRef?.model;
+  const vision = model ? (visionOverride(provider, model) ?? catalogRow(model, provider)?.supportsVision) : undefined;
+  const seesImages = readsImages(provider) && vision !== false;
+  return { pdfPageMode: seesImages ? 'image' : 'ocr', pdfNativeDocument: nativePdf(provider) };
+}
 
 function dispatchMcp(name, args, { cwd, callerSessionId, sessionRef, executeOpts }) {
   const mcpScopeId = sessionRef?.mcpScopeId || null;
@@ -35,13 +63,19 @@ function dispatchMcp(name, args, { cwd, callerSessionId, sessionRef, executeOpts
   });
 }
 
-function dispatchInternal(name, args, { cwd, callerSessionId, sessionRef, executeOpts, notifyFn, toolApprovalHook }) {
+function dispatchInternal(
+  name,
+  args,
+  { cwd, callerSessionId, sessionRef, executeOpts, notifyFn, toolApprovalHook, elevationApproved }
+) {
   // callerSessionId propagates into server.mjs dispatchTool so that
   // dispatchAiWrapped can detect and reject recursive calls from a
   // hidden-role session (recall/search → self).
   return executeInternalTool(name, args, {
     scopeId: sessionRef?.mcpScopeId || null,
     callerSessionId,
+    // The calling session itself: bridge tools answer within its scope.
+    callerSession: sessionRef || null,
     callerCwd: cwd,
     setCallerCwd: async (nextCwd) => {
       const applyForCaller = sessionRef?._applyResolvedCwdForCaller;
@@ -58,6 +92,8 @@ function dispatchInternal(name, args, { cwd, callerSessionId, sessionRef, execut
     notifyFn,
     toolApprovalHook,
     toolCallId: executeOpts.toolCallId || null,
+    // Runtime-granted for this call only (terminal run); never from model args.
+    elevationApproved: elevationApproved === true,
     invocationSource: 'model-tool',
   });
 }
@@ -90,10 +126,25 @@ export function dispatchToolCall({ name, args }, ctx) {
   // variants) adapt to a native execution inside executeBuiltinTool's default
   // case; on a shape mismatch it falls back to the redirect guidance message.
   if (name === 'shell' || isBuiltinTool(name) || isExternalAdapterTool(name)) {
-    const builtinOpts = executeOpts.suppressReadUnchangedStub
-      ? { ...completionToolOpts, suppressReadUnchangedStub: true }
-      : completionToolOpts;
-    return executeBuiltinTool(name, args, cwd, builtinOpts);
+    const builtinOpts = {
+      ...completionToolOpts,
+      ...(executeOpts.suppressReadUnchangedStub || requiresReadBody(name, sessionRef)
+        ? { suppressReadUnchangedStub: true }
+        : {}),
+      // Runtime-granted only; any value inherited from executeOpts is overridden.
+      elevationApproved: ctx.elevationApproved === true,
+      ...pdfReadModes(sessionRef),
+    };
+    return executeCursorNativeBuiltin(
+      name,
+      args,
+      cwd,
+      {
+        ...builtinOpts,
+        toolCallId: executeOpts.toolCallId || null,
+      },
+      executeBuiltinTool
+    );
   }
   return formatUnknownBuiltinToolMessage(name, args, 'tool');
 }

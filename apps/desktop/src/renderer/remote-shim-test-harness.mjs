@@ -122,6 +122,8 @@ export const withShim = async ({ secure = true } = {}, run) => {
       backgroundSuspended: false,
       resyncOnWake: false,
       lastTrafficAt: 0,
+      unprovenSocket: null,
+      resyncAfterWakeProbe: false,
       viewResumeToken: null,
       carriedResumeToken: null,
       pendingReconnectNotification: false,
@@ -147,6 +149,7 @@ export const withShim = async ({ secure = true } = {}, run) => {
       resetDeltaState() {},
       refreshBroadcastLanes() {},
       clearWakePongTimer() {},
+      answerWakeProbe() {},
       wakeProbe() {},
       requestResync: () => {
         resyncs += 1;
@@ -228,6 +231,8 @@ export const withShim = async ({ secure = true } = {}, run) => {
       events,
       timers,
       dial,
+      /** The desktop identity this shim is paired with, for hand-driven handshakes. */
+      identity,
       resyncs: () => resyncs,
       /** The 20-second per-call deadlines currently armed. */
       deadlines: () => [...timers.live.values()].filter((timer) => timer.ms === 20_000).length,

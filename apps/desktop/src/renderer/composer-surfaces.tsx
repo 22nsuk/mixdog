@@ -5,12 +5,13 @@ import { ArrowUp, Mic, X } from 'lucide-react';
 import React, { useEffect, useRef, type CSSProperties, type MutableRefObject, type RefObject } from 'react';
 import { composerAttachmentSource } from './attachment-menu';
 import { AttachmentCard, composerCardKind, composerCardMeta } from './attachment-card';
-import { useAttachmentContextMenu, type AttachmentOpenFile } from './attachment-context-menu';
+import { openAttachmentSource, useAttachmentContextMenu, type AttachmentOpenFile } from './attachment-context-menu';
 import { CapabilityIcon } from './CapabilityIcon';
 import type { SkillMentionResult } from './composer-skill-mentions';
-import { queuedFollowupPreview, type ComposerAttachment } from './composer-support';
+import type { ComposerAttachment } from './composer-support';
 import { ComposerPalette } from './ComposerPalette';
 import { t } from './i18n';
+import { attachmentSummary, textWithoutAttachmentTokens } from './message-attachment-summary';
 import { MxIcon } from './MxIcon';
 import { ProgressSpinner } from './ProgressSpinner';
 import { type desktopComposerSlashCommands, desktopSlashCommandDescription } from './slash-commands';
@@ -22,22 +23,27 @@ type Panel = RefObject<HTMLDivElement | null>;
 
 export function composerPlaceholder({
   hasConversation,
-  turnBusy,
-  commandBusy,
   fallback,
 }: {
   hasConversation: boolean;
-  turnBusy: boolean;
-  commandBusy: boolean;
   fallback: string;
 }): string {
   // User request: one stable placeholder — no rotating variants — and once a
   // session has content the composer shows NO hint copy at all; instructional
-  // placeholders belong to the empty new-task state.
+  // placeholders belong to the empty new-task state. A message sent while a
+  // turn runs is an ordinary send, so the turn changes nothing here.
   if (hasConversation) return '';
-  if (turnBusy) return t('Steer the active turn or queue a follow-up…');
-  if (commandBusy) return t('Queue a message after the current command…');
   return t(fallback);
+}
+
+/** A message's first non-empty line. */
+function firstLinePreview(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) || '[Attachment]'
+  );
 }
 
 function preventFocusSteal(event: React.MouseEvent) {
@@ -82,7 +88,10 @@ export function MessageSelectorPalette({
           onMouseEnter={() => setIndex(rowIndex)}
           onClick={() => onSelect(message.id)}
         >
-          <span>{oneLine(queuedFollowupPreview(message.text), 90)}</span>
+          {attachmentSummary(message.text) && (
+            <small className="message-applied-skill">{attachmentSummary(message.text)}</small>
+          )}
+          <span>{oneLine(firstLinePreview(textWithoutAttachmentTokens(message.text)), 90)}</span>
         </button>
       ))}
     </ComposerPalette>
@@ -272,21 +281,6 @@ export function SkillMentionPalette({
   );
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function openAttachmentImage(attachment: ComposerAttachment, onError: (message: string) => void) {
-  onError('');
-  try {
-    const api = window.mixdogDesktop;
-    if (!api?.openAttachmentImage) throw new Error('Unable to open image: image viewer is unavailable.');
-    await api.openAttachmentImage(`data:${attachment.mimeType};base64,${attachment.data}`, attachment.name);
-  } catch (error) {
-    onError(errorText(error));
-  }
-}
-
 export function AttachmentChips({
   attachments,
   onRemove,
@@ -319,7 +313,14 @@ export function AttachmentChips({
             content={image ? undefined : attachment.data}
             meta={composerCardMeta(attachment)}
             menu={menuProps(composerAttachmentSource(attachment))}
-            onOpen={image ? () => void openAttachmentImage(attachment, onError) : undefined}
+            onOpen={
+              image
+                ? () => {
+                    onError('');
+                    openAttachmentSource(composerAttachmentSource(attachment), onOpenFile);
+                  }
+                : undefined
+            }
             onEdit={editable ? () => onEdit(attachment) : undefined}
             onRemove={() => onRemove(attachment)}
           />
@@ -483,8 +484,6 @@ export function SendButton({
   stopOnly,
   voiceSend,
   submitting,
-  turnBusy,
-  commandBusy,
   transitioning,
   hasConversation,
   dictationState,
@@ -497,8 +496,6 @@ export function SendButton({
   stopOnly: boolean;
   voiceSend: boolean;
   submitting: boolean;
-  turnBusy: boolean;
-  commandBusy: boolean;
   transitioning: boolean;
   hasConversation: boolean;
   dictationState: DictationState;
@@ -524,13 +521,9 @@ export function SendButton({
   if (stopOnly) label = t('Stop generation');
   else if (voiceSend) label = t('Stop dictation and send');
   else if (submitting) label = hasConversation ? t('Sending message') : t('Starting session');
-  else if (turnBusy) label = t('Queue or steer active turn');
-  else if (commandBusy) label = t('Queue after current command');
   let tooltip = t('Send · Enter');
   if (stopOnly) tooltip = t('Stop');
   else if (voiceSend) tooltip = t('Stop and send');
-  else if (turnBusy) tooltip = t('Queue or steer · Enter');
-  else if (commandBusy) tooltip = t('Queue after command · Enter');
   let glyph = <ArrowUp size={16} />;
   if (stopOnly) glyph = <MxIcon name="stop" size={16} />;
   else if (submitting) glyph = <ProgressSpinner className="composer-mic-spinner" size={16} />;

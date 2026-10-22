@@ -2,7 +2,7 @@
 // Thin facade over the split session-manager modules in ./manager/.
 //
 // Module map:
-//   manager/runtime-liveness.mjs       — in-memory stage/heartbeat + accessors
+//   manager/runtime-liveness.mjs       — in-memory stage/progress + accessors
 //   manager/tool-resolution.mjs        — tool policy resolution/narrowing
 //   manager/context-meta.mjs           — context-window / compact-trigger meta
 //   manager/prompt-utils.mjs           — prompt content shaping helpers
@@ -45,6 +45,7 @@ export {
   markSessionError,
   markSessionCancelled,
   getSessionRuntime,
+  isSessionTurnInFlight,
   isSessionCompactionBlocked,
   getSessionProgressSnapshot,
   forEachSessionRuntime,
@@ -59,19 +60,12 @@ export { previewSessionTools } from './manager/tool-resolution.mjs';
 export {
   _mergePendingMessageEntries,
   enqueuePendingMessage,
-  enqueueRemotePendingMessage,
-  drainForeignUserInjections,
   drainPendingMessages,
   // Shutdown drain so buffered/in-flight spool writes are never abandoned.
   settlePendingMessageWrites,
   markCompletionEntry,
   COMPLETION_NOTIFICATION_KIND,
-  pendingMessagesSpoolPath,
 } from './manager/pending-messages.mjs';
-// Interactive-presence sidecar (idle-open ownership signal for the
-// attach-on-resume guard) — resolved through the manager facade so the
-// session-runtime turn API reaches it as mgr.publishSessionPresence.
-export { publishSessionPresence, deleteSessionPresence } from './store.mjs';
 
 // ── Usage-metrics surface — re-exported unchanged so loop.mjs / smoke scripts
 //    keep resolving these through the facade. ────────────────────────────────
@@ -105,7 +99,6 @@ export {
   prefetchSession,
   prepareSessionProjection,
   resumeSession,
-  isSessionOwnerGone,
   recoverSessionAfterProcessRestart,
 } from './manager/session-lifecycle.mjs';
 export { askSession, _api_call_with_interrupt } from './manager/ask-session.mjs';
@@ -126,9 +119,9 @@ export {
   updateSessionAiTitle,
   flushSessionMetrics,
 } from './manager/session-crud.mjs';
-export { deleteSession, listOwnedAgentSessionIds } from './store.mjs';
+export { deleteSession, listOwnedAgentSessionIds, fenceSessionWrites } from './store.mjs';
 // Read-only parsed-session access (desktop pane peek): no resume, no
 // ownership, no liveness side effects.
-export { loadSession } from './store.mjs';
-export { closeSession, abortSessionTurn, unloadSessionRuntime } from './manager/session-close.mjs';
+export { loadSession, loadSessionStatus } from './store.mjs';
+export { closeSession, closeSessionAsync, abortSessionTurn, unloadSessionRuntime } from './manager/session-close.mjs';
 export { sweepTombstones, startIdleCleanup, stopIdleCleanup } from './manager/idle-cleanup.mjs';

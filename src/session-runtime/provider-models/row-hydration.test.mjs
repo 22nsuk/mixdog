@@ -9,7 +9,24 @@ const cfg = {
     'custom-anthropic': { type: 'custom', protocol: 'anthropic', enabled: true },
   },
 };
-const LEVELS = ['low', 'medium', 'high'];
+test('a custom provider row is hydrated with its configured name; built-ins and unnamed ones get none', () => {
+  const named = { providers: { 'custom-chat': { type: 'custom', name: ' Gateway ' }, 'custom-x': { type: 'custom' } } };
+  assert.equal(hydrateProviderModelRow(named, { provider: 'custom-chat', id: 'm' }).providerName, 'Gateway');
+  assert.equal('providerName' in hydrateProviderModelRow(named, { provider: 'custom-x', id: 'm' }), false);
+  assert.equal('providerName' in hydrateProviderModelRow(named, { provider: 'openai', id: 'm' }), false);
+});
+
+test('a custom row with a stale providerName takes the renamed name, and drops it once the name is removed', () => {
+  const stale = { provider: 'custom-chat', id: 'm', providerName: 'Old' };
+  const renamed = { providers: { 'custom-chat': { type: 'custom', name: 'New' } } };
+  assert.equal(hydrateProviderModelRow(renamed, stale).providerName, 'New');
+  const unnamed = { providers: { 'custom-chat': { type: 'custom' } } };
+  assert.equal('providerName' in hydrateProviderModelRow(unnamed, stale), false);
+  assert.equal('providerName' in hydrateProviderModelRow({ providers: {} }, stale), false);
+  assert.equal(hydrateProviderModelRow(renamed, { provider: 'openai', id: 'm', providerName: 'OpenAI' }).providerName, 'OpenAI');
+});
+
+const LEVELS =['low', 'medium', 'high'];
 const capable = (provider, row) => hydrateProviderModelRow(cfg, { provider, ...row }).autoEffortCapable;
 
 test('autoEffortCapable: custom Chat/Responses with levels on, without levels or on Anthropic off, first-party unchanged', () => {
@@ -24,11 +41,26 @@ test('autoEffortCapable: custom Chat/Responses with levels on, without levels or
 
 test('savedAutoEffort exposes the saved per-model Auto effort choice next to savedFast', () => {
   const saved = (setting) =>
-    hydrateProviderModelRow({ ...cfg, modelSettings: { 'openai/gpt-5.5': setting } }, { provider: 'openai', id: 'gpt-5.5' })
-      .savedAutoEffort;
+    hydrateProviderModelRow(
+      { ...cfg, modelSettings: { 'openai/gpt-5.5': setting } },
+      { provider: 'openai', id: 'gpt-5.5' }
+    ).savedAutoEffort;
   assert.equal(saved({ fast: true }), undefined);
   assert.equal(saved({ autoEffort: false }), false);
   assert.equal(saved({ autoEffort: true }), true);
+});
+
+test('model management state rides every row: explicit visibility and the favorite mark', () => {
+  const row = (setting) =>
+    hydrateProviderModelRow(
+      { ...cfg, modelSettings: { 'openai/gpt-5.5': setting } },
+      { provider: 'openai', id: 'gpt-5.5' }
+    );
+  assert.equal('savedHidden' in row({ effort: 'high' }), false);
+  assert.equal('favorite' in row({ effort: 'high' }), false);
+  assert.equal(row({ hidden: true }).savedHidden, true);
+  assert.equal(row({ hidden: false }).savedHidden, false);
+  assert.equal(row({ favorite: true }).favorite, true);
 });
 
 test('a hydrated custom row keeps its contract fields', () => {

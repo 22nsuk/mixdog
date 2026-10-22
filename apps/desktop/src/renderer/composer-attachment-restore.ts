@@ -5,7 +5,7 @@ import { asRecord } from './text-format';
 
 /** Ids for restored attachments: keep a stored id when it is free, otherwise
  *  allocate past every reserved id and advance the composer's sequence. */
-function createRestoredIdAllocator(reservedIds: Set<number>, sequence: { current: number }) {
+export function createRestoredIdAllocator(reservedIds: Set<number>, sequence: { current: number }) {
   return (rawId: number) => {
     let id = rawId > 0 ? rawId : sequence.current;
     while (reservedIds.has(id)) id = Math.max(id + 1, sequence.current++);
@@ -70,8 +70,8 @@ export function restoreAttachmentsFromRecord(
     const match = source === 'file' ? fileMatch : pastedMatch;
     if (!match) continue;
     const id = uniqueId(rawId);
-    const token = id === rawId ? match[0] : match[0].replace(`#${rawId}`, `#${id}`);
-    if (token !== match[0]) textValue = textValue.replace(match[0], token);
+    const token = id === rawId ? match[0] : match[0].replace(`#${rawId}`, () => `#${id}`);
+    if (token !== match[0]) textValue = textValue.replace(match[0], () => token);
     restored.push({
       id,
       name: String(text.filename || (source === 'file' ? `File ${id}` : `Pasted text ${id}`)),
@@ -81,6 +81,15 @@ export function restoreAttachmentsFromRecord(
       token,
       source,
     });
+  }
+  // The runtime's display text spells each image part as a bare `[Image]`
+  // line; the restored image chips stand for them.
+  if (restored.some((attachment) => attachment.kind === 'image') && textValue.includes('[Image]')) {
+    textValue = textValue
+      .split('\n')
+      .filter((line) => line.trim() !== '[Image]')
+      .join('\n')
+      .trim();
   }
   textValue = restoreFileAttachments(value, textValue, restored, uniqueId);
   return { attachments: restored, text: textValue };
@@ -141,7 +150,7 @@ function restoreFileAttachments(
     const id = uniqueId(rawId);
     const isPdf = mimeType === PDF_MIME_TYPE;
     const token = `[${isPdf ? 'PDF' : 'File'} #${id}: ${file.name}]`;
-    if (token !== match[0]) textValue = textValue.replace(match[0], token);
+    if (token !== match[0]) textValue = textValue.replace(match[0], () => token);
     keptTokens.add(token);
     restored.push({
       id,
@@ -168,6 +177,33 @@ function restoreFileAttachments(
     : textValue;
 }
 
+/**
+ * Give restored attachments ids of the composer they join: an id no live chip
+ * holds is kept (so a refused send restores under the same retry key) and the
+ * composer's sequence moves past it; a taken one gets the next free id. Each
+ * renumbered chip's `#n` token is rewritten, in the chip and in the text, in
+ * one pass so one rename never lands on another's token.
+ */
+export function renumberRestoredAttachments(
+  incoming: readonly ComposerAttachment[],
+  text: string,
+  liveIds: Iterable<number>,
+  sequence: { current: number }
+): { attachments: ComposerAttachment[]; text: string } {
+  const allocate = createRestoredIdAllocator(new Set(liveIds), sequence);
+  const renamed = new Map<string, string>();
+  const attachments = incoming.map((attachment) => {
+    const id = allocate(attachment.id);
+    if (id === attachment.id) return attachment;
+    const token = attachment.token ? attachment.token.replace(`#${attachment.id}`, () => `#${id}`) : '';
+    if (attachment.token) renamed.set(attachment.token, token);
+    return { ...attachment, id, token };
+  });
+  if (!renamed.size) return { attachments, text };
+  const pattern = new RegExp([...renamed.keys()].map(escapeRegExp).join('|'), 'g');
+  return { attachments, text: text.replace(pattern, (token) => renamed.get(token) ?? token) };
+}
+
 /** Lift every occurrence of each attachment's bracket token out of a restored
  *  draft and mark the attachment chip-only, so the draft shows the card
  *  instead of the raw token; the send path appends chip-only tokens again.
@@ -192,6 +228,34 @@ export function foldAttachmentTokens(
       present.has(attachment.token) ? { ...attachment, chipOnly: true } : attachment
     ),
   };
+}
+
+/**
+ * Puts a restored message (text + attachments) into the composer. By default it
+ * goes before the live draft and joins the live chips (a message taken back
+ * from the transcript); `replace` swaps the whole draft and chip set for it
+ * (editing a previous message). `ifEmpty` only acts on an empty composer.
+ */
+export function restoreDraftHandoff(
+  deps: {
+    draftRef: { current: string };
+    attachmentsRef: { current: readonly ComposerAttachment[] };
+    replaceAttachments(attachments: ComposerAttachment[]): void;
+    restoredAttachments(value: RecordValue, text: string): { attachments: ComposerAttachment[]; text: string };
+    mergeRestoredAttachments(attachments: ComposerAttachment[], text: string): string;
+    setDraft(value: string): void;
+  },
+  value: RecordValue,
+  { ifEmpty = false, replace = false }: { ifEmpty?: boolean; replace?: boolean } = {}
+): boolean {
+  if (ifEmpty && (deps.draftRef.current.trim() || deps.attachmentsRef.current.length > 0)) return false;
+  if (replace) deps.replaceAttachments([]);
+  const restored = deps.restoredAttachments(value, String(value.text || ''));
+  const text = deps.mergeRestoredAttachments(restored.attachments, restored.text);
+  const next = replace ? text : [text, deps.draftRef.current].filter(Boolean).join('\n');
+  deps.draftRef.current = next;
+  deps.setDraft(next);
+  return true;
 }
 
 /** `@path` mentions for project-relative paths; drive letters and `..` are refused. */

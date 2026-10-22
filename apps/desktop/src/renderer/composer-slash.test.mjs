@@ -27,6 +27,7 @@ test('the composer offers only frequent commands and preserves direct command ex
   const { desktopComposerSlashCommands, resolveDesktopSlashCommand } = await import('./slash-commands.ts');
   const expected = [
     '/new',
+    '/btw',
     '/resume',
     '/model',
     '/compact',
@@ -76,6 +77,7 @@ test('the composer offers only frequent commands and preserves direct command ex
     paneActive: true,
     submit: async (...args) => {
       calls.push(['submit', ...args]);
+      return true;
     },
     abort: async () => {
       calls.push(['abort']);
@@ -158,6 +160,7 @@ test('the composer offers only frequent commands and preserves direct command ex
     await key('ArrowDown');
     await key('ArrowDown');
     await key('ArrowDown');
+    await key('ArrowDown');
     assert.equal(palette().querySelector('[aria-selected="true"] code').textContent, '/model');
     await key('Tab');
     assert.equal(input.value, '/model ');
@@ -220,6 +223,7 @@ test('the composer offers only frequent commands and preserves direct command ex
 
     await type('/doc');
     assert.deepEqual(usages(), ['/doctor']);
+    await key('Tab');
     await key('Enter');
     assert.deepEqual(calls.pop(), ['surface', 'doctor']);
 
@@ -281,11 +285,24 @@ test('the composer offers only frequent commands and preserves direct command ex
     });
     assert.equal(document.querySelector('.composer-add-menu'), null);
 
-    await type('/not-a-command');
-    await key('Enter');
-    assert.equal(input.value, '/not-a-command');
-    assert.match(toastText(), /Unknown command: \/not-a-command/);
-    assert.deepEqual(calls, []);
+    for (const literal of [
+      '/',
+      '/m',
+      '/not-a-command',
+      '/tmp/file',
+      '/Users/name/file',
+      '/model/file',
+      '/plain text',
+    ]) {
+      await type(literal);
+      await key('Enter');
+      const submitted = calls.pop();
+      assert.equal(submitted[0], 'submit', literal);
+      assert.equal(submitted[1], literal, 'send the original text, not a suggested command');
+      assert.equal(input.value, '');
+      assert.deepEqual(calls, []);
+    }
+    assert.doesNotMatch(toastText(), /Unknown command/);
 
     await type('draft to keep');
     await key('Escape');

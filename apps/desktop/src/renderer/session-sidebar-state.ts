@@ -32,6 +32,28 @@ import {
 } from './sidebar-open-state';
 import { usePersistedListOrder } from './use-persisted-list-order';
 
+/** Whether the session lists include agent sessions (persisted; Lead
+ *  sessions only by default). */
+export function useSidebarSessionFilter() {
+  const key = 'mixdog:session-sidebar-show-agents';
+  const [showAgents, setShowAgents] = useState(() => {
+    try {
+      return window.localStorage.getItem(key) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const updateShowAgents = useCallback((value: boolean) => {
+    setShowAgents(value);
+    try {
+      window.localStorage.setItem(key, String(value));
+    } catch {
+      /* The current view still changes when persistence is unavailable. */
+    }
+  }, []);
+  return { showAgents, updateShowAgents };
+}
+
 /** Open/collapsed map persisted under `storageKey`; updates write through. */
 function usePersistedOpenMap(
   storageKey: string,
@@ -60,6 +82,7 @@ export function useSidebarOpenState(allRows: DesktopSessionSummary[]) {
   const sectionIsOpen = (id: string) => isOpen(sectionOpen, id, SECTION_OPEN_DEFAULTS[id] ?? true);
   const toggleSection = (id: string) =>
     updateSectionOpen((current) => toggleOpen(current, id, SECTION_OPEN_DEFAULTS[id] ?? true));
+  const agentsOpen = sectionIsOpen('agents');
   const favoritesOpen = sectionIsOpen('favorites');
   const recentOpen = sectionIsOpen('recent');
   const projectsOpen = sectionIsOpen('projects');
@@ -85,6 +108,7 @@ export function useSidebarOpenState(allRows: DesktopSessionSummary[]) {
   return {
     forkOpen,
     toggleFork,
+    agentsOpen,
     favoritesOpen,
     recentOpen,
     projectsOpen,

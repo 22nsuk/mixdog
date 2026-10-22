@@ -1,4 +1,5 @@
 import { deflateSync } from 'node:zlib';
+import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
@@ -160,7 +161,11 @@ function renderIcon(size, { shape = 'rounded', markScale = 1 } = {}) {
         const scale = size / 256;
         const pointX = iconX / scale;
         const pointY = iconY / scale;
-        let color = shape === 'none' ? null : shape !== 'rounded' || insideRoundedSquareInset(tileX, tileY, size, 2.5 * scale) ? tile : [148, 163, 184];
+        let color = null;
+        if (shape !== 'none') {
+          color =
+            shape !== 'rounded' || insideRoundedSquareInset(tileX, tileY, size, 2.5 * scale) ? tile : [148, 163, 184];
+        }
         for (let arc = 0; arc < 3; arc += 1) {
           const sample = arcSample(iconX, iconY, size, (arc * 120 * Math.PI) / 180);
           if (sample !== null) color = gradientColor(titanium[arc], sample);
@@ -281,8 +286,9 @@ await writeFile(`${buildDir}/icon.icns`, Buffer.concat([icnsHeader, icnsBody]));
 const mobileRoot = fileURLToPath(new URL('../../mobile/', import.meta.url));
 const androidRes = `${mobileRoot}android/app/src/main/res`;
 const publicDir = fileURLToPath(new URL('../src/renderer/public/', import.meta.url));
-// Mark diameter is 158 of 256 units; 0.96 keeps it inside the 66dp/108dp safe zone.
-const adaptiveMarkScale = 0.96;
+// The launcher shows the middle 72dp of the 108dp layer, so 72/108 makes the
+// visible icon the same tile-to-mark proportion as the web/PWA icon.
+const adaptiveMarkScale = 72 / 108;
 const androidDensities = [
   ['ldpi', 36, 81],
   ['mdpi', 48, 108],
@@ -291,19 +297,23 @@ const androidDensities = [
   ['xxhdpi', 144, 324],
   ['xxxhdpi', 192, 432],
 ];
-for (const [density, legacySize, foregroundSize] of androidDensities) {
+// The desktop-only FastDirect snapshot has no apps/mobile; skip mobile outputs there.
+const hasMobile = existsSync(mobileRoot);
+for (const [density, legacySize, foregroundSize] of hasMobile ? androidDensities : []) {
   const dir = `${androidRes}/mipmap-${density}`;
   await writeFile(`${dir}/ic_launcher.png`, encodePng(legacySize, renderIcon(legacySize, { shape: 'rounded-flat' })));
   await writeFile(`${dir}/ic_launcher_round.png`, encodePng(legacySize, renderIcon(legacySize, { shape: 'circle' })));
   await writeFile(
     `${dir}/ic_launcher_foreground.png`,
-    encodePng(foregroundSize, renderIcon(foregroundSize, { shape: 'none', markScale: adaptiveMarkScale })),
+    encodePng(foregroundSize, renderIcon(foregroundSize, { shape: 'none', markScale: adaptiveMarkScale }))
   );
 }
-await writeFile(
-  `${mobileRoot}ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png`,
-  encodePng(1024, renderIcon(1024, { shape: 'full' }), true),
-);
+if (hasMobile) {
+  await writeFile(
+    `${mobileRoot}ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png`,
+    encodePng(1024, renderIcon(1024, { shape: 'full' }), true)
+  );
+}
 await writeFile(`${publicDir}mixdog-192.png`, encodePng(192, renderIcon(192, { shape: 'full' }), true));
 await writeFile(`${publicDir}mixdog-512.png`, encodePng(512, renderIcon(512, { shape: 'full' }), true));
 console.log(`BRAND_ICONS=Mixdog; ICO_BYTES=${offset}; ICNS_BYTES=${icnsBody.length + 8}`);

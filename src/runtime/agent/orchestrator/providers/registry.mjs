@@ -8,6 +8,7 @@ import { noEnabledProvidersError } from './registry-errors.mjs';
 import { providerTakesNativePdf } from '../../../attachments/store.mjs';
 import { modelProxyClientMode } from '../../../shared/model-proxy-mode.mjs';
 import { getModelProxyChannel } from './model-proxy-channel.mjs';
+import { boundedProviderCatalogOp } from './catalog-deadline.mjs';
 // OpenAI-compat provider names are self-declared by openai-compat-presets.mjs via
 // OPENAI_COMPAT_PRESETS. No parallel list maintained here.
 const providers = new Map();
@@ -24,7 +25,7 @@ const signatures = new Map();
 // preservation guard and the getProvider self-heal read it through these two
 // helpers so "usable right now" and "genuinely gone" are answered identically
 // in both places.
-const OAUTH_PROVIDER_NAMES = new Set([
+export const OAUTH_PROVIDER_NAMES = new Set([
   'anthropic-oauth',
   'openai-oauth',
   'grok-oauth',
@@ -33,6 +34,7 @@ const OAUTH_PROVIDER_NAMES = new Set([
   'mimo-oauth',
   'cursor-oauth',
   'antigravity-oauth',
+  'opencode-go-oauth',
 ]);
 // Providers the most recently applied config declared with enabled:false for a
 // USER reason. A deliberate opt-out (logout / disable in settings) must survive
@@ -178,7 +180,10 @@ const PROVIDER_MODULES = {
   'cursor-api': ['./cursor.mjs', 'CursorApiProvider'],
   openai: ['./openai-ws.mjs', 'OpenAIDirectProvider'],
   'mixdog-local': ['./mixdog-local.mjs', 'MixdogLocalProvider'],
-  'opencode-go': ['./opencode-go.mjs', 'OpenCodeGoProvider'],
+  'opencode-go-oauth': ['./opencode-go-oauth.mjs', 'OpenCodeGoOAuthProvider'],
+  // Multi-wire preset gateways (wire-route.mjs picks the wire per model).
+  openrouter: ['./openrouter.mjs', 'OpenRouterProvider'],
+  deepseek: ['./deepseek.mjs', 'DeepSeekProvider'],
 };
 
 // User-defined providers (cfg.type === 'custom') are keyed by a generated
@@ -209,7 +214,7 @@ async function instantiateProvider(name, Ctor, cfg, proxyChannel = null) {
     return wrapProviderAdmission(createModelProxyProvider(name, cfg, proxyChannel ?? getModelProxyChannel()), name);
   }
   if (isCustomProviderConfig(name, cfg)) return wrapProviderAdmission(await Ctor(name, cfg), name);
-  if (Object.hasOwn(OPENAI_COMPAT_PRESETS, name) && name !== 'opencode-go') {
+  if (Object.hasOwn(OPENAI_COMPAT_PRESETS, name) && !Object.hasOwn(PROVIDER_MODULES, name)) {
     return wrapProviderAdmission(new Ctor(name, cfg), name);
   }
   return createAccountPoolProvider(name, () => wrapProviderAdmission(new Ctor(cfg), name));
@@ -285,6 +290,8 @@ async function _initProvidersUnsynchronized(config, signal = null, proxyChannel 
   const enabledResults = await Promise.all(
     entries.map(async ([name, cfg]) => {
       if (!cfg.enabled) return null;
+      // A retired provider's saved config is inert: its replacement is its own entry.
+      if (Object.hasOwn(RETIRED_PROVIDER_ALIASES, name)) return null;
       // Idempotent reuse: an enabled provider whose config signature is
       // unchanged from the live registry is carried forward as-is. Only
       // added or changed providers are (re)constructed below.
@@ -435,7 +442,14 @@ function _scheduleOAuthSelfHeal(name) {
       _oauthSelfHealLoads.delete(name);
     });
 }
-export function getProvider(name) {
+// Provider ids that were retired: a saved route or session naming one is served
+// by its replacement account. When that account is not connected the lookup
+// misses like any other unconnected provider.
+const RETIRED_PROVIDER_ALIASES = Object.freeze({ 'opencode-go': 'opencode-go-oauth' });
+export function getProvider(requestedName) {
+  const name = Object.hasOwn(RETIRED_PROVIDER_ALIASES, requestedName)
+    ? RETIRED_PROVIDER_ALIASES[requestedName]
+    : requestedName;
   const cached = providers.get(name);
   if (cached) return cached;
   // OAuth lazy fallback. Covers the boot-time race where the credential probe
@@ -495,6 +509,33 @@ export function providerInputExcludesCache(name) {
 export function providerNativePdf(name) {
   return providerTakesNativePdf(providers.get(String(name || '').toLowerCase()));
 }
+/**
+ * Whether the named provider sends image input to its models: false only for
+ * an adapter that declares `takesImages = false` (the text-only local
+ * runtime, which lowers every image to a placeholder). A pure lookup; an
+ * unknown provider is treated as taking images, as attachments are.
+ */
+export function providerReadsImages(name) {
+  return providers.get(String(name || '').toLowerCase())?.takesImages !== false;
+}
+/**
+ * The user's image-input override for one model of a custom provider: true or
+ * false as set, undefined when unset (auto) or the provider is not a loaded
+ * custom one. A pure lookup; it never instantiates a provider.
+ */
+export function providerModelVisionOverride(name, model) {
+  const overrides = providers.get(String(name || '').toLowerCase())?.customConfig?.modelOverrides;
+  const value = overrides && Object.hasOwn(overrides, model) ? overrides[model]?.supportsVision : undefined;
+  return typeof value === 'boolean' ? value : undefined;
+}
+/**
+ * Whether the named provider's adapter declares `consumesReadWindows`: it
+ * needs the structured clip report of read results. A pure lookup; a proxy
+ * stand-in carries the PC adapter's declared trait.
+ */
+export function providerConsumesReadWindows(name) {
+  return providers.get(String(name || '').toLowerCase())?.consumesReadWindows === true;
+}
 export function getAllProviders() {
   // Defensive copy — callers must not mutate the live registry or retain
   // stale entries across re-init (initProviders rebuilds the map in place).
@@ -549,8 +590,21 @@ export async function _withRegisteredProviderForTestAsync(name, instance, fn) {
 // Shared by the startup refresh and the 24h/forced refresh below.
 function providerCatalogRefreshFn(provider) {
   if (typeof provider?._refreshModelCache === 'function') return () => provider._refreshModelCache();
-  if (typeof provider?.listModels === 'function') return () => provider.listModels();
+  if (typeof provider?.listModels === 'function') return (signal) => provider.listModels({ signal });
   return null;
+}
+
+// One provider's refresh, bounded per provider (catalog-deadline.mjs): a hung
+// or offline provider is reported and left out after the deadline, so the
+// refresh epoch still completes for everyone else. Its late answer lands in
+// its own model cache; the session catalog retries its listing after the
+// partial-catalog backoff.
+function boundedCatalogRefresh(name, provider, refreshFn, label) {
+  return boundedProviderCatalogOp({ name, provider, kind: 'refresh', run: refreshFn }).then(({ error }) => {
+    if (!error) return;
+    const msg = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`[provider:${name}] ${label} failed: ${msg}\n`);
+  });
 }
 
 function armNextCatalogRefresh(startedAt = Date.now()) {
@@ -578,14 +632,7 @@ export function refreshProviderCatalogsOnStartup() {
   for (const [name, provider] of providers) {
     const refreshFn = providerCatalogRefreshFn(provider);
     if (!refreshFn) continue;
-    pending.push(
-      Promise.resolve()
-        .then(() => refreshFn())
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`[provider:${name}] startup catalog refresh failed: ${msg}\n`);
-        })
-    );
+    pending.push(boundedCatalogRefresh(name, provider, refreshFn, 'startup catalog refresh'));
   }
   // Returns a completion promise so callers can invalidate stale model
   // caches once the fresh catalogs land. Still fire-and-forget: unawaited
@@ -610,25 +657,22 @@ export function refreshCatalogs(options = {}) {
   }
   armNextCatalogRefresh();
   const pending = [];
-  const metadataReady = Promise.resolve()
-    .then(() => refreshMetadataCatalog())
-    .catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[model-catalog] metadata refresh failed: ${msg}\n`);
-      return null;
-    });
+  // The shared metadata fetch is bounded the same way: providers wait for it
+  // at most one deadline before refreshing without fresh metadata.
+  const metadataReady = boundedProviderCatalogOp({
+    name: '(model-metadata)',
+    provider: null,
+    kind: 'refresh',
+    run: () => refreshMetadataCatalog(),
+  }).then(({ error }) => {
+    if (!error) return;
+    const msg = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`[model-catalog] metadata refresh failed: ${msg}\n`);
+  });
   for (const [name, provider] of providers) {
     const refreshFn = providerCatalogRefreshFn(provider);
     if (!refreshFn) continue;
-    pending.push(
-      Promise.resolve()
-        .then(() => metadataReady)
-        .then(() => refreshFn())
-        .catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`[provider:${name}] catalog refresh failed: ${msg}\n`);
-        })
-    );
+    pending.push(metadataReady.then(() => boundedCatalogRefresh(name, provider, refreshFn, 'catalog refresh')));
   }
   // Completion promise: lets callers drop stale model caches after refresh.
   _catalogRefreshPromise = Promise.allSettled([metadataReady, ...pending])

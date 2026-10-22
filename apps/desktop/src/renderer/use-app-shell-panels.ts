@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import { paintDrawerIntent, settleDrawerIntent } from './drawer-intent';
 import { defaultSessionLaneStore, useSessionLane } from './session-lane-store';
 import {
   getSidePanelMode,
@@ -14,6 +23,7 @@ import { DEFAULT_PROBLEMS_PANEL_FILTER, type ProblemsPanelFilter } from './Workb
 import {
   createExtensionsPane,
   createProjectsPane,
+  createSkillsPane,
   createSchedulesPane,
   createWebhooksPane,
   createWorkflowsPane,
@@ -22,6 +32,7 @@ import {
 } from './app-shell-components';
 import { useSidePanelOpenFlip } from './app-side-panel-flip';
 import { usePageHideFlush } from './layout-persistence';
+import { NEW_SCHEDULE_REQUEST_EVENT } from './routine-editor-request';
 import { BOTTOM_SHEET_QUERY, NARROW_SHELL_QUERY, useResponsiveShellBands } from './use-responsive-shell-bands';
 
 const SIDEBAR_OPEN_KEY = 'mixdog.desktop-sidebar-open.v1';
@@ -114,9 +125,24 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
   const [sidebarMotion, setSidebarMotion] = useState<'animated' | 'instant'>('animated');
   const applySidebarOpen = useCallback((open: boolean, motion: 'animated' | 'instant' = 'animated') => {
     sidebarOpenIntent.current = open;
+    if (narrowShellRef.current && motion === 'animated') {
+      // A phone drawer tap: the sheet's look flips through CSS on this very
+      // frame, and the shell's heavy render commits as a transition behind it.
+      paintDrawerIntent(open);
+      startTransition(() => {
+        setSidebarMotion(motion);
+        setSidebarOpen(open);
+      });
+      return;
+    }
     setSidebarMotion(motion);
     setSidebarOpen(open);
   }, []);
+  // Every commit checks whether the rendered drawer has reached the latest
+  // tap's intent; only then does the CSS stamp go.
+  useLayoutEffect(() => {
+    settleDrawerIntent(sidebarOpen, sidebarOpenIntent.current);
+  });
   // The bottom panel is the SAME kind of narrow-band surface as the side
   // sheets (user: 하단 탭도 좌우 탭과 같은 취급 — 겹치면 안 된다): while a
   // sheet would overlap it (dock ≤940px, drawer ≤760px), opening either
@@ -273,6 +299,7 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
     projects: createProjectsPane(),
     workflows: createWorkflowsPane(),
     extensions: createExtensionsPane(),
+    skills: createSkillsPane(),
   }));
   const markSidebarPanelFailed = useCallback((panel: SidebarPanelKey) => {
     setFailedSidebarPanels((current) => {
@@ -288,6 +315,7 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
         if (panel === 'webhooks') return { ...current, webhooks: createWebhooksPane() };
         if (panel === 'projects') return { ...current, projects: createProjectsPane() };
         if (panel === 'workflows') return { ...current, workflows: createWorkflowsPane() };
+        if (panel === 'skills') return { ...current, skills: createSkillsPane() };
         return { ...current, extensions: createExtensionsPane() };
       });
       setFailedSidebarPanels((current) => {
@@ -312,6 +340,11 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
     setProjectsOpen(false);
     openSidebar();
   }, [mountSidebarPanel, openSidebar, trackSidebarPanelModule]);
+  // A bot room's "루틴 만들기" opens the panel; the panel opens its editor.
+  useEffect(() => {
+    window.addEventListener(NEW_SCHEDULE_REQUEST_EVENT, openSchedules);
+    return () => window.removeEventListener(NEW_SCHEDULE_REQUEST_EVENT, openSchedules);
+  }, [openSchedules]);
   // Inbound-webhooks panel: same session-panel concept as Schedules
   // (user decision — moved out of the settings dialog).
   const [webhooksOpen, setWebhooksOpen] = useState(false);

@@ -4,9 +4,12 @@
  * agent work, and status publication at start and after terminal settlement.
  */
 import { sanitizeTaskMeta, startBackgroundTask } from '../../../../runtime/shared/background-tasks.mjs';
+import { recordAgentTaskStart } from '../../../../runtime/shared/agent-task-starts.mjs';
 import { resourceAdmission } from '../../../../runtime/shared/resource-admission.mjs';
 import { clean, terminalPidForContext } from '../helpers.mjs';
 import { renderResult } from '../render.mjs';
+import { closeManagedSession } from '../../../lifecycle/shared.mjs';
+import { hopOf } from '../../../../runtime/shared/bot-hops.mjs';
 
 /** The completion callback that hands a worker's result back to its caller session; null without a handoff. */
 function handoffNotifier(handoffSessionId, notifySessionCompletion) {
@@ -28,6 +31,8 @@ export function createJobStarter({ mgr, notifyStatusChange, notifySessionComplet
       ownerSessionId: ownerSessionId || null,
       clientHostPid: clientHostPid || null,
       notifyFn: handoffNotifier(handoffSessionId, notifySessionCompletion),
+      // The turn that started the job: its completion returns at that bot-chain hop (bot-hops.mjs).
+      ...(hopOf(notifyContext?.hop) ? { hop: notifyContext.hop } : {}),
     };
     const jobMeta = sanitizeTaskMeta({
       ...(meta || {}),
@@ -53,7 +58,9 @@ export function createJobStarter({ mgr, notifyStatusChange, notifySessionComplet
         const currentMeta = task?.meta || jobMeta;
         if (currentMeta?.sessionId) {
           try {
-            Promise.resolve(mgr.closeSession(currentMeta.sessionId, 'agent-task-cancel')).catch(() => {});
+            Promise.resolve(
+              closeManagedSession(mgr, currentMeta.sessionId, 'agent-task-cancel', { tombstone: false })
+            ).catch(() => {});
           } catch {}
         }
         setImmediate(notifyStatusChange);
@@ -79,6 +86,9 @@ export function createJobStarter({ mgr, notifyStatusChange, notifySessionComplet
         }
       },
     });
+    // The model's tool call that started this job owns it (its result message
+    // carries the id: agent-task-starts.mjs).
+    recordAgentTaskStart(notifyContext?.toolCallId, task.taskId);
     notifyStatusChange();
     return task;
   };

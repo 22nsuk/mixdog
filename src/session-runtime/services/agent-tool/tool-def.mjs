@@ -53,6 +53,20 @@ export const AGENT_TOOL = {
       file: { type: 'string', description: 'Path to task text; alternative to prompt/message for spawn/send.' },
       cwd: { type: 'string', description: 'Project directory for a new or respawned agent.' },
       context: { type: 'string', description: 'Extra context for the spawn/send turn.' },
+      attachments: {
+        type: 'array',
+        items: { type: 'string' },
+        maxItems: 8,
+        description:
+          "spawn/send: files to attach (images, PDF/Office, text): a conversation attachment's file name or [attachment:id], or a path inside your folders. Produced files come back as paths; forward them by path.",
+      },
+      model: {
+        type: 'string',
+        description:
+          "Spawn only, and only when the user explicitly names a model: runs this one spawn on it instead of the agent's preset route, which stays the default (omit otherwise). Id, display name, or words of it; ambiguous or unknown names fail with candidates. The agent still supplies role and permissions.",
+      },
+      provider: { type: 'string', description: 'Narrows model to one provider; requires model.' },
+      effort: { type: 'string', description: 'Reasoning effort for an explicit model.' },
     },
     required: ['type'],
     additionalProperties: false,

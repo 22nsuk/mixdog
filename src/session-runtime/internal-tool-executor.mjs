@@ -30,10 +30,12 @@ export function createInternalToolExecutor({
   runNativeWebSearch,
   activeToolSurface,
   mcpStatus,
+  awaitMcpConnect,
   skillToolContent,
   getWorkspaceApi,
   getSessionManager,
   getLifecycleApi,
+  executeSessionControl,
 }) {
   const handlers = {
     ...createBridgeToolHandlers({ rt }),
@@ -48,6 +50,7 @@ export function createInternalToolExecutor({
       runNativeWebSearch,
       activeToolSurface,
       mcpStatus,
+      awaitMcpConnect,
       skillToolContent,
     }),
     ...createWorkspaceToolHandlers({
@@ -58,6 +61,7 @@ export function createInternalToolExecutor({
       getWorkspaceApi,
       getSessionManager,
       getLifecycleApi,
+      executeSessionControl,
     }),
   };
 

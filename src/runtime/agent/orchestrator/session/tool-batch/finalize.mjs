@@ -11,10 +11,13 @@ import {
 import { isOffloadedToolResultText, maybeOffloadToolResultBatch } from '../tool-result-offload.mjs';
 import { setReadCached, setScopedToolCached } from '../read-dedup.mjs';
 import { _stripMcpPrefix, _isReadTool, _isScopedCacheableTool, _isShellTool } from '../loop/tool-classify.mjs';
+import { takeAgentTaskStarts } from '../../../../shared/agent-task-starts.mjs';
 import { crossTurnSignature, isEditProgressTool } from '../loop/completion-guards.mjs';
 import { isEagerDispatchable, isToolCallDedupEligible, parseNativeToolSearchPayload } from '../loop/tool-helpers.mjs';
 import { restoreToolCallBodyForId } from '../loop/stored-tool-args.mjs';
 import { stageToolResult } from './state.mjs';
+import { providerConsumesReadWindows } from '../../providers/registry.mjs';
+import { remoteReadWindowReport } from '../../tools/builtin/external-tool-adapters.mjs';
 import { toolMetaPatchFromMessage } from '../transcript-restore/tool-result-status.mjs';
 import {
   compactToolResultImage,
@@ -42,9 +45,27 @@ export async function finalizeBatchResults(batch) {
   for (const state of offloadStates) {
     if (state?.result && typeof state.result === 'object') state.result = await compactResultImages(state.result);
   }
+  await reportReadWindows(batch);
   for (let index = 0; index < batch.completed.length; index += 1) {
     postProcessCompleted(batch, batch.completed[index], offloadStates[index]);
     batch.throwIfAborted();
+  }
+}
+
+// A provider that declares `consumesReadWindows` (also through a remote/proxy
+// stand-in) only receives the read text. Its read results carry the
+// structured clip report next to the text, for every serving path (live,
+// eager or cached). Failure fails closed.
+async function reportReadWindows(batch) {
+  if (!providerConsumesReadWindows(batch.sessionRef?.provider)) return;
+  for (const completed of batch.completed) {
+    if (!completed.executeOk || !_isReadTool(completed.call.name)) continue;
+    try {
+      const report = await remoteReadWindowReport(completed.call.arguments, batch.cwd, completed.result);
+      if (report) completed.readWindow = report;
+    } catch {
+      completed.readWindow = { lineClipped: true };
+    }
   }
 }
 
@@ -57,7 +78,10 @@ const UNDECODABLE_IMAGE_TEXT = '[image omitted: could not be decoded]';
 // inline image is fully decoded (not only large ones); with no decoder
 // installed the image is kept as is.
 async function rejectedImageText(base64, rawMime) {
-  const mimeType = String(rawMime || 'image/png').split(';')[0].trim().toLowerCase();
+  const mimeType = String(rawMime || 'image/png')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
   if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) return unsupportedImageText(mimeType);
   try {
     await resizeImageBuffer(Buffer.from(base64, 'base64'), mimeType.split('/')[1]);
@@ -73,8 +97,8 @@ async function rejectedImageText(base64, rawMime) {
 // the result reaches the read cache or the transcript; stored history is never
 // revisited.
 export async function compactResultImages(result) {
-  const parts = Array.isArray(result) ? result : Array.isArray(result?.content) ? result.content : null;
-  if (!parts) return result;
+  const parts = Array.isArray(result) ? result : result?.content;
+  if (!Array.isArray(parts)) return result;
   let changed = false;
   const next = [];
   for (const part of parts) {
@@ -101,16 +125,16 @@ export async function compactResultImages(result) {
     if (dims.originalWidth !== dims.displayWidth || dims.originalHeight !== dims.displayHeight) {
       next.push({ type: 'text', text: supersedingImageMetadataText(dims) });
     }
-    next.push(
-      source
-        ? { ...part, source: { ...source, data: compacted.data, media_type: compacted.mimeType } }
-        : {
-            ...part,
-            data: compacted.data,
-            mimeType: compacted.mimeType,
-            ...(part.mediaType ? { mediaType: compacted.mimeType } : {}),
-          }
-    );
+    if (source) {
+      next.push({ ...part, source: { ...source, data: compacted.data, media_type: compacted.mimeType } });
+    } else {
+      next.push({
+        ...part,
+        data: compacted.data,
+        mimeType: compacted.mimeType,
+        ...(part.mediaType ? { mediaType: compacted.mimeType } : {}),
+      });
+    }
   }
   if (!changed) return result;
   return Array.isArray(result) ? next : { ...result, content: next };
@@ -281,8 +305,12 @@ function completedToolResult(completed, result, postprocessStartedAt) {
     toolKind: completed.resultKind,
     toolTiming: toolTiming(completed, postprocessStartedAt),
     ...(completed.nativeToolSearch ? { nativeToolSearch: completed.nativeToolSearch } : {}),
+    ...(completed.readWindow ? { readWindow: completed.readWindow } : {}),
     ...(uiDiff !== null ? { uiDiff } : {}),
     ...toolMetaPatchFromMessage(completed.result),
+    // Every agent call's result names the jobs it started (none: []), so a
+    // task session's report follows exactly its own agents' results.
+    ...(_stripMcpPrefix(call.name) === 'agent' ? { agentTaskIds: takeAgentTaskStarts(call.id) } : {}),
   };
 }
 
@@ -319,7 +347,7 @@ function stagePostProcessingFailure(batch, completed, postErr, postprocessStarte
   if (sessionRef?._scopedCacheOutcomeByCallId instanceof Map && call?.id) {
     sessionRef._scopedCacheOutcomeByCallId.delete(call.id);
   }
-  if (call?.id) restoreToolCallBodyForId(batch.assistantTurnMsg, batch.calls, call.id);
+  if (call?.id) restoreToolCallBodyForId(batch.assistantTurnMsg, batch.wireCalls, call.id);
   const message = `Error: tool result post-processing failed for "${call.name}": ${postErr instanceof Error ? postErr.message : String(postErr)}`;
   traceAgentToolFailure({
     sessionId: batch.sessionId,

@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { X } from 'lucide-react';
 
 import { t } from '../i18n';
+import { scrimDismiss } from '../scrim-dismiss';
 import { OpenSelect } from '../OpenSelect';
 import type { RecordValue } from './capability-data';
 import { record } from '../record-utils';
@@ -58,13 +59,18 @@ export function CustomModelEditor({
   override?: RecordValue;
   run: (capability: any, args?: unknown[], key?: string, refresh?: boolean, ...rest: any[]) => Promise<unknown>;
   onClose(): void;
-  onSaved?(patch: Patch): void;
+  /** Receives the save's answer: the provider row as stored. */
+  onSaved?(provider: RecordValue): void;
 }) {
   const uid = useId();
   const modelId = String(row.id);
   const ov = override ?? {};
   const ovReasoning = record(ov.reasoning);
-  const custom = record(row.customReasoning);
+  // The stored override is what the model runs with, also when `row` predates
+  // it: discovered rows reload only on the next discovery.
+  const current: RecordValue = { ...row, ...ov };
+  if (Array.isArray(ovReasoning.levels)) current.reasoningLevels = ovReasoning.levels;
+  const custom = { ...record(row.customReasoning), ...ovReasoning };
   // Top-level patch and reasoning patch; a null value means "reset".
   const [patch, setPatch] = useState<Patch>({});
   const [reasoning, setReasoning] = useState<Patch>({});
@@ -87,16 +93,16 @@ export function CustomModelEditor({
   };
   const inherited = (key: string) => has(patch, key) && patch[key] === null;
 
-  const hidden = has(patch, 'hidden') && patch.hidden !== null ? Boolean(patch.hidden) : row.hidden === true;
+  const hidden = has(patch, 'hidden') && patch.hidden !== null ? Boolean(patch.hidden) : current.hidden === true;
   const text = (key: 'name' | 'contextWindow' | 'maxOutputTokens', rowKey: string) => {
     if (has(patch, key) && patch[key] !== null) return String(patch[key]);
     if (inherited(key)) return '';
-    return row[rowKey] === undefined || row[rowKey] === null ? '' : String(row[rowKey]);
+    return current[rowKey] === undefined || current[rowKey] === null ? '' : String(current[rowKey]);
   };
   const levels: ReasoningLevel[] =
     has(reasoning, 'levels') && reasoning.levels !== null
       ? (reasoning.levels as ReasoningLevel[])
-      : effectiveLevels(row);
+      : effectiveLevels(current);
   const wireFormat =
     has(reasoning, 'wireFormat') && reasoning.wireFormat !== null
       ? String(reasoning.wireFormat)
@@ -106,6 +112,15 @@ export function CustomModelEditor({
   ) as Record<string, string>;
   const replay =
     has(reasoning, 'replay') && reasoning.replay !== null ? Boolean(reasoning.replay) : custom.replay === true;
+
+  // Tri-state image input: no override = Auto (catalog / default), else on / off.
+  const visionValue = has(patch, 'supportsVision') ? patch.supportsVision : ov.supportsVision;
+  const visionChoice = visionValue === true ? 'on' : visionValue === false ? 'off' : 'auto';
+  const visionOptions = [
+    { value: 'auto', label: t('Auto') },
+    { value: 'on', label: t('On') },
+    { value: 'off', label: t('Off') },
+  ];
 
   const overridden = (value: unknown) => value !== undefined;
   const reset = (apply: () => void, isOverridden: boolean, touched: boolean, label: string) => (
@@ -160,8 +175,15 @@ export function CustomModelEditor({
     }
     setSaving(true);
     try {
-      await run('updateCustomProviderModel', [providerId, modelId, out], `custom-model-${uid}`, true, true, 'throw');
-      onSaved?.(out);
+      const saved = await run(
+        'updateCustomProviderModel',
+        [providerId, modelId, out],
+        `custom-model-${uid}`,
+        true,
+        true,
+        'throw'
+      );
+      onSaved?.(record(saved));
       onClose();
     } catch (reason) {
       setError(errorMessage(reason));
@@ -188,13 +210,8 @@ export function CustomModelEditor({
   );
 
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: scrim click-to-dismiss; keyboard dismissal is the close button and Escape.
-    <div
-      className="settings-oauth-layer"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) close();
-      }}
-    >
+    // Scrim click-to-dismiss; keyboard dismissal is the close button and Escape.
+    <div className="settings-oauth-layer" {...scrimDismiss(close)}>
       <section
         className="settings-oauth-dialog settings-custom-provider-dialog settings-model-editor"
         role="dialog"
@@ -233,6 +250,24 @@ export function CustomModelEditor({
           </div>
           {numberField('contextWindow', 'contextWindow', t('Context window'))}
           {numberField('maxOutputTokens', 'maxOutputTokens', t('Max output tokens'))}
+          <span className="settings-model-label">{t('Image input')}</span>
+          <div className="settings-model-field">
+            <OpenSelect
+              className="settings-select"
+              ariaLabel={t('Image input')}
+              value={visionChoice}
+              disabled={saving}
+              options={visionOptions}
+              onChange={(value) => set('supportsVision', value === 'on' ? true : value === 'off' ? false : null)}
+            />
+            {badge(overridden(ov.supportsVision), has(patch, 'supportsVision') && patch.supportsVision !== null)}
+            {reset(
+              () => set('supportsVision', null),
+              overridden(ov.supportsVision),
+              has(patch, 'supportsVision'),
+              t('Image input')
+            )}
+          </div>
 
           <fieldset className="settings-model-reasoning">
             <legend>{t('Reasoning levels')}</legend>

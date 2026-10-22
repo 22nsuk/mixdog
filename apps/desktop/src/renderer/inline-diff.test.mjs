@@ -9,6 +9,7 @@ import { SessionDiffPane } from './SessionDiffPane.tsx';
 import { defaultSessionLaneStore } from './session-lane-store.ts';
 import { DiffHeaderControls, diffModeActions } from './diff-header-controls.tsx';
 import { DockHeaderRow, splitDockActions } from './pane-dock-chrome.tsx';
+const { overrideConfirmAction } = await import('./app-confirm.tsx');
 
 const h = React.createElement;
 
@@ -114,7 +115,7 @@ test('the pane stacks every changed file with its diff in one scroll: no list le
     assert.equal(sections[0].querySelector('.session-diff-section-title').title, 'src/cart.js');
     assert.equal(q('.session-diff-back'), null);
     assert.equal(q('.session-diff-files'), null);
-    assert.match(q('.session-diff-count').textContent, /2 files changed/);
+    assert.match(q('.session-diff-toolbar .session-diff-scope').title, /2 files changed/);
   } finally {
     await view.done();
   }
@@ -151,7 +152,7 @@ test('revert sends the turn checkpoint and is disabled while the session is busy
   const sessionId = 'sd-revert';
   const calls = [];
   const view = await mount(h(SessionDiffPane, { sessionId, active: true, onClose() {} }), (win) => {
-    win.confirm = () => true;
+    overrideConfirmAction(() => true);
     win.mixdogDesktop = {
       invokeCapability: async (request) => {
         calls.push(request);
@@ -195,6 +196,113 @@ test('revert sends the turn checkpoint and is disabled while the session is busy
   }
 });
 
+test('an idle lane republish does not re-read the turn review; a new turn does', async () => {
+  const sessionId = 'sd-revert-idle';
+  const calls = [];
+  const view = await mount(h(SessionDiffPane, { sessionId, active: true, onClose() {} }), (win) => {
+    win.mixdogDesktop = {
+      invokeCapability: async (request) => {
+        calls.push(request);
+        if (request.capability === 'getTurnReviewDiff') {
+          return { value: { checkpointId: 'cp-1', files: [{ path: 'src/cart.js' }] } };
+        }
+        return {
+          value: {
+            supported: true,
+            files: [{ path: 'src/cart.js', status: 'M', additions: 2, deletions: 1, binary: false }],
+            patch: PATCH,
+          },
+        };
+      },
+    };
+  });
+  const reviews = () => calls.filter((call) => call.capability === 'getTurnReviewDiff').length;
+  const publish = (contentRevision, items) =>
+    act(async () => {
+      defaultSessionLaneStore.apply({
+        sessionId,
+        frameSource: 'live',
+        contentRevision,
+        snapshot: { sessionId, items, busy: false },
+      });
+    });
+  const turn = (id) => [
+    { kind: 'user', id: `u-${id}`, text: 'go', checkpointId: id },
+    { kind: 'turndone', id: `d-${id}`, status: 'complete', checkpointId: id },
+  ];
+  try {
+    const wait = () => act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    await publish(1, turn('cp-1'));
+    await wait();
+    const settled = reviews();
+    assert.ok(settled >= 1);
+    // Background agent status reaching the idle Lead moves only the lane's
+    // publication revision: the review the Revert buttons answer from is unchanged.
+    for (const revision of [2, 3, 4, 5]) {
+      await publish(revision, turn('cp-1'));
+      await wait();
+    }
+    assert.equal(reviews(), settled);
+    // A finished new turn has a new checkpoint: its review is read.
+    await publish(6, [...turn('cp-1'), ...turn('cp-2')]);
+    await wait();
+    assert.equal(reviews(), settled + 1);
+  } finally {
+    await view.done();
+  }
+});
+
+test('a revert re-reads the turn review without a new checkpoint', async () => {
+  const sessionId = 'sd-revert-reread';
+  const calls = [];
+  let reviewed = ['src/cart.js', 'src/util.js'];
+  const view = await mount(h(SessionDiffPane, { sessionId, active: true, onClose() {} }), (win) => {
+    overrideConfirmAction(() => true);
+    win.mixdogDesktop = {
+      invokeCapability: async (request) => {
+        calls.push(request);
+        if (request.capability === 'getTurnReviewDiff') {
+          return { value: { checkpointId: 'cp-1', files: reviewed.map((path) => ({ path })) } };
+        }
+        if (request.capability === 'revertTurnReviewFile') {
+          // The turn's review no longer lists the restored file; the
+          // checkpoint and the history epoch are unchanged.
+          reviewed = reviewed.filter((path) => path !== request.args[0]);
+          return { value: { ok: true } };
+        }
+        return {
+          value: {
+            supported: true,
+            files: ['src/cart.js', 'src/util.js'].map((path) => ({
+              path,
+              status: 'M',
+              additions: 2,
+              deletions: 1,
+              binary: false,
+            })),
+            patch: '',
+          },
+        };
+      },
+    };
+  });
+  const reviews = () => calls.filter((call) => call.capability === 'getTurnReviewDiff').length;
+  const revert = (path) => view.container.querySelector(`[aria-label="Revert ${path}"]`);
+  try {
+    const wait = () => act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    await wait();
+    assert.equal(revert('src/cart.js').disabled, false);
+    const settled = reviews();
+    await view.click(revert('src/cart.js'));
+    await wait();
+    assert.equal(reviews(), settled + 1, 'the revert re-read the review');
+    assert.equal(revert('src/cart.js').disabled, true, 'the reverted file is no longer revertable');
+    assert.equal(revert('src/util.js').disabled, false);
+  } finally {
+    await view.done();
+  }
+});
+
 test('the unified diff body shows add/del rows and expandable folds', async () => {
   const view = await mount(h(FileDiffBody, { patch: PATCH, mode: 'unified' }));
   try {
@@ -204,7 +312,8 @@ test('the unified diff body shows add/del rows and expandable folds', async () =
     assert.equal(first.querySelector('[data-kind="del"] .inline-diff-ln').textContent, '23');
     // The unmodified run is a button that expands that run.
     const fold = first.querySelector('button.inline-diff-fold');
-    assert.match(fold.textContent, /4 unmodified lines/);
+    assert.equal(fold.textContent, '');
+    assert.equal(fold.getAttribute('aria-label'), '4 unmodified lines');
     await view.click(fold);
     assert.equal(first.querySelector('button.inline-diff-fold'), null);
     assert.equal(first.querySelectorAll('.inline-diff-row').length, 12);
@@ -373,7 +482,7 @@ for (const [state, sessionId, invoke, expectCount, expectRefreshDisabled] of [
       assert.equal(q('[data-dock-header]').length, 1);
       assert.equal(q('[aria-label="Changes"]').length >= 1, true);
       assert.equal(q('[aria-label="Close panel"]').length, 1);
-      assert.equal(q('.session-diff-count').length, expectCount ? 1 : 0);
+      assert.equal(q('.session-diff-toolbar .session-diff-scope[title]').length, expectCount ? 1 : 0);
       const refresh = view.container.querySelector('[aria-label="Refresh"]');
       if (refresh) assert.equal(refresh.disabled, expectRefreshDisabled);
     } finally {
@@ -402,7 +511,7 @@ test('file-count changes grow or shrink the stack in place', async () => {
         snapshot: { sessionId: 'sd-count', items: [{ id: 'rev-1' }], contentRevision: 1 },
       });
     });
-    await settle();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
     assert.equal(view.container.querySelectorAll('.session-diff-section').length, 2);
     assert.equal(view.container.querySelector('.session-diff-back'), null);
   } finally {

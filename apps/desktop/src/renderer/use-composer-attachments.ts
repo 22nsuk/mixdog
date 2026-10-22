@@ -18,11 +18,12 @@ import {
 } from './composer-attachments';
 import { t } from './i18n';
 import { MAX_COMPOSER_ATTACHMENTS, pastedTextFields, type ComposerAttachment } from './composer-support';
-import { insertComposerToken, takeRejectedComposerSubmissionRecoveries } from './composer-draft';
+import { insertComposerToken, takeRejectedComposerSubmissionRecoveries, withContentDigest } from './composer-draft';
 import {
   absolutePathTokens,
   foldAttachmentTokens,
   projectMentionTokens,
+  renumberRestoredAttachments,
   restoreAttachmentsFromRecord,
 } from './composer-attachment-restore';
 import { useComposerFileDrop } from './use-composer-file-drop';
@@ -88,8 +89,50 @@ export function useComposerAttachments({
   const attachmentSequence = useRef(1);
   const fileInput = useRef<HTMLInputElement>(null);
   const insertTokenAtCaret = useCaretTokenInsert({ draftRef, setDraft, textarea, historyNavigation });
+  // Loads (file read, downscale, IPC read, server upload) still in flight for
+  // the current composer. `loadEpoch` changes whenever the composer is reset
+  // for another conversation, so a late completion can tell it is stale.
+  const loadEpoch = useRef(0);
+  const pendingLoads = useRef(0);
+  const [pendingLoadCount, setPendingLoadCount] = useState(0);
 
-  const replaceAttachments = useCallback((next: ComposerAttachment[]) => {
+  const trackPending = useCallback(
+    async (count: number, run: (abandoned: () => boolean) => Promise<void>) => {
+      const epoch = loadEpoch.current;
+      pendingLoads.current += count;
+      setPendingLoadCount(pendingLoads.current);
+      try {
+        await run(() => epoch !== loadEpoch.current || transitioningRef.current);
+      } finally {
+        if (epoch === loadEpoch.current) {
+          pendingLoads.current -= count;
+          setPendingLoadCount(pendingLoads.current);
+        }
+      }
+    },
+    [transitioningRef]
+  );
+
+  const reportDroppedNames = useCallback((names: string[]) => {
+    if (!names.length) return;
+    const message = t('{{names}}: not attached — the conversation changed while it was loading.', {
+      names: names.join(', '),
+    });
+    setAttachmentError((current) => [current, message].filter(Boolean).join('\n'));
+  }, []);
+  const reportDroppedFiles = useCallback(
+    (files: File[]) => reportDroppedNames(files.map((file) => file.name || 'Pasted file')),
+    [reportDroppedNames]
+  );
+  const reportDroppedPaths = useCallback(
+    (paths: string[]) => reportDroppedNames(paths.map((path) => path.split(/[\\/]/).pop() || path)),
+    [reportDroppedNames]
+  );
+
+  const replaceAttachments = useCallback((incoming: ComposerAttachment[]) => {
+    // Every chip entering the composer starts its content digest once (the
+    // send's retry identity); a chip that already has one is kept as is.
+    const next = incoming.map(withContentDigest);
     for (const attachment of next) {
       attachmentSequence.current = Math.max(attachmentSequence.current, attachment.id + 1);
     }
@@ -166,7 +209,7 @@ export function useComposerAttachments({
       // pastes, so every occurrence follows the new line count.
       if (updated.token !== attachment.token && draftRef.current.includes(attachment.token)) {
         setDraft((draft) => {
-          const next = draft.replaceAll(attachment.token, updated.token);
+          const next = draft.replaceAll(attachment.token, () => updated.token);
           draftRef.current = next;
           return next;
         });
@@ -192,14 +235,17 @@ export function useComposerAttachments({
     [insertTokenAtCaret]
   );
 
-  const attachFiles = useCallback(
-    async (files: FileList | File[], sourcePaths?: ReadonlyMap<File, string>) => {
-      if (transitioningRef.current) return;
+  const ingestFiles = useCallback(
+    async (files: File[], sourcePaths: ReadonlyMap<File, string> | undefined, abandoned: () => boolean) => {
+      if (abandoned()) {
+        reportDroppedFiles(files);
+        return;
+      }
       setAttachmentError('');
       const fallbackPaths: string[] = [];
       const appendError = (message: string) =>
         setAttachmentError((current) => [current, message].filter(Boolean).join('\n'));
-      let list = Array.from(files);
+      let list = files;
       // A server window's sessions cannot reach this PC's disk: a file from
       // this PC first uploads into the server's staging folder, and its server
       // path then stands in wherever a local window would use the local path.
@@ -210,14 +256,20 @@ export function useComposerAttachments({
         const fromThisPc = list.filter((file) => !sourcePaths?.has(file));
         if (fromThisPc.length) {
           const { uploaded, errors } = await uploadFilesToServer(fromThisPc, serverUploadScope(recoveryScope));
-          if (transitioningRef.current) return;
+          if (abandoned()) {
+            reportDroppedFiles(list);
+            return;
+          }
           for (const [file, entry] of uploaded) serverPaths.set(file, entry.absolutePath);
           for (const message of errors) appendError(message);
           list = list.filter((file) => sourcePaths?.has(file) || serverPaths.has(file));
         }
       }
-      for (const file of list) {
-        if (transitioningRef.current) return;
+      for (const [index, file] of list.entries()) {
+        if (abandoned()) {
+          reportDroppedFiles(list.slice(index));
+          return;
+        }
         let unsupported = false;
         try {
           if (attachmentsRef.current.length >= MAX_COMPOSER_ATTACHMENTS) {
@@ -225,9 +277,12 @@ export function useComposerAttachments({
           }
           const inline = await attachmentFromFile(file, {
             id: attachmentSequence.current++,
-            cancelled: () => transitioningRef.current,
+            cancelled: abandoned,
           });
-          if (!inline) return;
+          if (!inline || abandoned()) {
+            reportDroppedFiles(list.slice(index));
+            return;
+          }
           // The model sees the (possibly downscaled) inline image; the note
           // names the uploaded original the agent can open on the server.
           const serverPath = serverPaths.get(file);
@@ -242,7 +297,10 @@ export function useComposerAttachments({
               : inline;
           if (insertAttachment(attachment)) continue;
         } catch (reason) {
-          if (transitioningRef.current) return;
+          if (abandoned()) {
+            reportDroppedFiles(list.slice(index));
+            return;
+          }
           if (reason instanceof RejectedComposerFileError) {
             appendError(reason.message);
             continue;
@@ -275,7 +333,15 @@ export function useComposerAttachments({
       }
       insertAbsolutePaths(fallbackPaths);
     },
-    [insertAbsolutePaths, insertAttachment, recoveryScope, transitioningRef]
+    [insertAbsolutePaths, insertAttachment, recoveryScope, reportDroppedFiles]
+  );
+
+  const attachFiles = useCallback(
+    (files: FileList | File[], sourcePaths?: ReadonlyMap<File, string>) => {
+      const list = Array.from(files);
+      return trackPending(list.length, (abandoned) => ingestFiles(list, sourcePaths, abandoned));
+    },
+    [ingestFiles, trackPending]
   );
 
   /** Folders dropped from this PC: their path in a local window; a server
@@ -297,19 +363,26 @@ export function useComposerAttachments({
   );
 
   const attachLocalPaths = useCallback(
-    async (paths: string[]) => {
-      if (transitioningRef.current) return;
-      setAttachmentError('');
-      const loaded = await localFilesFromPaths(window.mixdogDesktop, paths);
-      if (transitioningRef.current) return;
-      if (loaded.files.length) await attachFiles(loaded.files, loaded.sourcePaths);
-      if (transitioningRef.current) return;
-      insertAbsolutePaths([...loaded.directories.map((entry) => entry.absolutePath), ...loaded.unattachedPaths]);
-      if (loaded.errors.length) {
-        setAttachmentError((current) => [...loaded.errors, current].filter(Boolean).join('\n'));
-      }
-    },
-    [attachFiles, insertAbsolutePaths, transitioningRef]
+    (paths: string[]) =>
+      trackPending(1, async (abandoned) => {
+        if (abandoned()) {
+          reportDroppedPaths(paths);
+          return;
+        }
+        setAttachmentError('');
+        const loaded = await localFilesFromPaths(window.mixdogDesktop, paths);
+        if (abandoned()) {
+          reportDroppedPaths(paths);
+          return;
+        }
+        if (loaded.files.length) await attachFiles(loaded.files, loaded.sourcePaths);
+        if (abandoned()) return;
+        insertAbsolutePaths([...loaded.directories.map((entry) => entry.absolutePath), ...loaded.unattachedPaths]);
+        if (loaded.errors.length) {
+          setAttachmentError((current) => [...loaded.errors, current].filter(Boolean).join('\n'));
+        }
+      }),
+    [attachFiles, insertAbsolutePaths, reportDroppedPaths, trackPending]
   );
 
   const attachProjectPaths = useCallback(
@@ -352,14 +425,17 @@ export function useComposerAttachments({
     (restored: ComposerAttachment[], restoredText: string) => {
       if (!restored.length) return restoredText;
       const next = [...attachmentsRef.current];
-      let nextText = restoredText;
+      // Restored chips join this composer's ids: none takes over a live chip
+      // or an id its sequence hands out later; their tokens follow.
+      const renumbered = renumberRestoredAttachments(
+        restored,
+        restoredText,
+        next.map((attachment) => attachment.id),
+        attachmentSequence
+      );
+      let nextText = renumbered.text;
       let firstError = '';
-      for (const attachment of restored) {
-        const index = next.findIndex((entry) => entry.id === attachment.id && entry.kind === attachment.kind);
-        if (index >= 0) {
-          next[index] = attachment;
-          continue;
-        }
+      for (const attachment of renumbered.attachments) {
         const policyError = attachmentPolicyError(next, attachment);
         if (policyError) {
           firstError ||= policyError;
@@ -390,6 +466,11 @@ export function useComposerAttachments({
   }, [draftRef, historyNavigation, mergeRestoredAttachments, recoveryScope, setDraft, submissionRecoveryVersion]);
 
   const resetAttachments = useCallback(() => {
+    // Loads still running belong to the composer being left: bumping the epoch
+    // makes them report themselves dropped instead of landing in the new one.
+    loadEpoch.current += 1;
+    pendingLoads.current = 0;
+    setPendingLoadCount(0);
     replaceAttachments([]);
     setAttachmentError('');
     setDraggingFiles(false);
@@ -398,6 +479,8 @@ export function useComposerAttachments({
   return {
     attachments,
     attachmentsRef,
+    pendingLoads,
+    pendingLoadCount,
     attachmentError,
     setAttachmentError,
     draggingFiles,
@@ -411,6 +494,7 @@ export function useComposerAttachments({
     updatePastedText,
     replaceAttachments,
     attachFiles,
+    attachLocalPaths,
     restoredAttachments,
     mergeRestoredAttachments,
     resetAttachments,

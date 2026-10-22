@@ -9,10 +9,12 @@ import {
   toolSpecForMode,
   deferredSurfaceModeForLead,
 } from '../../../runtime/agent/orchestrator/runtime-core/effort.mjs';
-import { isScratchConversation } from '../shared.mjs';
+import { closeOutgoingSession, isScratchConversation } from '../shared.mjs';
 import { compactionArchiveRange } from '../../../runtime/agent/orchestrator/session/compaction-archive.mjs';
 import { stampCompactionMessageIds } from '../../../runtime/agent/orchestrator/session/compaction-archive-capture.mjs';
 import { boundWorkspaceCwd, restoreWorkspaceAfterResume } from '../../workspace/workspace-state.mjs';
+import { toolExposureMigrationNeeded } from '../../../runtime/agent/orchestrator/runtime-core/tool-exposure.mjs';
+import { markToolSurfaceMigrated } from '../../../runtime/agent/orchestrator/session/loop/tool-exposure-migration.mjs';
 
 export function resolveResumeCwd(session, currentCwd) {
   // A worktree-bound Lead resumes in its worktree whatever its desktop class;
@@ -58,13 +60,18 @@ export function createSessionResume(deps, { ingestSessionIntoMemory, closeSurfac
     getStandaloneTools,
     beginRoutePreparation,
     clearRoutePreparation,
+    refreshAgentProfile,
   } = deps;
 
   function restoreResumedToolSurface(target, targetRoute) {
+    // A surface persisted with another tool exposure (e.g. a pre-bridge
+    // fixed canonical surface) migrates here; legacy selections never widen it.
+    const migrating = toolExposureMigrationNeeded(target, targetRoute.provider);
     applyDeferredToolSurface(target, deferredSurfaceModeForLead(getMode()), getStandaloneTools(), {
       provider: targetRoute.provider,
       model: targetRoute.model,
     });
+    if (migrating) markToolSurfaceMigrated(target);
   }
 
   // The resumed session's OWN effort wins. resolveRoute always returns an
@@ -85,12 +92,15 @@ export function createSessionResume(deps, { ingestSessionIntoMemory, closeSurfac
   }
 
   /** Hand the previous conversation off before the resumed one takes over. */
-  function retirePrevious(previous, resumed) {
+  async function retirePrevious(previous, resumed) {
     const { session: prev, id: previousId, messages, liveTurnMessages } = previous;
     if (!previousId || previousId === resumed.id) return;
+    // A failed close throws here and the previous session stays current.
+    await closeOutgoingSession(closeSurfaceSession, prev, 'cli-resume', {
+      tombstone: isScratchConversation(messages, liveTurnMessages),
+    });
     statusRoutes?.clearGatewaySessionRoute?.(previousId);
     void ingestSessionIntoMemory(prev);
-    closeSurfaceSession(prev, 'cli-resume', { tombstone: isScratchConversation(messages, liveTurnMessages) });
   }
 
   function routePreparation(resumed, resumedRoute) {
@@ -139,7 +149,7 @@ export function createSessionResume(deps, { ingestSessionIntoMemory, closeSurfac
     // stamped here and persisted), so a live compaction can grey exactly the
     // rows of what it drops.
     stampCompactionMessageIds(resumed.messages, resumed.id || id);
-    retirePrevious(previous, resumed);
+    await retirePrevious(previous, resumed);
     setSession(resumed);
     // Resume is not work: the Lead pool row is written only by turn
     // start/settle, so opening an old conversation never re-lists it in the
@@ -156,6 +166,9 @@ export function createSessionResume(deps, { ingestSessionIntoMemory, closeSurfac
     // preparation temporarily dropped loaded tools and invalidated the
     // provider-aligned context baseline.
     restoreResumedToolSurface(resumed, resumedRoute);
+    // A thread running as an agent whose profile was edited while no runtime
+    // held it takes the saved profile now (tool-policy-refresh.mjs).
+    await refreshAgentProfile?.({ trigger: 'resume' });
     const finishRoutePreparation = routePreparation(resumed, resumedRoute);
     if (typeof beginRoutePreparation === 'function') {
       beginRoutePreparation(finishRoutePreparation);

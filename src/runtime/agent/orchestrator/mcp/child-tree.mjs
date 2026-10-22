@@ -9,15 +9,17 @@
 // tree (taskkill /T /F on Windows, SIGTERM->SIGKILL of every descendant on
 // POSIX). No external dependencies.
 import { spawn } from 'node:child_process';
+import { runProcessOffThread } from '../../../shared/process-runner.mjs';
 import { detachedSpawnOpts } from '../../../shared/spawn-flags.mjs';
 
 const isWin = process.platform === 'win32';
 
+// The SIGTERM → SIGKILL escalation wait. Kept ref'd: it runs right after the
+// tree was signalled, when the dying children may be the only handles left,
+// and an unref'd timer would then never fire, leaving the awaited kill (and
+// every close awaiting it) pending forever. It is short and bounded.
 function delay(ms) {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    if (t.unref) t.unref();
-  });
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Best-effort signal: a pid that already exited (or cannot be signalled) is skipped.
@@ -35,52 +37,112 @@ function transportPid(transport) {
   return (typeof transport?.pid === 'number' ? transport.pid : null) ?? transport?._process?.pid ?? null;
 }
 
-// Spawn a helper command and resolve its stdout (empty string on any error).
-function run(cmd, args) {
-  return new Promise((resolve) => {
-    let out = '';
-    let cp;
-    try {
-      cp = spawn(cmd, args, { windowsHide: true });
-    } catch {
-      resolve('');
-      return;
+/** Deadline of one process-table enumeration subprocess. A healthy CIM query
+ *  takes ~1-3 s but exceeds 8 s under heavy load, and a timed-out strict read
+ *  leaves the finished command's workspace held, so the deadline only cuts
+ *  off a query that is genuinely stuck. A query that has not answered by then
+ *  is killed and its snapshot rejected (strict) or empty (best-effort). A
+ *  termination watch schedules its next pass only after the previous read
+ *  settled, so enumerators never pile up whatever this value is. */
+export const ENUMERATION_DEADLINE_MS = 20_000;
+
+// Output bound of one helper command: a process table is tens of KB.
+const HELPER_MAX_BYTES = 64 * 1024 * 1024;
+
+// Run a helper command off the event loop (process-runner.mjs: under load one
+// PowerShell start blocked the daemon's loop for seconds) and resolve its
+// stdout. Past `timeoutMs` (default ENUMERATION_DEADLINE_MS) the helper is
+// killed and the call settles. Strict: a failed, non-zero or timed-out run
+// rejects; otherwise it resolves '' (non-zero exits keep their stdout).
+function run(cmd, args, { strict = false, timeoutMs = ENUMERATION_DEADLINE_MS } = {}) {
+  return runProcessOffThread(cmd, args, { timeoutMs, maxBytes: HELPER_MAX_BYTES }).then(
+    ({ code, stdout }) => {
+      if (strict && code !== 0) throw new Error(`Process enumeration failed (${code}).`);
+      return stdout;
+    },
+    (error) => {
+      if (!strict) return '';
+      if (error?.code === 'ETIMEDOUT') throw new Error(`Process enumeration timed out after ${timeoutMs} ms.`);
+      throw error;
     }
-    cp.stdout?.on('data', (d) => {
-      out += String(d);
-    });
-    cp.on('error', () => resolve(out));
-    cp.on('close', () => resolve(out));
-  });
+  );
 }
 
 // Snapshot the whole process table once: parent map + a per-pid identity
 // token (Windows CreationDate, POSIX lstart) so a later kill can prove a pid
 // number was not recycled onto a different process before signalling it.
-async function enumerate() {
+// POSIX rows also carry the process group id (Windows has none).
+async function enumerate({ strict = false } = {}) {
   const childrenOf = new Map();
   const tokenOf = new Map();
   const nameOf = new Map();
+  const pgidOf = new Map();
   const out = isWin
-    ? await run('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name) $($_.CreationDate.ToString('o'))" }`,
-      ])
-    : await run('ps', ['-A', '-o', 'pid=,ppid=,comm=,lstart=']);
+    ? await run(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `${strict ? "$ErrorActionPreference = 'Stop'; " : ''}Get-CimInstance Win32_Process | ForEach-Object { $created = if ($_.CreationDate) { $_.CreationDate.ToString('o') } else { '' }; "$($_.ProcessId) $($_.ParentProcessId) $($_.Name) $created" }`,
+        ],
+        { strict, timeoutMs: ENUMERATION_DEADLINE_MS }
+      )
+    : await run('ps', ['-A', '-o', 'pid=,ppid=,pgid=,stat=,comm=,lstart='], {
+        strict,
+        timeoutMs: ENUMERATION_DEADLINE_MS,
+      });
+  const row = isWin ? /^(\d+)\s+(\d+)\s+()()(\S+)(?:\s+(.+))?$/ : /^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)(?:\s+(.+))?$/;
   for (const line of out.split(/\r?\n/)) {
-    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)(?:\s+(.+))?$/);
+    const m = line.trim().match(row);
     if (!m) continue;
+    // A zombie runs nothing and holds no port or file; it only waits to be
+    // reaped (forever under an init that does not reap, e.g. a container
+    // without one). Counting it alive would hold a dead tree as running.
+    if (m[4].startsWith('Z')) continue;
     const pid = Number(m[1]);
     const ppid = Number(m[2]);
-    const token = (m[4] || '').trim() || null;
+    const token = (m[6] || '').trim() || null;
     if (!childrenOf.has(ppid)) childrenOf.set(ppid, []);
     childrenOf.get(ppid).push(pid);
     tokenOf.set(pid, token);
-    nameOf.set(pid, m[3]);
+    nameOf.set(pid, m[5]);
+    if (m[3]) pgidOf.set(pid, Number(m[3]));
   }
-  return { childrenOf, tokenOf, nameOf };
+  if (strict && !nameOf.has(process.pid)) throw new Error('The process snapshot could not be verified.');
+  return { childrenOf, tokenOf, nameOf, pgidOf };
+}
+
+/** One strict process-table snapshot: parent links, identity tokens, image
+ *  names and (POSIX) process groups. Rejects instead of returning a partial
+ *  table, so callers can tell "nothing found" from "could not look".
+ *
+ *  Every caller sees a table from a read begun after it asked: an earlier
+ *  read may miss newly spawned descendants before a kill, or report a killed
+ *  tree alive afterwards. A caller starts a read when none runs, else joins
+ *  the one queued to begin when the running read settles — every caller
+ *  asking meanwhile shares it. At most one enumerator runs at
+ *  a time, however many shells settle or watch at once (each one is a
+ *  PowerShell process on Windows; one per settle and watch pass compounded
+ *  machine load into multi-second daemon stalls). */
+let tableInFlight = null;
+let nextTable = null;
+function startTableRead() {
+  const read = enumerate({ strict: true }).finally(() => {
+    if (tableInFlight === read) tableInFlight = null;
+  });
+  tableInFlight = read;
+  return read;
+}
+export function readProcessTable() {
+  if (nextTable) return nextTable;
+  if (!tableInFlight) return startTableRead();
+  const settled = () => {};
+  nextTable = tableInFlight.then(settled, settled).then(() => {
+    nextTable = null;
+    return startTableRead();
+  });
+  return nextTable;
 }
 
 // Walk every descendant pid of rootPid (excludes rootPid).
@@ -106,12 +168,18 @@ async function collectDescendants(rootPid) {
   return descendantsOf(childrenOf, rootPid);
 }
 
-/** Descendant pids WITH their image names, from one batched process-table
- *  read. Shared with the shell runner's post-exit descendant observation so
- *  both use a single enumeration implementation. */
-export async function collectDescendantProcesses(rootPid) {
-  const { childrenOf, nameOf } = await enumerate().catch(() => ({ childrenOf: new Map(), nameOf: new Map() }));
-  return descendantsOf(childrenOf, rootPid).map((pid) => ({ pid, name: nameOf.get(pid) || '' }));
+/** Descendant pids WITH their image names and identity tokens (creation
+ *  time), from one batched process-table read. */
+export async function collectDescendantProcesses(rootPid, { strict = false } = {}) {
+  const snapshot = enumerate({ strict });
+  const { childrenOf, nameOf, tokenOf } = strict
+    ? await snapshot
+    : await snapshot.catch(() => ({ childrenOf: new Map(), nameOf: new Map(), tokenOf: new Map() }));
+  return descendantsOf(childrenOf, rootPid).map((pid) => ({
+    pid,
+    name: nameOf.get(pid) || '',
+    token: tokenOf.get(pid) ?? null,
+  }));
 }
 
 /** Force-kill whole process trees by pid. Windows batches one taskkill /T /F

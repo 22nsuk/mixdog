@@ -6,9 +6,10 @@ import {
   UNTRACKED_STAT_CONCURRENCY,
   gitCacheKey,
   mapWithConcurrency,
+  sharedRead,
   untrackedStat,
 } from './git-read-utils';
-import { publicGitRemoteUrl, run, streamNulRecords } from './git-runner';
+import { GIT_READ_TIMEOUT_MS, isGitTimeout, publicGitRemoteUrl, runRead, streamNulRecords } from './git-runner';
 
 type GitOperation = '' | 'merge' | 'rebase' | 'cherry-pick' | 'revert';
 
@@ -29,6 +30,7 @@ export interface GitFileEntry {
 
 export interface GitStatusResult {
   repository: boolean;
+  root: string;
   branch: string;
   detached: boolean;
   unborn: boolean;
@@ -50,6 +52,7 @@ interface GitStatusOptions {
 function emptyStatus(): GitStatusResult {
   return {
     repository: false,
+    root: '',
     branch: '',
     detached: false,
     unborn: false,
@@ -111,31 +114,38 @@ async function readNumstat(
   const stats = new Map<string, { additions: number; deletions: number }>();
   let renameStat: { additions: number; deletions: number; oldPathSeen: boolean } | null = null;
   try {
-    await streamNulRecords(cwd, args, (field) => {
-      if (renameStat) {
-        if (!renameStat.oldPathSeen) {
-          renameStat.oldPathSeen = true;
+    await streamNulRecords(
+      cwd,
+      args,
+      (field) => {
+        if (renameStat) {
+          if (!renameStat.oldPathSeen) {
+            renameStat.oldPathSeen = true;
+            return;
+          }
+          if (field)
+            stats.set(field, {
+              additions: renameStat.additions,
+              deletions: renameStat.deletions,
+            });
+          renameStat = null;
           return;
         }
-        if (field)
-          stats.set(field, {
-            additions: renameStat.additions,
-            deletions: renameStat.deletions,
-          });
-        renameStat = null;
-        return;
-      }
-      const match = /^(\d+|-)\t(\d+|-)\t(.*)$/.exec(field);
-      if (!match) return;
-      const value = {
-        additions: match[1] === '-' ? 0 : Number(match[1]),
-        deletions: match[2] === '-' ? 0 : Number(match[2]),
-      };
-      if (match[3]) stats.set(match[3], value);
-      else renameStat = { ...value, oldPathSeen: false };
-    });
+        const match = /^(\d+|-)\t(\d+|-)\t(.*)$/.exec(field);
+        if (!match) return;
+        const value = {
+          additions: match[1] === '-' ? 0 : Number(match[1]),
+          deletions: match[2] === '-' ? 0 : Number(match[2]),
+        };
+        if (match[3]) stats.set(match[3], value);
+        else renameStat = { ...value, oldPathSeen: false };
+      },
+      { timeoutMs: GIT_READ_TIMEOUT_MS }
+    );
     return stats;
-  } catch {
+  } catch (error) {
+    // Zero counts would be cached as the files' line stats.
+    if (isGitTimeout(error)) throw error;
     return new Map();
   }
 }
@@ -156,13 +166,18 @@ interface CachedLineStats {
 
 const remoteMetadataCache = new Map<string, CachedRemoteMetadata>();
 const gitDirCache = new Map<string, string>();
+const gitRootCache = new Map<string, string>();
 const lineStatsCache = new Map<string, CachedLineStats>();
 
 async function remoteMetadata(cwd: string): Promise<CachedRemoteMetadata> {
   const key = gitCacheKey(cwd);
   const cached = remoteMetadataCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached;
-  const raw = await run(cwd, ['--no-optional-locks', 'remote', '-v']).catch(() => '');
+  const raw = await runRead(cwd, ['--no-optional-locks', 'remote', '-v']).catch((error: unknown) => {
+    // "No remotes" would be cached for the metadata TTL.
+    if (isGitTimeout(error)) throw error;
+    return '';
+  });
   const names: string[] = [];
   const urls = new Map<string, string>();
   for (const line of raw.split(/\r?\n/)) {
@@ -181,6 +196,16 @@ async function remoteMetadata(cwd: string): Promise<CachedRemoteMetadata> {
   return value;
 }
 
+/** The repository's work-tree root (`--show-toplevel`); rejects outside a work tree. */
+export async function cachedGitRoot(cwd: string): Promise<string> {
+  const key = gitCacheKey(cwd);
+  const cached = gitRootCache.get(key);
+  if (cached) return cached;
+  const root = resolve((await runRead(cwd, ['--no-optional-locks', 'rev-parse', '--show-toplevel'])).trim());
+  gitRootCache.set(key, root);
+  return root;
+}
+
 async function cachedGitDir(cwd: string): Promise<string> {
   const key = gitCacheKey(cwd);
   const cached = gitDirCache.get(key);
@@ -193,10 +218,11 @@ async function cachedGitDir(cwd: string): Promise<string> {
     if (match) gitDir = resolve(cwd, match[1]);
   } catch {
     try {
-      await access(dotGit);
+      // An empty or stray `.git` folder has no HEAD; let git find the real repository above it.
+      await access(join(dotGit, 'HEAD'));
       gitDir = dotGit;
     } catch {
-      gitDir = resolve(cwd, (await run(cwd, ['--no-optional-locks', 'rev-parse', '--absolute-git-dir'])).trim());
+      gitDir = resolve(cwd, (await runRead(cwd, ['--no-optional-locks', 'rev-parse', '--absolute-git-dir'])).trim());
     }
   }
   gitDirCache.set(key, gitDir);
@@ -220,7 +246,7 @@ function applyCachedLineStats(files: GitFileEntry[], cached: CachedLineStats): v
 }
 
 async function applyFreshLineStats(
-  cwd: string,
+  root: string,
   files: GitFileEntry[],
   stagedStats: Map<string, { additions: number; deletions: number }>,
   unstagedStats: Map<string, { additions: number; deletions: number }>
@@ -229,7 +255,7 @@ async function applyFreshLineStats(
     await mapWithConcurrency(
       files.filter((file) => file.untracked),
       UNTRACKED_STAT_CONCURRENCY,
-      async (file) => [file.path, await untrackedStat(cwd, file.path)] as const
+      async (file) => [file.path, await untrackedStat(root, file.path)] as const
     )
   );
   for (const file of files) {
@@ -246,9 +272,11 @@ async function applyFreshLineStats(
 
 export async function hasHead(cwd: string): Promise<boolean> {
   try {
-    await run(cwd, ['rev-parse', '--verify', 'HEAD']);
+    await runRead(cwd, ['rev-parse', '--verify', 'HEAD']);
     return true;
-  } catch {
+  } catch (error) {
+    // false reads as an unborn HEAD (diffed against the empty tree).
+    if (isGitTimeout(error)) throw error;
     return false;
   }
 }
@@ -257,7 +285,8 @@ export async function currentGitOperation(cwd: string): Promise<GitOperation> {
   let gitDir = '';
   try {
     gitDir = await cachedGitDir(cwd);
-  } catch {
+  } catch (error) {
+    if (isGitTimeout(error)) throw error;
     return '';
   }
   const exists = async (name: string): Promise<boolean> => {
@@ -282,7 +311,14 @@ export async function currentGitOperation(cwd: string): Promise<GitOperation> {
   return '';
 }
 
-export async function gitStatus(cwd: string, options: GitStatusOptions = {}): Promise<GitStatusResult> {
+/** Concurrent identical status reads share one scan ({@link sharedRead}). */
+export const gitStatus = sharedRead(
+  (cwd: string, options: GitStatusOptions = {}) =>
+    `${gitCacheKey(cwd)}\0${options.reuseLineStats === true}\0${options.skipLineStats === true}`,
+  readGitStatus
+);
+
+async function readGitStatus(cwd: string, options: GitStatusOptions = {}): Promise<GitStatusResult> {
   const files: GitFileEntry[] = [];
   let branch = '';
   let oid = '';
@@ -340,7 +376,8 @@ export async function gitStatus(cwd: string, options: GitStatusOptions = {}): Pr
       );
       if (kind === '2') pendingRename = file;
       else files.push(file);
-    }
+    },
+    { timeoutMs: GIT_READ_TIMEOUT_MS }
   );
   const collectLineStats = options.skipLineStats !== true;
   const eagerStats = collectLineStats && options.reuseLineStats !== true;
@@ -348,13 +385,25 @@ export async function gitStatus(cwd: string, options: GitStatusOptions = {}): Pr
   const unstagedStatsPromise = eagerStats ? readNumstat(cwd, UNSTAGED_NUMSTAT_ARGS) : null;
   const metadataPromise = remoteMetadata(cwd);
   const operationPromise = currentGitOperation(cwd);
+  const rootPromise = cachedGitRoot(cwd).catch((error: unknown) => {
+    if (isGitTimeout(error)) throw error;
+    return '';
+  });
+  // A timed-out scan rejects before these are awaited; their own timeouts
+  // must not surface as unhandled rejections then.
+  for (const pending of [stagedStatsPromise, unstagedStatsPromise, metadataPromise, operationPromise, rootPromise]) {
+    pending?.catch(() => {});
+  }
   try {
     await statusStream;
-  } catch {
+  } catch (error) {
+    // An empty status reads as "not a repository"; a timeout's answer is unknown.
+    if (isGitTimeout(error)) throw error;
     return emptyStatus();
   }
   if (pendingRename) files.push(pendingRename);
-  const [metadata, operation] = await Promise.all([metadataPromise, operationPromise]);
+  const [metadata, operation, root] = await Promise.all([metadataPromise, operationPromise, rootPromise]);
+  if (!root) return emptyStatus();
   if (collectLineStats) {
     const cacheKey = gitCacheKey(cwd);
     const signature = lineStatsSignature(files);
@@ -366,7 +415,7 @@ export async function gitStatus(cwd: string, options: GitStatusOptions = {}): Pr
         stagedStatsPromise ?? readNumstat(cwd, STAGED_NUMSTAT_ARGS),
         unstagedStatsPromise ?? readNumstat(cwd, UNSTAGED_NUMSTAT_ARGS),
       ]);
-      await applyFreshLineStats(cwd, files, stagedStats, unstagedStats);
+      await applyFreshLineStats(root, files, stagedStats, unstagedStats);
       lineStatsCache.set(cacheKey, {
         signature,
         files: new Map(
@@ -390,6 +439,7 @@ export async function gitStatus(cwd: string, options: GitStatusOptions = {}): Pr
   }
   return {
     repository: true,
+    root,
     branch,
     detached,
     unborn,

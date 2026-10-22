@@ -51,6 +51,8 @@ test('cwd internal tool stays bound to its caller when another runtime owns the 
       getAllProviders: () => new Map([['openai', provider]]),
       providerInputExcludesCache: () => false,
       providerNativePdf: () => true,
+      providerReadsImages: () => true,
+      providerModelVisionOverride: () => undefined,
       providerCatalogRevision: () => 0,
       refreshProviderCatalogsOnStartup: async () => {},
       refreshCatalogs: async () => {},
@@ -91,6 +93,7 @@ test('cwd internal tool stays bound to its caller when another runtime owns the 
   let runtimeB;
   let restored;
   let drainSessionStore;
+  let settleSummaryIndexWrites;
   t.after(async () => {
     try {
       await Promise.all([
@@ -99,6 +102,7 @@ test('cwd internal tool stays bound to its caller when another runtime owns the 
         restored?.close('cwd-routing-test', { waitForExit: false }),
       ]);
       drainSessionStore?.();
+      await settleSummaryIndexWrites?.();
       assert.equal(fetchMock.mock.callCount(), 0, 'no network requests during runtime creation or teardown');
     } finally {
       for (const key of Object.keys(process.env)) delete process.env[key];
@@ -109,6 +113,7 @@ test('cwd internal tool stays bound to its caller when another runtime owns the 
   const { createMixdogSessionRuntime } = await import('./runtime-core.mjs');
   const { executeTool } = await import('../runtime/agent/orchestrator/session/loop/tool-exec.mjs');
   ({ drainSessionStore } = await import('../runtime/agent/orchestrator/session/store.mjs'));
+  ({ settleSummaryIndexWrites } = await import('../runtime/agent/orchestrator/session/store-summary-index.mjs'));
   const options = {
     provider: 'openai',
     model: 'gpt-4o-mini',

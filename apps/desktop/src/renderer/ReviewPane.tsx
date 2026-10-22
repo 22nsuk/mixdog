@@ -1,5 +1,6 @@
 import { ChevronDown, FileDiff, MoreHorizontal } from 'lucide-react';
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { confirmAction } from './app-confirm';
 import { t, uiFormatLocale } from './i18n';
 import { isSshConnectionWindow } from './desktop-connection';
 import { downloadAndOpenServerFile, revealFileFromWindow } from './server-transfers';
@@ -11,6 +12,7 @@ import { DiffView } from './lazy-widgets';
 import { ProgressSpinner } from './ProgressSpinner';
 import { parseUnifiedDiff } from './renderer-logic.mjs';
 import { isRemoteHostRenderer } from './remote-ui-projection';
+import { DownloadSessionContext, startProjectFileDownload } from './project-file-download';
 import { copyTextToClipboard } from './text-format';
 import { createGitRefreshScheduler, type GitRefreshReason } from './git-refresh-scheduler';
 import { subscribeProjectFileChanges } from './project-file-changes';
@@ -46,7 +48,6 @@ export interface GitReviewFile {
   additions: number;
   deletions: number;
   untracked: boolean;
-  uncommitted: boolean;
 }
 interface GitReviewInfo {
   base: string;
@@ -124,6 +125,7 @@ export function GitFileDiff({
   );
 }
 export function ReviewPane({ cwd }: { cwd: string | null }) {
+  const sessionId = useContext(DownloadSessionContext);
   const [status, setStatus] = useState<GitPanelStatus | null>(null);
   const [review, setReview] = useState<GitReviewInfo | null>(null);
   const [readError, setReadError] = useState('');
@@ -135,7 +137,7 @@ export function ReviewPane({ cwd }: { cwd: string | null }) {
   // and snaps the opened card flush under the sticky header.
   const [openFile, setOpenFile] = useState('');
   // Right-click context menu: open / reveal / copy
-  // path, plus a confirm-dialog revert for uncommitted files.
+  // path, plus a confirm-dialog revert.
   const [menu, setMenu] = useState<{ x: number; y: number; file: GitReviewFile } | null>(null);
   useEffect(() => {
     if (!menu) return undefined;
@@ -202,7 +204,7 @@ export function ReviewPane({ cwd }: { cwd: string | null }) {
         const prev = reviewRef.current;
         reviewRef.current = nextReview ?? null;
         if (prev && nextReview) {
-          const signature = (file: GitReviewFile) => `${file.additions}:${file.deletions}:${file.uncommitted}`;
+          const signature = (file: GitReviewFile) => `${file.additions}:${file.deletions}`;
           const before = new Map(prev.files.map((file) => [file.path, signature(file)]));
           setDiffs((current) => {
             let dirty = false;
@@ -484,7 +486,18 @@ export function ReviewPane({ cwd }: { cwd: string | null }) {
       </div>
       {menu && (
         <div className="review-context-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
-          {!isRemoteHostRenderer() && (
+          {isRemoteHostRenderer() ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setMenu(null);
+                void startProjectFileDownload(sessionId, menu.file.path);
+              }}
+            >
+              {t('Download / Share')}
+            </button>
+          ) : (
             <>
               <button
                 type="button"
@@ -520,25 +533,28 @@ export function ReviewPane({ cwd }: { cwd: string | null }) {
           >
             {t('Copy path')}
           </button>
-          {menu.file.uncommitted && (
-            <button
-              type="button"
-              role="menuitem"
-              data-danger
-              onClick={() => {
-                const target = menu.file;
-                setMenu(null);
-                const warning = target.untracked
-                  ? t('Delete untracked file "{{file}}"? This cannot be undone.', { file: target.path })
-                  : t('Discard uncommitted changes to "{{file}}"? This cannot be undone.', { file: target.path });
-                if (!window.confirm(warning)) return;
+          <button
+            type="button"
+            role="menuitem"
+            data-danger
+            onClick={() => {
+              const target = menu.file;
+              setMenu(null);
+              const warning = target.untracked
+                ? t('Delete untracked file "{{file}}"? This cannot be undone.', { file: target.path })
+                : t('Discard uncommitted changes to "{{file}}"? This cannot be undone.', { file: target.path });
+              void confirmAction(warning, {
+                danger: true,
+                confirmLabel: target.untracked ? t('Delete file') : t('Revert changes'),
+              }).then((approved) => {
+                if (!approved) return;
                 if (openFile === target.path) setOpenFile('');
-                void act(() => window.mixdogDesktop.gitRevert?.(cwd, target.path, target.untracked, 'all'));
-              }}
-            >
-              {menu.file.untracked ? t('Delete file') : t('Revert changes')}
-            </button>
-          )}
+                return act(() => window.mixdogDesktop.gitRevert?.(cwd, target.path, target.untracked, 'all'));
+              });
+            }}
+          >
+            {menu.file.untracked ? t('Delete file') : t('Revert changes')}
+          </button>
         </div>
       )}
     </div>

@@ -5,6 +5,7 @@
 import { normalizeToolMode } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
 import { interruptTaskWaitForSession } from '../../runtime/agent/orchestrator/session/task-wait-control.mjs';
 import { markPendingGoalReminder } from '../../runtime/agent/orchestrator/runtime-core/goal-reminder.mjs';
+import { rearmLateDeferredTools } from '../../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 
 export function createSessionOps(deps) {
   const {
@@ -29,15 +30,22 @@ export function createSessionOps(deps) {
     } catch {}
   }
 
+  // `rebuildPrompt` (an agent chat's "대화 초기화"): refused while a turn
+  // runs, and the emptied session's prompt and tool surface are then rebuilt
+  // from the current rules, as a new session's are (refreshEmptySessionToolPolicy).
   async function clear(options = {}) {
     const session = getSession();
     if (!session?.id) return false;
+    const rebuild = options.rebuildPrompt === true;
+    if (rebuild && getActiveTurnCount() > 0) throw new Error('The session is running a turn; wait for it to finish.');
     const cleared = await mgr.clearSessionMessages(session.id, options);
     if (!cleared) return false;
     setSession(typeof cleared === 'object' ? cleared : mgr.getSession(session.id) || session);
     if (options.recoverAgent === true) recoverAgentWorkers();
+    let promptRebuilt = false;
+    if (rebuild) promptRebuilt = (await refreshEmptySessionToolPolicy?.())?.appliedToCurrentSession === true;
     invalidateContextStatusCache();
-    return true;
+    return rebuild ? { promptRebuilt } : true;
   }
 
   // Message-selector rewind: drop the chosen user prompt and everything
@@ -48,6 +56,7 @@ export function createSessionOps(deps) {
     if (!session?.id) return null;
     const result = await mgr.rewindSessionMessagesTo?.(session.id, options);
     if (!result) return null;
+    if (options.dryRun === true) return result;
     setSession(mgr.getSession(session.id) || session);
     invalidateContextStatusCache();
     return result;
@@ -89,6 +98,12 @@ export function createSessionOps(deps) {
     } catch {
       /* best-effort: a Goal reminder must never break manual compact */
     }
+    // The same compaction strips late MCP tool announcements from older turns.
+    try {
+      rearmLateDeferredTools(getSession());
+    } catch {
+      /* best-effort: a tool reminder must never break manual compact */
+    }
     if (options.recoverAgent === true) recoverAgentWorkers();
     invalidateContextStatusCache();
     return result;
@@ -105,9 +120,9 @@ export function createSessionOps(deps) {
     return mode;
   }
 
-  function interruptTaskWait(reason = 'user-message') {
+  function interruptTaskWait(reason = 'user-message', detail = null) {
     const sessionId = getSession()?.id || getReservedSessionId?.() || '';
-    return interruptTaskWaitForSession(sessionId, reason);
+    return interruptTaskWaitForSession(sessionId, reason, detail);
   }
 
   // Raw model-message read for LIVE transcript consumers (remote agent

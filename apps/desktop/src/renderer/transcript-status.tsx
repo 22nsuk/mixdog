@@ -1,5 +1,5 @@
-import { ArrowLeftRight, FoldVertical, GitFork, ListTree, X } from 'lucide-react';
-import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { ArrowLeftRight, FoldVertical, GitFork, ListTree, Network, Workflow, X } from 'lucide-react';
+import { memo, useEffect, useId, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { resolveContextDisplayUsage } from './context-usage';
 import type { Snapshot, TranscriptItem } from './desktop-types';
 import { useHoverPopover } from './hover-popover';
@@ -7,25 +7,129 @@ import { cachedAutoEffortCapable, useAutoEffortShown } from './auto-effort-store
 import { subscribeUiLanguage, t, uiFormatLocale } from './i18n';
 import { modelDisplayName, modelRouteDisplayParts } from './provider-display';
 import { uiCurrency } from './ui-format';
+import { useClock } from './use-clock';
 import { liveAgentRows } from './agent-activity-model';
 import { onSessionPreviewsDeleted } from './image-preview-store';
-import { MxIcon } from './MxIcon';
 import { goalHasBackgroundWork } from './session-goal-presentation';
+import { MxIcon } from './MxIcon';
 import { showDesktopToast } from './notifications';
 import { asRecord, formatElapsed, publicThinkingSummary } from './text-format';
 import { completionTone, formatTokenCount, TextShimmer } from './transcript-primitives';
 import { localizedTurnFailureReason } from './transcript-failure-text';
 import { activityVerb, thinkingEffortLabel } from './activity-verbs';
+import { QuietCue, useLaneSpinnerQuiet } from './quiet-cue';
+import type { QuietProgressParts } from '../../../../src/runtime/shared/quiet-progress.mjs';
 // @ts-expect-error The shared TUI module is plain ESM and has no declaration file.
 import { buildSpinnerMeta } from '../../../../src/tui/spinner-meta.mjs';
 
 const CONTEXT_USAGE_MEMORY_LIMIT = 64;
+/** A newly published phase is painted once it has lasted this long... */
+const PHASE_SWITCH_DELAY_MS = 150;
+/** ...and the painted one has stood at least this long. */
+const PHASE_MIN_DWELL_MS = 650;
+// The delegation select's labels (model-controls OrchestrationModeSelect).
+const ORCHESTRATION_MODE_LABELS: Record<string, string> = {
+  none: 'Solo',
+  focused: 'Assisted',
+  balanced: 'Collaborative',
+  swarm: 'Swarm',
+};
 // Clockwise r=8.5 rings around (12,12) starting at -120deg, 0deg and 120deg.
+// Each arc is the same ring drawn as an un-rotated path, so all three share
+// one bounding box (and so one gradient box) in every frame.
 const LIVE_ACTIVITY_ARC_PATHS = [
   'M7.75 4.639A8.5 8.5 0 0 1 16.25 19.361A8.5 8.5 0 0 1 7.75 4.639',
   'M20.5 12A8.5 8.5 0 0 1 3.5 12A8.5 8.5 0 0 1 20.5 12',
   'M7.75 19.361A8.5 8.5 0 0 1 16.25 4.639A8.5 8.5 0 0 1 7.75 19.361',
 ];
+// The arcs' 2000ms loop as [dash length, dash offset] on a 360-long ring, one
+// keyframe per 1/48 of the loop and the closing one, precomputed from the
+// design's buildFlow {dur 2000, headEnd .56, tailStart .26, pow 2.1, drift
+// .26, pop .07}.
+const LIVE_ACTIVITY_ARC_FLOW: ReadonlyArray<readonly [number, number]> = [
+  [0, 0.64],
+  [0.19, -0.01],
+  [0.81, -0.66],
+  [1.9, -1.31],
+  [3.48, -1.96],
+  [5.57, -2.61],
+  [8.16, -3.26],
+  [11.28, -3.91],
+  [14.94, -4.56],
+  [19.13, -5.21],
+  [23.86, -5.86],
+  [29.15, -6.51],
+  [35, -7.16],
+  [41.38, -7.83],
+  [47.94, -8.71],
+  [53.8, -9.84],
+  [58.83, -11.24],
+  [63.03, -12.91],
+  [66.39, -14.87],
+  [68.92, -17.12],
+  [70.61, -19.66],
+  [71.48, -22.5],
+  [71.52, -25.64],
+  [70.75, -29.09],
+  [69.16, -32.85],
+  [66.78, -36.91],
+  [63.62, -41.29],
+  [59.71, -45.99],
+  [55.35, -51.01],
+  [50.66, -56.34],
+  [45.65, -62],
+  [40.5, -67.8],
+  [35.66, -73.29],
+  [31.14, -78.46],
+  [26.94, -83.31],
+  [23.06, -87.85],
+  [19.49, -92.06],
+  [16.24, -95.97],
+  [13.29, -99.56],
+  [10.65, -102.85],
+  [8.32, -105.84],
+  [6.28, -108.52],
+  [4.55, -110.91],
+  [3.1, -113.01],
+  [1.94, -114.82],
+  [1.06, -116.34],
+  [0.45, -117.6],
+  [0.11, -118.6],
+  [0, -119.36],
+];
+// Frame 0 is the static logo pose (reduced or paused motion); frames 1..96
+// play the loop at 48 fps: every keyframe and the midpoint to the next one.
+// 14-live-activity.css steps through exactly these 97 frames.
+const LIVE_ACTIVITY_ARC_FRAMES: ReadonlyArray<readonly [number, number]> = [
+  [80, -20],
+  ...LIVE_ACTIVITY_ARC_FLOW.slice(0, -1).flatMap(([dash, offset], index) => {
+    const [nextDash, nextOffset] = LIVE_ACTIVITY_ARC_FLOW[index + 1];
+    return [
+      [dash, offset],
+      [(dash + nextDash) / 2, (offset + nextOffset) / 2],
+    ] as const;
+  }),
+];
+/** Every arc frame side by side, 24 viewBox units apart, as one mask image.
+ *  Stroke dashes cannot animate on the compositor: animated in place they
+ *  repainted the mark on the main thread at the display's refresh rate for
+ *  as long as a turn ran. The strip is rasterized once and a stepped
+ *  transform slides it behind the mark's 14px window instead. */
+const LIVE_ACTIVITY_ARC_STRIP = (() => {
+  const frames = LIVE_ACTIVITY_ARC_FRAMES.map(([dash, offset], index) => {
+    const paths = LIVE_ACTIVITY_ARC_PATHS.map(
+      (d) =>
+        `<path d="${d}" pathLength="360" stroke-dasharray="${+dash.toFixed(3)} ${+(360 - dash).toFixed(3)}" stroke-dashoffset="${+offset.toFixed(3)}"/>`
+    ).join('');
+    return `<g transform="translate(${index * 24} 0)">${paths}</g>`;
+  }).join('');
+  const width = LIVE_ACTIVITY_ARC_FRAMES.length * 24;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} 24" width="${width}" height="24" ` +
+    `fill="none" stroke="#000" stroke-width="1.9" stroke-linecap="round">${frames}</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+})();
+const LIVE_ACTIVITY_ARC_STRIP_STYLE = { maskImage: LIVE_ACTIVITY_ARC_STRIP, WebkitMaskImage: LIVE_ACTIVITY_ARC_STRIP };
 const rememberedContextUsage = new Map<string, ReturnType<typeof resolveContextDisplayUsage>>();
 
 type ContextUsageMetrics = NonNullable<ReturnType<typeof resolveContextDisplayUsage>>;
@@ -215,48 +319,41 @@ export function commandShowsActivity(snapshot: Snapshot): boolean {
   return Boolean(command) && String(command?.mode || '') !== 'resuming';
 }
 
-function LiveActivityIcon({ gradientId }: { gradientId: string }) {
+/** The running mark. Every loop is a compositor animation on an HTML box:
+ *  the arcs' frame strip steps behind a 14px window that spins, and the star
+ *  breathes on its own <svg> box inside a box that carries its quarter turns
+ *  (an independent `rotate` on an <svg> itself cannot leave the main thread).
+ *  Memoized: the band re-renders on every lane frame and clock tick. */
+const LiveActivityIcon = memo(function LiveActivityIcon({ gradientId }: { gradientId: string }) {
   return (
     <span className="live-activity-icon" aria-hidden="true">
-      <svg
-        className="live-activity-logo live-activity-arcs"
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        aria-hidden="true"
-      >
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" />
-            <stop offset="1" />
-          </linearGradient>
-        </defs>
-        {/* Each arc is the same r=8.5 ring started 120deg apart, drawn as an
-            un-rotated path: a rotate() transform would also rotate the
-            gradient, so the arc taking over at the loop seam showed a
-            different colour and the mark flickered on every restart. */}
-        <g stroke={`url(#${gradientId})`}>
-          {LIVE_ACTIVITY_ARC_PATHS.map((d) => (
-            <path key={d} className="arc" d={d} pathLength="360" />
-          ))}
-        </g>
-      </svg>
-      <svg
-        className="live-activity-logo live-activity-star"
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        aria-hidden="true"
-      >
-        <path
-          className="star"
-          fill={`url(#${gradientId})`}
-          d="M12 8.4Q12.6 11.4 15.6 12 12.6 12.6 12 15.6 11.4 12.6 8.4 12 11.4 11.4 12 8.4Z"
-        />
-      </svg>
+      <span className="live-activity-logo live-activity-arcs">
+        <span className="live-activity-arc-strip" style={LIVE_ACTIVITY_ARC_STRIP_STYLE} />
+      </span>
+      <span className="live-activity-logo live-activity-star-turn">
+        <svg
+          className="live-activity-logo live-activity-star"
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" />
+              <stop offset="1" />
+            </linearGradient>
+          </defs>
+          <path
+            className="star"
+            fill={`url(#${gradientId})`}
+            d="M12 8.4Q12.6 11.4 15.6 12 12.6 12.6 12 15.6 11.4 12.6 8.4 12 11.4 11.4 12 8.4Z"
+          />
+        </svg>
+      </span>
     </span>
   );
-}
+});
 
 export function LiveActivity({
   snapshot,
@@ -271,7 +368,6 @@ export function LiveActivity({
   const command = snapshot.commandStatus && snapshot.commandStatus.active !== false ? snapshot.commandStatus : null;
   const activity = spinner || command;
   const optimisticActivity = !activity && optimisticStartedAt > 0;
-  const [, setNow] = useState(Date.now());
   // Re-render when the catalog finishes loading or the language switches.
   const language = useSyncExternalStore(subscribeUiLanguage, uiFormatLocale, uiFormatLocale);
   const activityStartedAt = Number(activity?.startedAt || 0);
@@ -284,15 +380,71 @@ export function LiveActivity({
   if (submitStartedAt > 0 && (earliest === 0 || submitStartedAt < earliest)) earliest = submitStartedAt;
   if (earliest > 0 && (clockRef.current === 0 || earliest < clockRef.current)) clockRef.current = earliest;
   const startedAt = clockRef.current;
+  const mountedAt = useRef(Date.now());
+  const liveSessionId = String(snapshot.sessionId || '').trim();
+  const liveKey = liveSessionId && turnKey ? liveTurnKey(liveSessionId, turnKey) : '';
+  useLayoutEffect(() => {
+    if (liveKey) liveActivityTurns.add(liveKey);
+  }, [liveKey]);
+  // The entrance belongs to work that starts on screen, once per turn: a
+  // remount of the band (a recycled virtual row, a re-keyed working row)
+  // finds its turn already entered. Once decided, it holds for the mount, so
+  // a later frame never cuts a running entrance.
+  const enterRef = useRef(false);
+  if (
+    !enterRef.current &&
+    startedAt > 0 &&
+    startedAt >= mountedAt.current &&
+    !(liveKey && enteredActivityTurns.has(liveKey))
+  ) {
+    enterRef.current = true;
+  }
+  const animateEnter = enterRef.current;
+  // Every commit of an entered band renews its turn, so a working turn stays
+  // among the most recent ones the bounded record keeps.
+  useLayoutEffect(() => {
+    if (liveKey && (animateEnter || enteredActivityTurns.has(liveKey))) markActivityTurnEntered(liveKey);
+  });
+  // The phase the activity names; '' when it publishes none (between two
+  // phases, before the runtime's first one).
+  let phase = '';
+  if (activity) phase = String(activity.mode || (snapshot.thinking ? 'thinking' : 'responding'));
+  else if (snapshot.thinking) phase = 'thinking';
+  // The painted phase is paced: a newly published phase is painted once it
+  // has lasted PHASE_SWITCH_DELAY_MS and the painted one has stood
+  // PHASE_MIN_DWELL_MS, so a phase one publication long never flashes. While
+  // none is published (between phases, a resume mid-turn) the last painted
+  // phase stays.
+  const phaseRef = useRef({ target: '', targetSince: 0, shown: '', shownAt: 0 });
+  const nowMs = Date.now();
+  const known = phaseRef.current;
+  if (phase && phase !== 'resuming' && phase !== known.target) {
+    known.target = phase;
+    known.targetSince = nowMs;
+  } else if (!phase || phase === 'resuming') {
+    // A withdrawn phase never paints: drop a pending switch, keep the painted one.
+    known.target = known.shown;
+  }
+  let switchIn = 0;
+  if (known.target !== known.shown) {
+    const wait = known.shown
+      ? Math.max(PHASE_SWITCH_DELAY_MS - (nowMs - known.targetSince), PHASE_MIN_DWELL_MS - (nowMs - known.shownAt))
+      : 0;
+    if (wait > 0) switchIn = wait;
+    else {
+      known.shown = known.target;
+      known.shownAt = nowMs;
+    }
+  }
+  const [, wake] = useReducer((count: number) => count + 1, 0);
+  useEffect(() => {
+    if (switchIn <= 0) return;
+    const timer = setTimeout(wake, switchIn);
+    return () => clearTimeout(timer);
+  });
   // Keep the first timestamp for a turn so thinking/tool/response transitions
   // do not restart the phrase rotation.
   const anchorRef = useRef(0);
-  const mountedAt = useRef(Date.now());
-  const liveSessionId = String(snapshot.sessionId || '').trim();
-  useLayoutEffect(() => {
-    if (!liveSessionId || !turnKey) return;
-    liveActivityTurns.add(liveTurnKey(liveSessionId, turnKey));
-  }, [liveSessionId, turnKey]);
   const logoGradientId = `live-logo-${useId().replace(/:/g, '')}`;
   // Auto replaces the saved level: until the runtime resolves this turn's
   // effort, the saved level must not stand in for it.
@@ -305,25 +457,22 @@ export function LiveActivity({
   const pausedTotalRef = useRef(0);
   const pauseStartRef = useRef(0);
   const clockPaused = String(activity?.mode || '') === 'resuming';
-  useEffect(() => {
-    if (!startedAt || clockPaused) return undefined;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [clockPaused, startedAt]);
-  if (!activity && !optimisticActivity && !snapshot.thinking && !startedAt) {
+  // The readout below reads Date.now() itself; the shared clock only
+  // re-renders the band once a second while the turn's clock runs.
+  useClock(Boolean(startedAt) && !clockPaused);
+  const quiet = useLaneSpinnerQuiet(liveSessionId, asRecord(activity)?.quiet);
+  if (!known.shown && !activity && !optimisticActivity && !snapshot.thinking && !startedAt) {
     anchorRef.current = 0;
     return null;
   }
   let fallbackMode = 'responding';
   if (snapshot.thinking) fallbackMode = 'thinking';
   else if (optimisticActivity || !activity) fallbackMode = 'requesting';
-  const mode = String(activity?.mode || fallbackMode);
+  const mode = known.shown || String(activity?.mode || fallbackMode);
   if (mode === 'resuming') {
     anchorRef.current = 0;
     return null;
   }
-  const nowMs = Date.now();
   if (!anchorRef.current || (startedAt > 0 && Math.abs(startedAt - anchorRef.current) > 5_000)) {
     anchorRef.current = startedAt || nowMs;
   }
@@ -360,7 +509,11 @@ export function LiveActivity({
     // What the runtime actually resolved this turn/step (Auto judge); the saved
     // level when nothing was recorded (Auto off, or a model without it).
     effort: String(snapshot.turnEffort || (autoShown ? '' : snapshot.effort) || ''),
+    // The turn's published quiet state: the quiet-time cue below.
+    quiet,
+    now: nowMs,
   });
+  const quietParts = meta.quietParts as QuietProgressParts | null;
   // The TUI formats these parts as lowercase English; the desktop translates them.
   const thinkingLabel = (() => {
     const parts = meta.thinkingParts as
@@ -374,9 +527,25 @@ export function LiveActivity({
     return thinkingEffortLabel(effortWord, language);
   })();
   const tokensLabel = meta.showTokens ? t('{{tokens}} tokens', { tokens: meta.tokensCount }) : '';
-  const activityMeta = [elapsed, tokensLabel, thinkingLabel].filter(Boolean).join(' · ');
+  // The token readout is its own span: where the pinned bot overlay stands
+  // over the transcript's column (a narrow window) it hides, so the row ends
+  // before the bot (html[data-pet-over-transcript], 14-live-activity.css).
+  const beforeTokens = elapsed;
+  const afterTokens = thinkingLabel;
+  const activityMeta =
+    beforeTokens || tokensLabel || afterTokens ? (
+      <span>
+        {beforeTokens}
+        {tokensLabel ? (
+          <span className="live-activity-tokens">
+            {beforeTokens ? ' · ' : ''}
+            {tokensLabel}
+          </span>
+        ) : null}
+        {afterTokens ? `${beforeTokens || tokensLabel ? ' · ' : ''}${afterTokens}` : ''}
+      </span>
+    ) : null;
   const reasoning = publicThinkingSummary(snapshot.thinking);
-  const animateEnter = startedAt > 0 && startedAt >= mountedAt.current;
   return (
     <div className="live-activity" data-mode={mode}>
       <div
@@ -388,6 +557,7 @@ export function LiveActivity({
         <LiveActivityIcon gradientId={logoGradientId} />
         <TextShimmer text={verb} />
         {activityMeta ? <span className="live-activity-meta">{activityMeta}</span> : null}
+        {quietParts ? <QuietCue parts={quietParts} sessionId={liveSessionId} className="live-activity-quiet" /> : null}
       </div>
       {reasoning && (
         <details className="thinking-disclosure">
@@ -450,12 +620,25 @@ function translateStatusDetail(detail: unknown): string {
 // by opening or re-entering a session never had a live band in this view.
 const liveActivityTurns = new Set<string>();
 const completedActivityTurns = new Set<string>();
+/** Turns whose live band already played its entrance in this view, oldest
+ *  first; the ENTERED_ACTIVITY_TURN_LIMIT most recently rendered are kept. */
+const enteredActivityTurns = new Set<string>();
+export const ENTERED_ACTIVITY_TURN_LIMIT = 128;
+
+function markActivityTurnEntered(key: string): void {
+  enteredActivityTurns.delete(key);
+  enteredActivityTurns.add(key);
+  for (const oldest of enteredActivityTurns) {
+    if (enteredActivityTurns.size <= ENTERED_ACTIVITY_TURN_LIMIT) break;
+    enteredActivityTurns.delete(oldest);
+  }
+}
 const liveTurnKey = (sessionId: string, turnKey: string) => `${sessionId}\0${turnKey}`;
 
 // A deleted session's turns never render again: drop its entries.
 onSessionPreviewsDeleted((sessionId) => {
   const prefix = `${sessionId}\0`;
-  for (const turns of [liveActivityTurns, completedActivityTurns]) {
+  for (const turns of [liveActivityTurns, completedActivityTurns, enteredActivityTurns]) {
     for (const key of turns) if (key.startsWith(prefix)) turns.delete(key);
   }
 });
@@ -526,6 +709,35 @@ export function CompletionStatus({
           {t('Switched to {{model}}', {
             model: modelDisplayName(String(item.modelId || ''), String(item.provider || '')),
           })}
+        </span>
+      </div>
+    );
+  }
+  if (item.kind === 'statusdone' && item.status === 'workflow-switched') {
+    return (
+      <div className="compaction-divider" role="status">
+        <Workflow className="compaction-icon" size={16} aria-hidden="true" />
+        <span>
+          {item.unavailable === true
+            ? t('Workflow {{to}} is no longer available; this conversation keeps {{from}}', {
+                from: String(item.from || ''),
+                to: String(item.to || ''),
+              })
+            : t('Switched the workflow {{from}} → {{to}}', {
+                from: String(item.from || ''),
+                to: String(item.to || ''),
+              })}
+        </span>
+      </div>
+    );
+  }
+  if (item.kind === 'statusdone' && item.status === 'orchestration-mode-switched') {
+    const modeLabel = (mode: unknown) => t(ORCHESTRATION_MODE_LABELS[String(mode)] || String(mode || ''));
+    return (
+      <div className="compaction-divider" role="status">
+        <Network className="compaction-icon" size={16} aria-hidden="true" />
+        <span>
+          {t('Switched the delegation mode {{from}} → {{to}}', { from: modeLabel(item.from), to: modeLabel(item.to) })}
         </span>
       </div>
     );

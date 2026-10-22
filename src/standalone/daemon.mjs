@@ -35,7 +35,8 @@ import path from 'node:path';
 import { rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
-import { writeJsonAtomicSync } from '../runtime/shared/atomic-file.mjs';
+import { writeJsonAtomicAsync } from '../runtime/shared/atomic-file.mjs';
+import { prewarmOwnerOnlyAclWin32 } from '../runtime/shared/file-permissions.mjs';
 import { ensurePrivateRuntimeRoot, resolveRuntimeRoot } from '../runtime/shared/runtime-root.mjs';
 import { ensureProcessListenerHeadroom } from '../runtime/shared/process-listener-headroom.mjs';
 import { listenerLeakWarningLine } from '../runtime/shared/listener-leak-warning.mjs';
@@ -46,6 +47,7 @@ import {
   daemonOwnerTimings,
   discoveryPid,
   proveDaemonOwnerRecord,
+  readDiscoveryAsync,
   startOwnerLivenessListener,
 } from './daemon-owner.mjs';
 import { remoteIntentPath } from '../runtime/shared/remote-intent.mjs';
@@ -66,6 +68,7 @@ import {
 import { createAgentDispatchBroker } from './agent-dispatch-broker.mjs';
 import { createChannelTransport } from './channel-transport.mjs';
 import { drainDeferral, idleGcEligible } from './daemon-drain-policy.mjs';
+import { createDaemonPgStop } from './daemon-pg-stop.mjs';
 import { createChannelSessionRouter } from '../session-runtime/services/channel-session-router.mjs';
 import { createSessionTransport } from './session-transport.mjs';
 import { createSessionService } from './session-service.mjs';
@@ -74,7 +77,10 @@ import { createStoredSessionViews } from './daemon-stored-session-views.mjs';
 import * as quotaResumeStore from '../runtime/shared/quota-resume-store.mjs';
 import { registerWorktreeCacheCleanups } from '../runtime/shared/worktrees/cache-cleanups.mjs';
 import { createInlineSessionRuntimeHost } from './session-runtime-inline-host.mjs';
+import { recoverScheduleResults, setAgentHomeLiveSurface } from '../session-runtime/agent-home-delivery.mjs';
+import { recoverRoutineDeliveries } from '../session-runtime/owned-automation-run.mjs';
 import { getStandaloneMemoryRuntime } from '../session-runtime/services/memory-runtime-proxy.mjs';
+import { registerTranscriptPurgeHook } from '../session-runtime/session-transcript-purge.mjs';
 import { createBootPhaseProfiler } from './boot-phase-profiler.mjs';
 import { createDaemonBootCoordinator } from './daemon-boot-coordinator.mjs';
 import { createDaemonLog } from './daemon-log.mjs';
@@ -83,12 +89,15 @@ import {
   installDaemonExitRecorder,
   reconcileLostDaemonCaptures,
 } from '../session-runtime/services/daemon-crash-capture/daemon-exit-record.mjs';
-import { createDaemonTelemetry } from './daemon-telemetry.mjs';
+import { createDaemonTelemetry, createStallDescriber } from './daemon-telemetry.mjs';
+import { slowSpans } from '../runtime/shared/slow-span.mjs';
 import { createLagProfiler } from './daemon-lag-profiler.mjs';
 import { createChannelsRuntimeLoader } from './daemon-channels-loader.mjs';
 import { createDesktopRuntime } from './daemon-desktop-runtime.mjs';
 import { createCanonicalAgentControl } from './daemon-agent-control.mjs';
-import { registerAutomationAgentTool } from '../session-runtime/automation-agents.mjs';
+import { createSessionControl } from './daemon-session-control.mjs';
+import { createAgentTaskSessions } from '../session-runtime/agent-task-sessions.mjs';
+import { flushAllIndexWrites } from '../session-runtime/services/agent-tool/index-write-queue.mjs';
 import {
   compareRuntimeVersions,
   SESSION_CAPABILITY_FINGERPRINT,
@@ -132,7 +141,9 @@ let sessionTransport = null;
 let sessionService = null;
 let sessionRuntimeHost = null;
 let localSessionBridge = null;
+let canonicalAgentControl = null;
 let memoryRuntime = null;
+let transcriptPurgeUnregister = null;
 let agentDispatchBroker = null;
 let remoteSessionState = { enabled: false, sessionId: null };
 let shuttingDown = false;
@@ -161,6 +172,13 @@ function registerMemoryRuntimeLazy() {
   // real memory call (memory/recall tools, the Memory install) starts the
   // singleton; nothing warms it at boot. The PG cluster itself usually starts
   // earlier: the channels schedules/webhooks stores open it at boot.
+  // Deleting a session removes its transcript file here, and its memory ingest
+  // offsets once the memory runtime exists (none when memory is skipped).
+  if (!transcriptPurgeUnregister) {
+    transcriptPurgeUnregister = registerTranscriptPurgeHook({
+      forgetOffsets: (transcriptPaths) => memoryRuntime?.forgetTranscripts(transcriptPaths),
+    });
+  }
   if (process.env.MIXDOG_DAEMON_SKIP_MEMORY === '1') {
     log('memory runtime skipped (MIXDOG_DAEMON_SKIP_MEMORY=1)');
     return;
@@ -201,6 +219,8 @@ function eventLoopStatus() {
 /** Ceiling for the whole teardown sequence, above the slowest individual stop
  *  (channels/memory) so a healthy shutdown always finishes on its own. */
 const SHUTDOWN_BUDGET_MS = 15_000;
+/** Graceful PostgreSQL stop bound inside that budget (pg_ctl stop -m fast). */
+const PG_STOP_TIMEOUT_MS = 6_000;
 
 async function shutdown(reason, code = 0) {
   if (shuttingDown) return;
@@ -221,6 +241,9 @@ async function shutdown(reason, code = 0) {
     process.exit(code);
   }, SHUTDOWN_BUDGET_MS);
   forcedExit.unref?.();
+  // PostgreSQL stops after its users below (durable writes drained first), or
+  // at the fallback point just before the launcher's kill, whichever is first.
+  const pgStop = createDaemonPgStop({ log, stopTimeoutMs: PG_STOP_TIMEOUT_MS });
   try {
     setChannelNotifySink(null);
   } catch {}
@@ -240,6 +263,15 @@ async function shutdown(reason, code = 0) {
     await sessionRuntimeHost?.close?.(reason);
   } catch (e) {
     log(`session runtime host stop failed: ${e?.message || e}`);
+  }
+  // Every runtime is closed: drain the canonical agent's index writers (and any
+  // other queued index write) before process.exit, whose 'exit' hook cannot
+  // finish async work.
+  try {
+    await canonicalAgentControl?.dispose?.();
+    await flushAllIndexWrites();
+  } catch (e) {
+    log(`agent index drain failed: ${e?.message || e}`);
   }
   // Host-side Computer Use workers and target claims are reaped only on an
   // explicit release; the runtime's deferred timer is unref'd and never fires
@@ -271,6 +303,11 @@ async function shutdown(reason, code = 0) {
   } catch (e) {
     log(`memory.stop failed: ${e?.message || e}`);
   }
+  // PostgreSQL this daemon started through its stores (schedules, webhooks,
+  // session search) after every user of it above is closed. `pg_ctl start`
+  // daemonizes the postmaster outside this process tree, so without this stop
+  // it outlives the daemon. A cluster another live process owns is left to it.
+  await pgStop.finish();
   try {
     agentDispatchBroker?.close?.(reason);
   } catch (e) {
@@ -315,10 +352,18 @@ function inFlightWork() {
 
 // Opt-in CPU profiling of lag windows while DATA_DIR/lag-profile.on exists.
 const lagProfiler = createLagProfiler({ dataDir: DATA_DIR, log });
+// Request spans share the heartbeat's performance.now() clock; `[slow-op]` lines
+// and stall attribution come from the same recorder.
+slowSpans.setLog(log);
 
 daemonTelemetry = createDaemonTelemetry({
   log,
   getWork: inFlightWork,
+  // Arms the profiler at daemon-ready when lag-profile.on exists (a no-op
+  // without it), so the first window holds the startup stalls.
+  onStart() {
+    void lagProfiler.tick();
+  },
   onInterval() {
     // eventLoopDelay is reset at the end of every tick, so this status is the
     // lag of the 30s window that just ended — the same window the lag
@@ -506,6 +551,7 @@ async function claimDaemonOwnership(bootPhases) {
     tickMs: timings.tickMs,
     stallMs: timings.stallMs,
     log,
+    describeStall: createStallDescriber({ spans: slowSpans, getWork: inFlightWork }),
     onBeat: republishMissingDiscovery,
     onSuperseded: (record) => fenceDaemon(`owner claim superseded by pid=${record?.pid}`),
     onFenced: ({ lastRefreshAt, sinceMs }) =>
@@ -570,11 +616,12 @@ function daemonStatusSnapshot() {
 }
 
 /** The file every attacher reads to find this daemon: wire identity plus both
- *  loopback endpoints and their privileged tokens. */
+ *  loopback endpoints and their privileged tokens. Written asynchronously
+ *  (the secret file's owner-only ACL included), never on the event loop. */
 function publishDaemonDiscovery({ channel, session, modelProxy = null }) {
   // A re-publish keeps the first publication's startedAt.
   publishedEndpoints = { channel, session, modelProxy, startedAt: publishedEndpoints?.startedAt ?? Date.now() };
-  writeJsonAtomicSync(
+  return writeJsonAtomicAsync(
     DAEMON_DISCOVERY_PATH,
     {
       protocol: SESSION_PROTOCOL,
@@ -621,6 +668,13 @@ function admitOwnerWork() {
   return ownerHeartbeat ? ownerHeartbeat.admit() : true;
 }
 
+/** admitOwnerWork for the HTTP front doors: a request that arrives while the
+ *  lease is being re-verified (the refresh is asynchronous) waits for that
+ *  refresh instead of being refused. */
+function admitOwnerWorkAsync() {
+  return ownerHeartbeat ? ownerHeartbeat.admitAsync() : true;
+}
+
 /** This process no longer holds (or is about to lose) the owner lease: refuse
  *  new work at once, unpublish its endpoint so launchers stop finding it, then
  *  shut down within the shutdown budget — before a contender may reclaim. */
@@ -641,14 +695,31 @@ function fenceDaemon(reason) {
 /** Heartbeat follow-up while this process still owns the lock: a daemon.json
  *  deleted (TEMP cleanup) or overwritten while it runs is written again, so
  *  new clients keep finding the one daemon that serves this data dir. */
+// Read and rewritten asynchronously, one check at a time: this runs after
+// every heartbeat, and its synchronous read of daemon.json was measured
+// blocking the loop for 5.9 s under disk contention.
+let republishing = false;
 function republishMissingDiscovery() {
-  if (!publishedEndpoints || shuttingDown || discoveryPid(DAEMON_DISCOVERY_PATH) === process.pid) return;
-  try {
-    publishDaemonDiscovery(publishedEndpoints);
-    log('daemon.json was missing or named another pid — re-published');
-  } catch (error) {
-    log(`daemon.json re-publish failed: ${error?.message || error}`);
-  }
+  if (!publishedEndpoints || shuttingDown || republishing) return;
+  republishing = true;
+  void (async () => {
+    try {
+      if ((await readDiscoveryAsync(DAEMON_DISCOVERY_PATH))?.pid === process.pid || shuttingDown) return;
+      await publishDaemonDiscovery(publishedEndpoints);
+      // Fenced while it was written: take it back down (fenceDaemon already ran).
+      if (shuttingDown) {
+        if ((await readDiscoveryAsync(DAEMON_DISCOVERY_PATH))?.pid === process.pid) {
+          rmSync(DAEMON_DISCOVERY_PATH, { force: true });
+        }
+        return;
+      }
+      log('daemon.json was missing or named another pid — re-published');
+    } catch (error) {
+      log(`daemon.json re-publish failed: ${error?.message || error}`);
+    } finally {
+      republishing = false;
+    }
+  })();
 }
 
 /** Ready handshake for the spawner, plus the log-sink handoff pinned to the
@@ -696,6 +767,22 @@ function announceDaemonReady({ port, token, startedAt, bootPhases }) {
   });
 }
 
+/** After ready, off every request path: arm the last-chance PostgreSQL stop on
+ *  exit, then open the schedules/webhooks stores. On an existing cluster that
+ *  starts PostgreSQL here, so the first catalog read (the desktop sidebar's
+ *  channel setup) joins this start instead of being the one that runs it; a
+ *  data dir with no cluster yet starts nothing (channel-admin). Loaded after
+ *  the stderr redirect, so the PG layer's logs reach daemon.log. */
+function startPostgresInBackground() {
+  void import('../runtime/memory/lib/pg/adapter.mjs')
+    .then((pg) => {
+      pg.installOwnedPgExitStop();
+      if (shuttingDown) return null;
+      return import('../session-runtime/services/channel-admin.mjs').then((admin) => admin.hasActiveAutomation());
+    })
+    .catch((error) => log(`postgres background start failed: ${error?.message || error}`));
+}
+
 /** The channels front door: pointer-routed calls over HTTP+SSE. Creating the
  *  transport also wires the channels notification sink (session-bound
  *  notifications reach the session service, the rest fan out to channel
@@ -704,7 +791,7 @@ async function startChannelFrontDoor({ channelsRuntime, bootPhases }) {
   transport = createChannelTransport({
     handleCall: channelsRuntime.handleCall,
     agentBroker: agentDispatchBroker,
-    admitWork: admitOwnerWork,
+    admitWork: admitOwnerWorkAsync,
     log,
     // The durable channel link lives in this file. Without it a restart loses
     // the pinned session (nothing to restore) and every catalog reports Remote
@@ -844,9 +931,16 @@ async function main() {
     getSessionRuntimeHost: () => sessionRuntimeHost,
     cwd: CWD,
   });
-  // Schedules and webhooks run headless here; their sessions reach the same
-  // canonical agent control through the automation tool scope.
-  registerAutomationAgentTool(agentControl.execute);
+  canonicalAgentControl = agentControl;
+  // Agents' cross-session sends and task sessions, and their report watches.
+  const agentTasks = createAgentTaskSessions({
+    getSessionService: () => sessionService,
+    // A task session re-attached after a restart takes its agents' queued
+    // results through the owner runtime's notification bus.
+    deliverCompletion: (sessionId, text, meta) =>
+      sessionRuntimeHost?.notifySessionCompletion?.(sessionId, text, meta) === true,
+    settleAgentResults: async () => (await agentControl.canonicalAgentTool()).settleRestartFailures(),
+  });
   const requestedRuntimeMode = String(process.env.MIXDOG_SESSION_RUNTIME_MODE || '')
     .trim()
     .toLowerCase();
@@ -860,6 +954,7 @@ async function main() {
     log,
     measureBootPhase: bootPhases.measure,
     executeAgentControl: agentControl.execute,
+    executeSessionControl: createSessionControl({ getSessionService: () => sessionService, agentTasks }),
   });
   // Codex-style runtime: daemon routing and independent async session actors
   // share one V8 isolate and module graph. CPU-heavy work stays in bounded
@@ -902,6 +997,42 @@ async function main() {
     },
     log,
   });
+  // Schedule results reach an open home thread at once (and wait out its turn).
+  setAgentHomeLiveSurface({
+    busy: (sessionId) => sessionService.liveSessionBusy(sessionId),
+    notice: (sessionId, notice) => sessionService.pushLiveSessionNotice(sessionId, notice),
+    // A task session's result (session create): the agent relays it in one
+    // turn. Resolves false when the turn was refused, else `{ settled }`, the
+    // turn's end status ('done' when it finished).
+    wake: async (sessionId, prompt, { id, hop = 0 } = {}) => {
+      let settle = () => {};
+      const settled = new Promise((resolveSettled) => {
+        settle = resolveSettled;
+      });
+      const result = await sessionService.submitSession({
+        sessionId,
+        prompt,
+        options: {
+          mode: 'prompt',
+          kickoff: true,
+          ...(id ? { id } : {}),
+          ...(hop > 0 ? { transcriptMeta: { hop } } : {}),
+          onSettled: (detail) => settle(String(detail?.status || 'failed')),
+        },
+      });
+      return result?.accepted === true ? { settled } : false;
+    },
+    // A routine fire: one queued turn in its bot's thread (routine-home-turn.mjs).
+    submit: async (sessionId, prompt, options) =>
+      (await sessionService.submitSession({ sessionId, prompt, options }))?.accepted === true,
+    abort: (sessionId) => sessionService.abortSession({ sessionId }),
+  });
+  // Results queued before a restart are posted now; results a finished run
+  // could not queue (kept on its routine's record) are queued again.
+  recoverScheduleResults().catch((error) => log(`routine results recovery failed: ${error?.message || error}`));
+  // Agents' sends whose report an earlier process had not queued yet.
+  agentTasks.recover().catch((error) => log(`agent task report recovery failed: ${error?.message || error}`));
+  recoverRoutineDeliveries().catch((error) => log(`routine delivery recovery failed: ${error?.message || error}`));
   sessionTransport = createSessionTransport({
     // ctx carries the CLIENT token: the session service refcounts views across
     // processes with it, so a terminal exiting cannot destroy the session a
@@ -919,7 +1050,7 @@ async function main() {
       } catch {}
     },
     onUpgradeRequested: requestDaemonReplacement,
-    admitWork: admitOwnerWork,
+    admitWork: admitOwnerWorkAsync,
   });
   const sessionEndpoint = await bootPhases.measure('session-transport-start', () => sessionTransport.start());
   const modelProxyEndpoint = await startModelProxyBridge(bootPhases);
@@ -933,11 +1064,21 @@ async function main() {
     exitRecorder.setReason(`owner claim superseded by pid=${ownerPid} before publish`, 0);
     process.exit(0);
   }
-  publishDaemonDiscovery({ channel: { port, token }, session: sessionEndpoint, modelProxy: modelProxyEndpoint });
+  await publishDaemonDiscovery({ channel: { port, token }, session: sessionEndpoint, modelProxy: modelProxyEndpoint });
   bootPhases.mark('discovery-published');
   log(`session front door on 127.0.0.1:${sessionEndpoint.port}`);
 
   announceDaemonReady({ port, token, startedAt, bootPhases });
+  // After ready, off the boot path: load the session-runtime module tree so
+  // the first session.create does not block the loop on synchronous module
+  // compilation. Failures fall back to the lazy import inside create.
+  setImmediate(() => {
+    void sessionRuntimeHost?.warmLocalRuntime?.();
+  });
+  startPostgresInBackground();
+  // Secret writes (token stores, config) find the ACL helpers already running
+  // instead of starting one under their file lock.
+  void prewarmOwnerOnlyAclWin32();
 
   // Automation may spawn the shared daemon; keep schedules/webhooks live.
   // A TUI-spawned daemon keeps the historical eager start (its channels client

@@ -5,6 +5,7 @@ import { resolvePluginData } from '../../../shared/plugin-paths.mjs';
 import { boundProviderAuthPath } from '../../../shared/provider-auth-binding.mjs';
 import { cursorTokenExpiry } from './cursor-auth.mjs';
 import { isValidMuseCredentialDocument } from './muse-code-oauth-tokens.mjs';
+import { isValidOpenCodeGoCredentialDocument } from './opencode-go-oauth-tokens.mjs';
 import { developerOptionEnabled, developerOptionForProvider } from '../../../shared/developer-options.mjs';
 import { modelProxyClientMode } from '../../../shared/model-proxy-mode.mjs';
 
@@ -54,11 +55,6 @@ function resolveProbeState(paths, evaluate) {
   }
   if (evaluate(docs) === true) return 'present';
   return sawUnreadable ? 'unreadable' : 'absent';
-}
-
-function pushUnique(list, value) {
-  if (!value || typeof value !== 'string') return;
-  if (!list.includes(value)) list.push(value);
 }
 
 // Short-TTL memo. Under simultaneous multi-agent launch, buildDefaultConfig
@@ -113,9 +109,11 @@ function memoProbe(key, paths, compute, extraSignature = '') {
 }
 
 function anthropicOAuthState() {
-  const paths = [];
-  pushUnique(paths, process.env.ANTHROPIC_OAUTH_CREDENTIALS_PATH);
-  pushUnique(paths, ANTHROPIC_DEFAULT_CREDENTIALS_PATH);
+  const paths = [
+    boundProviderAuthPath('anthropic-oauth') ||
+      process.env.ANTHROPIC_OAUTH_CREDENTIALS_PATH ||
+      ANTHROPIC_DEFAULT_CREDENTIALS_PATH,
+  ];
   return memoProbe('anthropic-oauth', paths, () => {
     return resolveProbeState(paths, (docs) => {
       const candidates = [];
@@ -176,9 +174,7 @@ function mimoOAuthState() {
       process.env.MIMO_OAUTH_CREDENTIALS_PATH ||
       join(resolvePluginData(), 'mimo-oauth.json'),
   ];
-  return memoProbe('mimo-oauth', paths, () =>
-    resolveProbeState(paths, (docs) => docs.some((own) => !!own?.apiKey))
-  );
+  return memoProbe('mimo-oauth', paths, () => resolveProbeState(paths, (docs) => docs.some((own) => !!own?.apiKey)));
 }
 
 function commandCodeOAuthState() {
@@ -200,6 +196,17 @@ function museCodeOAuthState() {
   ];
   return memoProbe('muse-code-oauth', paths, () =>
     resolveProbeState(paths, (docs) => docs.some(isValidMuseCredentialDocument))
+  );
+}
+
+function openCodeGoOAuthState() {
+  const paths = [
+    boundProviderAuthPath('opencode-go-oauth') ||
+      process.env.OPENCODE_GO_OAUTH_CREDENTIALS_PATH ||
+      join(resolvePluginData(), 'opencode-go-oauth.json'),
+  ];
+  return memoProbe('opencode-go-oauth', paths, () =>
+    resolveProbeState(paths, (docs) => docs.some(isValidOpenCodeGoCredentialDocument))
   );
 }
 
@@ -230,7 +237,10 @@ function cursorEnvTokenFingerprint() {
 }
 
 function cursorOAuthState() {
-  const paths = [process.env.CURSOR_OAUTH_CREDENTIALS_PATH, join(resolvePluginData(), 'cursor-oauth.json')];
+  // Match the adapter: selected account, then explicit path, then legacy file.
+  // An environment token must not authenticate a different selected account.
+  const bound = boundProviderAuthPath('cursor-oauth');
+  const paths = [bound || process.env.CURSOR_OAUTH_CREDENTIALS_PATH || join(resolvePluginData(), 'cursor-oauth.json')];
   // The env token is the whole answer on this branch and has no file metadata
   // behind it, so its VALUE is what the memo signature has to track: a length
   // (or a bare present/absent flag) let a swap to an equal-length expired token
@@ -245,13 +255,15 @@ function cursorOAuthState() {
       // Expiry is read by the one shared JWT reader (cursor-auth.cursorTokenExpiry),
       // which answers 0 for a non-JWT or unparseable token — exactly the "assume
       // usable" outcome this branch already took for those shapes.
-      if (process.env.CURSOR_ACCESS_TOKEN) {
+      if (process.env.CURSOR_ACCESS_TOKEN && !bound) {
         const expiresAt = cursorTokenExpiry(process.env.CURSOR_ACCESS_TOKEN);
         return expiresAt === 0 || expiresAt > Date.now() ? 'present' : 'absent';
       }
       return resolveProbeState(paths, (docs) =>
         docs.some((own) => {
           if (!own?.access_token) return false;
+          // Cursor permanently rejected the refresh token: signed out until a new login.
+          if (own.reauth_required === true) return false;
           const expiresAt = Number(own.expires_at) || 0;
           return expiresAt === 0 || expiresAt > Date.now() || Boolean(own.refresh_token);
         })
@@ -270,6 +282,7 @@ const OAUTH_PROBE_STATES = new Map([
   ['mimo-oauth', mimoOAuthState],
   ['cursor-oauth', cursorOAuthState],
   ['antigravity-oauth', antigravityOAuthState],
+  ['opencode-go-oauth', openCodeGoOAuthState],
 ]);
 
 // Dev-only OAuth providers (Antigravity, Cursor). Each is hidden and treated as

@@ -9,6 +9,17 @@ import { createInheritanceActions } from './lifecycle/inheritance.mjs';
 import { createResumeAction } from './lifecycle/resume.mjs';
 import { createDisposeAction } from './lifecycle/dispose.mjs';
 import { publishModelSwitch } from './routes.mjs';
+import { resolveHeldRequest } from '../../../runtime/shared/held-request-host.mjs';
+
+/** The human-response fields of a decision (never a value), or null. */
+function humanDecisionFields(decision) {
+  if (!decision || typeof decision !== 'object') return null;
+  const fields = {};
+  for (const key of ['response', 'editedArgs', 'remember', 'scope']) {
+    if (decision[key] !== undefined) fields[key] = decision[key];
+  }
+  return Object.keys(fields).length ? fields : null;
+}
 
 export function createSessionLifecycleApi(bag, { restoreTranscriptItems, oauthFlows }) {
   const { runtime, pushNotice, removeNotice, setProgressHint, finishToolApproval } = bag;
@@ -20,14 +31,14 @@ export function createSessionLifecycleApi(bag, { restoreTranscriptItems, oauthFl
   // work for a conversation that is being closed. A durable close that fails
   // restores admission with every accepted input intact; one that succeeds
   // leaves the session terminal and settles queued submissions explicitly.
-  function closeCanonical(reason) {
+  function closeCanonical(reason, options) {
     const flags = bag.flags || {};
     const previous = flags.admission || 'open';
-    if (previous === 'terminal') return runtime.closeCanonicalSession?.(reason) === true;
+    if (previous === 'terminal') return runtime.closeCanonicalSession?.(reason, options) === true;
     flags.admission = 'closing';
     let closed = false;
     try {
-      closed = runtime.closeCanonicalSession?.(reason) === true;
+      closed = runtime.closeCanonicalSession?.(reason, options) === true;
     } catch (error) {
       flags.admission = previous;
       restoreAdmission();
@@ -50,14 +61,21 @@ export function createSessionLifecycleApi(bag, { restoreTranscriptItems, oauthFl
   }
 
   return {
+    isSessionTerminal: () => bag.flags?.admission === 'terminal' || runtime.isSessionTerminal?.() === true,
     resolveToolApproval: (id, decision = {}) => {
+      // A held request of an unattended run is answered from its owner's home
+      // thread, wherever the run itself lives (session-runtime/held-requests.mjs).
+      if (resolveHeldRequest(id, decision)) return true;
       const approved = decision === true || decision?.approved === true;
+      const extra = humanDecisionFields(decision);
       return finishToolApproval(
         id,
         approved,
         decision?.reason || (approved ? 'approved by user' : 'denied by user'),
         typeof decision?.device === 'string' ? decision.device : '',
-        decision?.answers
+        decision?.answers,
+        typeof decision?.reply === 'string' ? decision.reply : undefined,
+        ...(extra ? [extra] : [])
       );
     },
     pushNotice,
@@ -83,8 +101,6 @@ export function createSessionLifecycleApi(bag, { restoreTranscriptItems, oauthFl
         throw new Error('latest turn did not fail on exhausted provider quota');
       }
       if (typeof runtime.continueSessionInModel !== 'function') throw new Error('runtime cannot continue in a model');
-      // Continuing elsewhere supersedes waiting for this provider's reset.
-      bag.supersedeQuotaResume?.(sessionId);
       bag.set({ commandBusy: true });
       try {
         const result = await runtime.continueSessionInModel(sessionId, route);
@@ -99,10 +115,12 @@ export function createSessionLifecycleApi(bag, { restoreTranscriptItems, oauthFl
         bag.flushEmitImmediate?.();
       }
     },
-    // Desktop sidebar watcher hook: the daemon watches this directory so
-    // heartbeat sidecar create/delete pushes instant working/dot updates.
-    // Without it the watcher silently no-ops and the sidebar falls back to
-    // the 60s safety poll (user: spinner kept spinning after the turn ended).
+    // Desktop sidebar watcher hook: the desktop host watches this directory,
+    // and a session record write (a turn starting or settling) schedules a
+    // debounced catalog refresh that re-reads `working` from the daemon's
+    // in-memory run state. Without it the watcher silently no-ops and the
+    // sidebar only refreshes on other store notifications (user: spinner kept
+    // spinning after the turn ended).
     sessionStoreDir: () => {
       try {
         return runtime.sessionStoreDir?.() || null;
@@ -116,7 +134,7 @@ export function createSessionLifecycleApi(bag, { restoreTranscriptItems, oauthFl
     deliverToolCompletion: (sessionId, text, meta = {}) =>
       runtime.deliverToolCompletion?.(sessionId, text, meta) === true,
 
-    closeCanonicalSession: (reason = 'canonical-session-close') => closeCanonical(reason),
+    closeCanonicalSession: (reason = 'canonical-session-close', options) => closeCanonical(reason, options),
 
     bindSessionAddress: (sessionId) => runtime.bindSessionAddress?.(sessionId) === true,
 

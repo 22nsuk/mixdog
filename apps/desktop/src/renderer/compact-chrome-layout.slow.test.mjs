@@ -3,6 +3,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer-core';
+import { launchPuppeteerBrowser } from '../../../../src/runtime/shared/browser-launch.mjs';
 
 test('compact chrome preserves input growth, readable rows and accessible actions', async (t) => {
   const styles = await build({
@@ -10,14 +11,14 @@ test('compact chrome preserves input growth, readable rows and accessible action
       resolveDir: fileURLToPath(new URL('.', import.meta.url)),
       loader: 'css',
       contents:
-        '@import "./ui/tokens.css"; @import "./styles.css"; @import "./desktop.css"; @import "./desktop/composer-add-menu.css";',
+        '@import "./font-faces.css"; @import "./ui/tokens.css"; @import "./styles.css"; @import "./desktop.css"; @import "./desktop/composer-add-menu.css"; @import "./agent-chat.css";',
     },
     outfile: 'compact-chrome.css',
     bundle: true,
     write: false,
     loader: { '.woff': 'dataurl', '.woff2': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl' },
   });
-  const browser = await puppeteer.launch({
+  const browser = await launchPuppeteerBrowser(puppeteer, {
     ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : { channel: 'chrome' }),
     headless: true,
   });
@@ -59,6 +60,7 @@ test('compact chrome preserves input growth, readable rows and accessible action
     </div>
     <div class="transcript-virtual-row-content" data-tag="UserMessage" id="question"></div>
     <div class="transcript-virtual-row-content" data-tag="AssistantPart" id="answer"></div>
+    <div class="transcript-virtual-row-content" data-tag="ToolActivity" data-step-before="true" id="answer-step"></div>
     <div class="transcript-turn-gap" id="turn-gap"></div>
     <div class="message-body" id="prose">한글 English</div>
   </body></html>`);
@@ -93,9 +95,9 @@ test('compact chrome preserves input growth, readable rows and accessible action
             }),
           };
         });
-        assert.equal(resting.height, 96);
-        assert.equal(resting.inputHeight, 56);
-        assert.equal(resting.footerHeight, 40);
+        assert.equal(resting.height, 42);
+        assert.equal(resting.inputHeight, 42);
+        assert.equal(resting.footerHeight, 0, 'the footer controls sit in the one-line bar (display: contents)');
         assert.equal(resting.overflow, false);
         assert.equal(resting.controlsFit, true);
         await page.evaluate(() => {
@@ -107,8 +109,9 @@ test('compact chrome preserves input growth, readable rows and accessible action
           input: document.querySelector('textarea').getBoundingClientRect().height,
           scrolls: document.querySelector('textarea').scrollHeight > document.querySelector('textarea').clientHeight,
         }));
-        assert.equal(expanded.input, 180);
-        assert.equal(expanded.form, 220);
+        // One line grows to five (agent-chat.css): 5 * 24px lines + 2 * 9px padding.
+        assert.equal(expanded.input, 138);
+        assert.equal(expanded.form, 138);
         assert.equal(expanded.scrolls, true);
       }
     });
@@ -171,6 +174,7 @@ test('compact chrome preserves input growth, readable rows and accessible action
       return {
         question: style('#question').paddingBottom,
         answer: style('#answer').paddingBottom,
+        answerStep: style('#answer-step').paddingTop,
         turnGap: style('#turn-gap').height,
         font: style('#prose').fontSize,
         line: style('#prose').lineHeight,
@@ -179,10 +183,11 @@ test('compact chrome preserves input growth, readable rows and accessible action
     });
     assert.deepEqual(desktop, {
       question: '24px',
-      answer: '8px',
+      answer: '0px',
+      answerStep: '8px',
       turnGap: '20px',
       font: '15px',
-      line: '24px',
+      line: '26px',
       menu: 30,
     });
     await page.evaluate(() => {
@@ -192,11 +197,13 @@ test('compact chrome preserves input growth, readable rows and accessible action
     await settle();
     const mobile = await page.evaluate(() => ({
       menu: document.querySelector('.row-overflow-menu > button').getBoundingClientRect().height,
-      footer: document.querySelector('.composer-footer').getBoundingClientRect().height,
+      bar: document.querySelector('.composer').getBoundingClientRect().height,
       input: document.querySelector('textarea').getBoundingClientRect().height,
     }));
     assert.ok(mobile.menu >= 44);
-    assert.equal(mobile.footer, 44);
-    assert.equal(mobile.input, 44);
+    // The phone composer is the one-line messenger bar: 44px touch targets
+    // with 6px around them, the footer's controls on the bar's own row.
+    assert.equal(mobile.bar, 56);
+    assert.equal(mobile.input, 56);
   });
 });

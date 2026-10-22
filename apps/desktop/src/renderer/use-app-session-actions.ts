@@ -2,9 +2,11 @@ import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction 
 import type { DesktopSessionSummary, SessionSnapshot } from '../shared/contract';
 import { sessionSummaryTitle } from '../shared/session-title.mjs';
 import { t } from './i18n';
+import { forgetComposerScope } from './composer-draft';
 import { deleteSessionImagePreviews } from './image-preview-store';
-import type { NavigationSelection, WorkspaceTab } from './navigation';
+import type { NavigationSelection, WorkspaceSelection, WorkspaceTab } from './navigation';
 import { navigationKey } from './text-format';
+import { useStableEvent } from './use-stable-event';
 
 export function useAppSessionActions({
   sessions,
@@ -21,6 +23,8 @@ export function useAppSessionActions({
   applySnapshot,
   activateSelection,
   onSessionDeleted,
+  closeSessionTabs,
+  openSession,
   navigationEpoch,
   setRequestedSessionId,
 }: {
@@ -38,6 +42,10 @@ export function useAppSessionActions({
   applySnapshot(next: SessionSnapshot | null): void;
   activateSelection(selection: NavigationSelection, title: string, replaceKey?: string): void;
   onSessionDeleted(sessionId: string): void;
+  /** Closes every pane tab of the session; returns the neighbour tab to show
+   *  when the focused active tab was one of them. */
+  closeSessionTabs(sessionId: string): { selection: WorkspaceSelection; title: string } | null;
+  openSession(sessionId: string): void | Promise<void>;
   navigationEpoch: MutableRefObject<number>;
   setRequestedSessionId: Dispatch<SetStateAction<string>>;
 }) {
@@ -186,6 +194,7 @@ export function useAppSessionActions({
         throw reason;
       }
       onSessionDeleted(sessionId);
+      forgetComposerScope(sessionId);
       deleteSessionImagePreviews(sessionId);
       invalidateSessionListings();
       pendingRenames.current.delete(sessionId);
@@ -194,10 +203,22 @@ export function useAppSessionActions({
       setTabs((current) =>
         current.filter((tab) => !(tab.selection.kind === 'session' && tab.selection.id === sessionId))
       );
+      // Every pane tab of the session closes, whichever entry point deleted it.
+      const fallback = closeSessionTabs(sessionId);
       if (deletingCurrent && navigationEpoch.current === navigationToken) {
         navigationEpoch.current += 1;
-        activateSelection({ kind: 'new' }, t('New task'));
-        setRequestedSessionId('');
+        if (fallback?.selection.kind === 'session') {
+          void openSession(fallback.selection.id);
+        } else if (fallback?.selection.kind === 'new' || fallback?.selection.kind === 'project') {
+          activateSelection(fallback.selection, fallback.title);
+          setRequestedSessionId('');
+        } else if (fallback) {
+          // The pane already activated its neighbouring file/terminal/... tab.
+          setRequestedSessionId('');
+        } else {
+          activateSelection({ kind: 'new' }, t('New task'));
+          setRequestedSessionId('');
+        }
       }
       try {
         await refreshSessions();
@@ -210,9 +231,11 @@ export function useAppSessionActions({
     [
       activateSelection,
       applySnapshot,
+      closeSessionTabs,
       invalidateSessionListings,
       navigationEpoch,
       onSessionDeleted,
+      openSession,
       pendingDeletes,
       pendingRenames,
       refreshSessions,
@@ -225,5 +248,14 @@ export function useAppSessionActions({
     ]
   );
 
-  return { renameSession, archiveSession, favoriteSession, moveSessionToProject, deleteSession };
+  // Handed to the memoised session sidebars and tab strips: each action reads
+  // the latest sessions/tabs/selection when called, so their identities need
+  // not change with them (every session switch rebuilt them).
+  return {
+    renameSession: useStableEvent(renameSession),
+    archiveSession: useStableEvent(archiveSession),
+    favoriteSession: useStableEvent(favoriteSession),
+    moveSessionToProject: useStableEvent(moveSessionToProject),
+    deleteSession: useStableEvent(deleteSession),
+  };
 }

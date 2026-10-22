@@ -600,3 +600,55 @@ test('failed lock-owner writes never run the mutation or remove a replacement lo
   });
   assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
 });
+
+function mockRenameFailures(t, failures, code) {
+  const rename = fs.renameSync;
+  let calls = 0;
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    calls += 1;
+    if (calls <= failures) throw Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+    return rename(from, to);
+  });
+  syncBuiltinESMExports();
+  return () => calls;
+}
+
+test('a rename over a read-only file fails at once with its own error instead of sleeping through the retry schedule', (t) => {
+  const { path } = fixture(t);
+  writeFileSync(path, '{"keep":true}\n');
+  fs.chmodSync(path, 0o444);
+  const calls = mockRenameFailures(t, Infinity, 'EPERM');
+  // Observe retry waits, not time spent flushing the file or waiting for the runner.
+  const wait = t.mock.method(Atomics, 'wait', () => 'timed-out');
+  try {
+    assert.throws(
+      () => writeJsonAtomicSync(path, { keep: false }),
+      (error) => error.code === 'EPERM'
+    );
+  } finally {
+    fs.chmodSync(path, 0o666);
+  }
+  assert.equal(wait.mock.callCount(), 0, 'no synchronous retry sleeps');
+  assert.equal(calls(), 1);
+  assert.equal(readFileSync(path, 'utf8'), '{"keep":true}\n');
+  assert.deepEqual(
+    readdirSync(join(path, '..')).filter((name) => name.includes('mixdog-tmp')),
+    [],
+    'the temp file is removed'
+  );
+});
+
+test('a transient sharing violation on a writable file is still retried until the rename lands', (t) => {
+  const { path } = fixture(t);
+  writeFileSync(path, '{"keep":true}\n');
+  const calls = mockRenameFailures(t, 2, 'EPERM');
+  const wait = t.mock.method(Atomics, 'wait', () => 'timed-out');
+  writeJsonAtomicSync(path, { keep: false }, { backoffs: [1, 1, 1] });
+  assert.equal(calls(), 3);
+  assert.equal(wait.mock.callCount(), 2, 'each transient failure waits before retrying');
+  assert.equal(readFileSync(path, 'utf8'), '{\n  "keep": false\n}\n');
+});

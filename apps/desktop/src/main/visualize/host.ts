@@ -4,6 +4,7 @@
  * the media scheme for PDF/image/audio/video); annotations and captures act on
  * the panel the main window is drawing.
  */
+import { basename, dirname } from 'node:path';
 import type { BrowserWindow, NativeImage, WebContents } from 'electron';
 
 import { DESKTOP_IPC } from '../../shared/contract';
@@ -15,22 +16,38 @@ import {
   type VisualizeTabView,
 } from '../../shared/visualize';
 import { INLINE_CHART_RENDERED } from '../../shared/visualize-inline-page';
-import { renderPageExportDetailed } from './export-render';
-import { chooseExportPath, exportTabBytes } from './host-export-path';
+import { visualizeInspectScript } from '../../shared/visualize-inspect';
+import { inspectPageOffscreen, renderPageExportDetailed, VISIBLE_PASSWORD_SCRIPT } from './export-render';
+import {
+  chooseExportPath,
+  type ExportRenderers,
+  exportRenderers,
+  exportTabBytes,
+  thumbnailRenderers,
+} from './host-export-path';
 import { watchFile } from './host-file-watch';
 import { createFeedbackHost } from './host-feedback';
-import { bodyRectNow, captureWindowRect, capturedPng, leasePrefix, shownBody, windowAccess } from './host-frames';
+import {
+  bodyRectNow,
+  captureWindowRect,
+  capturedPng,
+  desktopScreenState,
+  leasePrefix,
+  shownBody,
+  windowAccess,
+} from './host-frames';
 import { inlinePageUrl, panePreviewUrl } from './host-pane-preview';
 import { watchPageProblems } from './host-page-observer';
 import { annotatePanes, inspectPanes, requireShownWindow, shownHtmlFrames } from './host-page-ops';
+import { watchVisualizeZoomInput } from './host-zoom-input';
+import { preparePaneFrame } from './host-pane-frame';
 import { createVisualizeService, type VisualizeService } from './service';
 
 export { resizePaneFramesScript, restorePaneFramesScript } from './host-page-ops';
 
-/** annotate on a tab only a paired remote device is showing: marks exist in
- *  the desktop window alone, and remote panes draw pages without them. */
-export const REMOTE_ONLY_ANNOTATE =
-  'annotate draws its marks only in the Mixdog desktop window, and this tab is shown only on a paired remote device, which displays pages without marks; ask the user to open the visualize panel on the desktop, then retry';
+/** annotate on a tab only a paired remote device is showing (internal: the
+ *  marks are then drawn by that device from the tab state). */
+export const REMOTE_ONLY_ANNOTATE = 'the tab is shown only on a paired remote device';
 
 /** inspect on a tab only a paired remote device is showing: the reading runs
  *  in the desktop window's panes. */
@@ -75,6 +92,20 @@ async function pagesReady(window: BrowserWindow, tab: VisualizeTabView): Promise
     if (!(await frame.executeJavaScript(check).catch(() => false))) return false;
   }
   return true;
+}
+
+/** Whether a page pane of the tab shows a password field now. */
+async function showsPassword(window: BrowserWindow, tab: VisualizeTabView): Promise<boolean> {
+  const frames = window.webContents.mainFrame.framesInSubtree;
+  for (const pane of tab.panes) {
+    if (pane.kind !== 'html' || !pane.url) continue;
+    const prefix = leasePrefix(pane.url);
+    for (const frame of frames) {
+      if (frame.isDestroyed() || !frame.url.startsWith(prefix)) continue;
+      if ((await frame.executeJavaScript(VISIBLE_PASSWORD_SCRIPT).catch(() => false)) === true) return true;
+    }
+  }
+  return false;
 }
 
 /** A small bitmap of `image` for the settle comparison. */
@@ -123,6 +154,11 @@ export async function settledBodyImage(
  *  VISUALIZE_THUMBNAIL_MAX_BYTES; null when none does or the image is empty. */
 export function fitVisualizeThumbnail(image: NativeImage): Buffer | null {
   if (image.isEmpty()) return null;
+  // A tall picture (a whole page, stacked document pages) keeps its top at
+  // the card's 16:10, which is what the card shows anyway.
+  const size = image.getSize();
+  const height = Math.min(size.height, Math.ceil((size.width * 10) / 16));
+  if (height < size.height) image = image.crop({ x: 0, y: 0, width: size.width, height });
   const { width } = image.getSize();
   for (const step of [VISUALIZE_THUMBNAIL_MAX_WIDTH, 256, 200, 160]) {
     const png = (width > step ? image.resize({ width: step, quality: 'good' }) : image).toPNG();
@@ -144,6 +180,8 @@ async function cardThumbnail(
 ): Promise<Buffer | null> {
   if (window?.isVisible() && !window.isMinimized()) {
     const image = await settledBodyImage(window, sessionId, tab, signal);
+    // A page showing a password field is never pictured (nor stood in for).
+    if (image && (await showsPassword(window, tab))) return null;
     const png = image ? fitVisualizeThumbnail(image) : null;
     if (png) return png;
   }
@@ -190,6 +228,15 @@ export function createDesktopVisualize(options: {
     if (observed.has(contents)) return;
     observed.add(contents);
     watchPageProblems(contents, service);
+    // A pane page that loaded again within its revision gets the tab's marks
+    // back (the overlay lives on the page's window).
+    contents.on('did-frame-finish-load', (_event, isMainFrame, processId, routingId) => {
+      if (isMainFrame) return;
+      void import('electron').then(({ webFrameMain }) => {
+        const frame = webFrameMain.fromId(processId, routingId);
+        if (frame) void preparePaneFrame(frame, service);
+      });
+    });
   };
 
   /** PNG of the displayed tab body, as it is on screen. */
@@ -199,14 +246,43 @@ export function createDesktopVisualize(options: {
     return capturedPng(await captureWindowRect(window, rect));
   };
 
+  /** Rasterized pages of a pane's PDF / Office file, by the editor's own rasterizer. */
+  const documentPages: ExportRenderers['documentPages'] = async (file, pages) => {
+    const reply = (await options.invokeDesktopOperation('documentPreviewPagesIn', [
+      dirname(file),
+      basename(file),
+      { pages },
+    ])) as { pageCount: number; pages: Array<{ mime: string; base64: string }> };
+    return {
+      pageCount: reply.pageCount,
+      pages: reply.pages.map((page) => ({ mime: page.mime, bytes: Buffer.from(page.base64, 'base64') })),
+    };
+  };
+
   const service: VisualizeService = createVisualizeService({
     ...(options.versionsDirectory ? { versions: { directory: options.versionsDirectory } } : {}),
     thumbnail: (sessionId, tab, targets, signal) => cardThumbnail(liveWindow(), sessionId, tab, targets, signal),
+    // Audio and video need the panel (the capture fallback): no picture.
+    async thumbnailOffscreen(_sessionId, tab, files, signal) {
+      const png = await exportTabBytes(
+        () => Promise.reject(new Error('only the panel can draw this tab')),
+        tab,
+        'png',
+        0,
+        { files, renderers: thumbnailRenderers({ ...exportRenderers, documentPages }, signal), tiles: true }
+      );
+      if (signal.aborted) return null;
+      const { nativeImage } = await import('electron');
+      return fitVisualizeThumbnail(nativeImage.createFromBuffer(png));
+    },
     ...(options.sessionCwd ? { sessionCwd: options.sessionCwd } : {}),
     windowAvailable: () => liveWindow() !== null,
     browserAvailable: options.browserAvailable,
     publish(event: DesktopVisualizeEvent) {
-      liveWindow()?.webContents.send(DESKTOP_IPC.visualizeChanged, event);
+      const contents = liveWindow()?.webContents;
+      if (!contents) return;
+      watchVisualizeZoomInput(contents);
+      contents.send(DESKTOP_IPC.visualizeChanged, event);
     },
     publishHost: options.publishRemote,
     prepareInlinePage: (content) => inlinePageUrl(content, liveWindow()?.webContents, observePageProblems),
@@ -217,27 +293,57 @@ export function createDesktopVisualize(options: {
         convertDocument: (cwd, rel) => options.invokeDesktopOperation('documentPreviewIn', [cwd, rel]),
       }),
     watch: watchFile,
-    // Same guard as capture: never report marks nobody can see.
-    async annotate(sessionId, tab, op) {
-      const window = await requireShownWindow(sessionId, tab, viewer, REMOTE_ONLY_ANNOTATE);
-      return annotatePanes(window, tab, op);
+    // Same guard as capture: never report marks nobody can see. A paired
+    // device that alone shows the tab draws them from the tab state (null).
+    async annotate(sessionId, tab, marks) {
+      let window: BrowserWindow;
+      try {
+        window = await requireShownWindow(sessionId, tab, viewer, REMOTE_ONLY_ANNOTATE);
+      } catch (error) {
+        if (error instanceof Error && error.message === REMOTE_ONLY_ANNOTATE) return null;
+        throw error;
+      }
+      return annotatePanes(window, tab, marks);
     },
     // Screen reading runs in the desktop window's own pane frames.
     async inspect(sessionId, tab, request) {
       const window = await requireShownWindow(sessionId, tab, viewer, REMOTE_ONLY_INSPECT);
       return inspectPanes(window, tab, request);
     },
+    // Without the panel (an agent turn leaves it alone): a hidden window.
+    async inspectOffscreen(pane, allowNetwork, { viewport, selector, roots }) {
+      const read = await inspectPageOffscreen(
+        pane.url,
+        allowNetwork,
+        visualizeInspectScript(selector ? { selector } : {}),
+        { ...(viewport ? { viewport } : {}), roots }
+      );
+      return { result: read.data, problems: read.problems };
+    },
     async ensureShown(sessionId, tab) {
       const window = requireWindow();
       await shownBody(window, sessionId, tab);
       await shownHtmlFrames(window, tab);
     },
+    // On the desktop window, else on a paired remote device showing the session.
+    async onScreen(sessionId, tab) {
+      const window = liveWindow();
+      const desktop = window ? await desktopScreenState(window, sessionId, tab) : 'hidden';
+      if (desktop === 'visible' || (await viewer.remoteViewing(sessionId))) return 'visible';
+      return desktop;
+    },
     capture: captureBody,
     chooseExportPath: (request) => chooseExportPath(requireWindow, request),
     renderExport: (pane, format, allowNetwork, options) =>
       renderPageExportDetailed(pane.url, format, allowNetwork, options),
-    exportBytes: (sessionId, tab, format, paneIndex) =>
-      exportTabBytes(() => captureBody(sessionId, tab), tab, format, paneIndex),
+    exportBytes: (sessionId, tab, format, paneIndex, files, onPagesCut) =>
+      exportTabBytes(
+        () => captureBody(sessionId, tab),
+        tab,
+        format,
+        paneIndex,
+        files && { files, renderers: { ...exportRenderers, documentPages }, onPagesCut }
+      ),
   });
   return Object.assign(service, createFeedbackHost(service, { live: liveWindow, require: requireWindow }));
 }

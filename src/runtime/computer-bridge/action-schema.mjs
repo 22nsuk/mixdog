@@ -1,6 +1,7 @@
 import { splitBridgeToolArgs } from '../shared/bridge-tool-args.mjs';
 import { hasOwn } from '../shared/object.mjs';
 import { schemaValueError } from '../shared/schema-value-error.mjs';
+import { advertiseActionInputUnion } from '../agent/orchestrator/providers/lib/action-input-contract.mjs';
 import {
   COMPUTER_CORE_ACTION_SCHEMA,
   COMPUTER_DEFAULT_DELIVERY,
@@ -149,7 +150,213 @@ const captureProperties = {
   },
 };
 
-export const COMPUTER_INPUT_SCHEMA = {
+// The strict per-action contract: which `input` each action accepts. The host
+// validates every call against it (validateComputerToolArgs), and the model-facing
+// schema below derives its `input` from it. It is not part of the advertised
+// root: provider tool schemas must be an object root without anyOf/oneOf/allOf.
+export const COMPUTER_ACTION_CONTRACTS = [
+  branch(
+    'wait_for_user',
+    input({
+      timeout_ms: {
+        type: 'integer',
+        minimum: 0,
+        maximum: 120000,
+        description: 'Wait for manual or host-configured idle resume; default 60000.',
+      },
+    }),
+    false
+  ),
+  branch(
+    'list',
+    input(
+      {
+        kind: {
+          type: 'string',
+          enum: ['windows', 'apps', 'history'],
+          description:
+            "history returns this session's own executed commands with their verdicts, for reviewing what a run already did.",
+        },
+        query: {
+          type: 'string',
+          minLength: 1,
+          maxLength: MAX_TARGET_TOKEN_LENGTH,
+          description:
+            'With kind="apps", also lists installed apps whose name or id matches, including apps that are not running.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 60,
+          description: 'kind="history" only: how many of the most recent records to return; default 60.',
+        },
+      },
+      ['kind']
+    )
+  ),
+  branch(
+    'diagnose',
+    input({
+      ...windowTarget,
+      ocr_language: {
+        ...ocrLanguage,
+        description: 'Optional OS OCR language tag to verify, e.g. ko or en-US.',
+      },
+    }),
+    false
+  ),
+  branch('capture', input(captureProperties), false),
+  branch(
+    'act',
+    input(
+      {
+        ...windowTarget,
+        ...appTarget,
+        frame_id: {
+          type: 'string',
+          minLength: 1,
+          maxLength: MAX_TARGET_TOKEN_LENGTH,
+          description: 'Latest unexpired frame id shared by coordinate actions in this act call.',
+        },
+        actions: {
+          type: 'array',
+          items: COMPUTER_CORE_ACTION_SCHEMA,
+          minItems: 1,
+          maxItems: 6,
+          description:
+            'First: an input action. Then type/key/wait reusing focus, or click/double_click/triple_click/scroll/set_value/type/key on a ref from the same observation (no marks or coordinates). Waits total ≤10s; transition/failure or a changed, disabled, or off-screen ref stops the rest.',
+        },
+        observe: {
+          type: 'string',
+          enum: ['state', 'ax'],
+          description:
+            'Returned observation. Default: ax when the first action targets a ref (full state if the tree is unusable), otherwise state. state includes the frame for coordinates or visual checks; ax skips the screenshot.',
+        },
+        ...delivery,
+      },
+      ['actions']
+    )
+  ),
+  branch(
+    'window',
+    input(
+      {
+        ...windowTarget,
+        ...appTarget,
+        operation: {
+          type: 'string',
+          enum: ['focus', 'move', 'minimize', 'maximize', 'restore', 'close', 'terminate'],
+        },
+        confirm: {
+          type: 'string',
+          enum: ['terminate'],
+          description:
+            'terminate only, and required for it: kills the process behind the window, losing unsaved work. Ask the user first.',
+        },
+        x: {
+          type: 'integer',
+          description: 'move only: new left edge; y the top; width/height an optional new size.',
+        },
+        y: { type: 'integer' },
+        width: { type: 'integer', minimum: 1 },
+        height: { type: 'integer', minimum: 1 },
+      },
+      ['operation']
+    )
+  ),
+  branch(
+    'menu',
+    input(
+      {
+        ...windowTarget,
+        ...appTarget,
+        path: {
+          type: 'array',
+          items: { type: 'string', minLength: 1, maxLength: 512 },
+          minItems: 1,
+          maxItems: 8,
+          description:
+            'Exact labels from the bar down, e.g. ["File","Save As"]. Missing, ambiguous, or disabled entries fail closed.',
+        },
+      },
+      ['path']
+    )
+  ),
+  branch(
+    'verify',
+    input(
+      {
+        ...windowTarget,
+        ...appTarget,
+        expect: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 8,
+          description: 'AND-combined predicates. Reads state only: no pixels, and prior refs stay valid.',
+          items: {
+            type: 'object',
+            properties: {
+              present: {
+                type: 'string',
+                maxLength: MAX_TARGET_TOKEN_LENGTH,
+                description: 'Text an element name or value must contain.',
+              },
+              absent: { type: 'string', maxLength: MAX_TARGET_TOKEN_LENGTH },
+              title_contains: { type: 'string', maxLength: MAX_TARGET_TOKEN_LENGTH },
+              window_exists: { type: 'boolean' },
+            },
+            additionalProperties: false,
+          },
+        },
+        timeout_ms: { type: 'integer', minimum: 0, maximum: 30000 },
+        stable_samples: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 5,
+          description: 'Consecutive satisfied samples required. Default 2.',
+        },
+      },
+      ['expect']
+    )
+  ),
+  branch(
+    'clipboard',
+    input(
+      {
+        operation: { type: 'string', enum: ['read', 'write'] },
+        text: {
+          type: 'string',
+          maxLength: MAX_CLIPBOARD_TEXT_LENGTH,
+          description: 'Required for operation="write".',
+        },
+      },
+      ['operation']
+    )
+  ),
+  branch(
+    'launch',
+    input(
+      {
+        app: {
+          type: 'string',
+          minLength: 1,
+          maxLength: MAX_TARGET_TOKEN_LENGTH,
+          description: 'Executable name, exact path, file, or URL.',
+        },
+      },
+      ['app']
+    )
+  ),
+];
+
+// A JSON Schema 2020-12 object root with no root combinator (Anthropic
+// input_schema rule) whose `input` offers each action's own input as an anyOf
+// alternative titled with that action. The tool advertises its flat projection
+// (flattenActionInputUnion); only provider paths verified to accept the nested
+// alternatives (first-party Anthropic, Claude via Antigravity) send this form
+// (actionInputUnionFor). validateComputerToolArgs enforces the strict
+// per-action contract.
+const COMPUTER_ACTION_INPUT_UNION = {
   type: 'object',
   description:
     'One compact Computer Use operation. Use act.actions to execute 1-6 simple actions and receive one fresh observation.',
@@ -163,208 +370,24 @@ export const COMPUTER_INPUT_SCHEMA = {
     input: {
       type: 'object',
       description: 'Fields for the selected action.',
+      anyOf: COMPUTER_ACTION_CONTRACTS.map(({ properties }) => {
+        const [action] = properties.action.enum;
+        return {
+          title: action,
+          description: `Input when action="${action}".`,
+          ...structuredClone(properties.input),
+        };
+      }),
     },
   },
   required: ['action'],
   additionalProperties: false,
-  oneOf: [
-    branch(
-      'wait_for_user',
-      input({
-        timeout_ms: {
-          type: 'integer',
-          minimum: 0,
-          maximum: 120000,
-          description: 'Wait for manual or host-configured idle resume; default 60000.',
-        },
-      }),
-      false
-    ),
-    branch(
-      'list',
-      input(
-        {
-          kind: {
-            type: 'string',
-            enum: ['windows', 'apps', 'history'],
-            description:
-              "history returns this session's own executed commands with their verdicts, for reviewing what a run already did.",
-          },
-          query: {
-            type: 'string',
-            minLength: 1,
-            maxLength: MAX_TARGET_TOKEN_LENGTH,
-            description:
-              'With kind="apps", also lists installed apps whose name or id matches, including apps that are not running.',
-          },
-          limit: {
-            type: 'integer',
-            minimum: 1,
-            maximum: 60,
-            description: 'kind="history" only: how many of the most recent records to return; default 60.',
-          },
-        },
-        ['kind']
-      )
-    ),
-    branch(
-      'diagnose',
-      input({
-        ...windowTarget,
-        ocr_language: {
-          ...ocrLanguage,
-          description: 'Optional OS OCR language tag to verify, e.g. ko or en-US.',
-        },
-      }),
-      false
-    ),
-    branch('capture', input(captureProperties), false),
-    branch(
-      'act',
-      input(
-        {
-          ...windowTarget,
-          ...appTarget,
-          frame_id: {
-            type: 'string',
-            minLength: 1,
-            maxLength: MAX_TARGET_TOKEN_LENGTH,
-            description: 'Latest unexpired frame id shared by coordinate actions in this act call.',
-          },
-          actions: {
-            type: 'array',
-            items: COMPUTER_CORE_ACTION_SCHEMA,
-            minItems: 1,
-            maxItems: 6,
-            description:
-              'First: an input action. Then type/key/wait reusing focus, or click/double_click/triple_click/scroll/set_value/type/key on a ref from the same observation (no marks or coordinates). Waits total ≤10s; transition/failure or a changed, disabled, or off-screen ref stops the rest.',
-          },
-          observe: {
-            type: 'string',
-            enum: ['state', 'ax'],
-            description:
-              'Returned observation. Default: ax when the first action targets a ref (full state if the tree is unusable), otherwise state. state includes the frame for coordinates or visual checks; ax skips the screenshot.',
-          },
-          ...delivery,
-        },
-        ['actions']
-      )
-    ),
-    branch(
-      'window',
-      input(
-        {
-          ...windowTarget,
-          ...appTarget,
-          operation: {
-            type: 'string',
-            enum: ['focus', 'move', 'minimize', 'maximize', 'restore', 'close', 'terminate'],
-          },
-          confirm: {
-            type: 'string',
-            enum: ['terminate'],
-            description:
-              'terminate only, and required for it: kills the process behind the window, losing unsaved work. Ask the user first.',
-          },
-          x: {
-            type: 'integer',
-            description: 'move only: new left edge; y the top; width/height an optional new size.',
-          },
-          y: { type: 'integer' },
-          width: { type: 'integer', minimum: 1 },
-          height: { type: 'integer', minimum: 1 },
-        },
-        ['operation']
-      )
-    ),
-    branch(
-      'menu',
-      input(
-        {
-          ...windowTarget,
-          ...appTarget,
-          path: {
-            type: 'array',
-            items: { type: 'string', minLength: 1, maxLength: 512 },
-            minItems: 1,
-            maxItems: 8,
-            description:
-              'Exact labels from the bar down, e.g. ["File","Save As"]. Missing, ambiguous, or disabled entries fail closed.',
-          },
-        },
-        ['path']
-      )
-    ),
-    branch(
-      'verify',
-      input(
-        {
-          ...windowTarget,
-          ...appTarget,
-          expect: {
-            type: 'array',
-            minItems: 1,
-            maxItems: 8,
-            description: 'AND-combined predicates. Reads state only: no pixels, and prior refs stay valid.',
-            items: {
-              type: 'object',
-              properties: {
-                present: {
-                  type: 'string',
-                  maxLength: MAX_TARGET_TOKEN_LENGTH,
-                  description: 'Text an element name or value must contain.',
-                },
-                absent: { type: 'string', maxLength: MAX_TARGET_TOKEN_LENGTH },
-                title_contains: { type: 'string', maxLength: MAX_TARGET_TOKEN_LENGTH },
-                window_exists: { type: 'boolean' },
-              },
-              additionalProperties: false,
-            },
-          },
-          timeout_ms: { type: 'integer', minimum: 0, maximum: 30000 },
-          stable_samples: {
-            type: 'integer',
-            minimum: 1,
-            maximum: 5,
-            description: 'Consecutive satisfied samples required. Default 2.',
-          },
-        },
-        ['expect']
-      )
-    ),
-    branch(
-      'clipboard',
-      input(
-        {
-          operation: { type: 'string', enum: ['read', 'write'] },
-          text: {
-            type: 'string',
-            maxLength: MAX_CLIPBOARD_TEXT_LENGTH,
-            description: 'Required for operation="write".',
-          },
-        },
-        ['operation']
-      )
-    ),
-    branch(
-      'launch',
-      input(
-        {
-          app: {
-            type: 'string',
-            minLength: 1,
-            maxLength: MAX_TARGET_TOKEN_LENGTH,
-            description: 'Executable name, exact path, file, or URL.',
-          },
-        },
-        ['app']
-      )
-    ),
-  ],
 };
 
+export const COMPUTER_INPUT_SCHEMA = advertiseActionInputUnion(COMPUTER_ACTION_INPUT_UNION);
+
 const COMPUTER_ACTION_BRANCHES = new Map();
-for (const actionBranch of COMPUTER_INPUT_SCHEMA.oneOf) {
+for (const actionBranch of COMPUTER_ACTION_CONTRACTS) {
   for (const action of actionBranch.properties?.action?.enum || []) {
     COMPUTER_ACTION_BRANCHES.set(action, actionBranch);
   }

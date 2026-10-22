@@ -1,48 +1,58 @@
 /**
  * Projection of the durable worker indexes (agent-workers.json,
- * lead-workers.json) and the heartbeat sidecars into the process-global
- * active pool: the status vocabulary, the 2-minute heartbeat lease and its
- * authority rules, cancel ranking, frozen idle stamps, the per-file session
- * header cache and the orphan-child prune.
+ * lead-workers.json) into the process-global active pool: the status
+ * vocabulary, the live-work evidence a working row needs, frozen idle stamps,
+ * the per-file session header cache and the orphan-child prune.
+ *
+ * Whether a session is working is the daemon's in-memory turn activity (every
+ * session runs inline there), handed in as `runningSessionIds`: a running
+ * session is working whatever its durable row declares, except that an
+ * explicit cancel outranks it. A declared-working row the daemon does not
+ * report as in flight reads `unknown` — without the daemon's answer nothing
+ * is guessed.
  *
  * Assembly order lives in store-agent-worker-pool.mjs; this module owns the
  * row-level truth each projected row carries. Every status string, index
  * field name and row key is a consumed contract and is used verbatim.
  */
 import { readFileSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { probePath, PROBE_PRESENT } from './store/fs-probe.mjs';
+import {
+  isSettledSessionStamp,
+  sameSessionStamp,
+  sessionStampOf,
+  statSessionStamp,
+} from './store/canonical-reader.mjs';
 import { readJsonProjection } from '../../../shared/pending-json-projection.mjs';
 import { listStoredAgentWorkers as assembleStoredAgentWorkers } from './store-agent-worker-pool.mjs';
+import { readTopLevelFields } from './store-agent-worker-header.mjs';
 import {
   TAG_TOMBSTONE_TTL_MS,
+  agentPaneVisible,
   findTagTombstone,
   tagTombstoneKey,
   tombstoneBlocksWork,
 } from '../../../shared/agent-reap-state.mjs';
-import {
-  dataDir,
-  sessionHeartbeatMtimes,
-  storedAgentWorkerIndexPath,
-  storedLeadWorkerIndexPath,
-} from './store-summary-locations.mjs';
+import { dataDir, storedAgentWorkerIndexPath, storedLeadWorkerIndexPath } from './store-summary-locations.mjs';
 import { cleanValue, isStoredSessionId, positiveNumber } from './store-summary-fields.mjs';
 import { sessionUsageTotals } from '../../../shared/session-usage-totals.mjs';
 
-const DEAD_AGENT_STATUS =
-  /^(?:done|complete|completed|success|closed|error|fail|failed|cancelled|canceled|killed|timeout)$/i;
-const LIVING_AGENT_STATUS =
-  /^(?:idle|connecting|requesting|streaming|tool[-_\s]?running|running|queued|pending|starting|cancelling)$/i;
 const WORKING_AGENT_STATUS =
   /^(?:connecting|requesting|streaming|tool[-_\s]?running|running|queued|pending|starting|cancelling)$/i;
-// Confirmed cancel vs a cancel whose stop is not proven. The heartbeat lease
-// must never rewrite either as `running`, and the two must stay distinct:
-// `cancel-unconfirmed` is the honest Windows git-bash-survivor answer, not a
-// successful cancel.
+// Confirmed cancel vs a cancel whose stop is not proven. Neither is ever
+// shown as `running`, and the two must stay distinct: `cancel-unconfirmed` is
+// the honest Windows git-bash-survivor answer, not a successful cancel.
 const CANCELLED_AGENT_STATUS = /^(?:cancelled|canceled|killed)$/i;
 // Bare `cancelling` is still working (ACTIVE_STAGES). Only an explicit
 // unconfirmed/pending cancel is a distinct terminal-unconfirmed outcome.
 const CANCEL_UNCONFIRMED_AGENT_STATUS = /^(?:cancel[-_\s]?(?:unconfirmed|pending))$/i;
+// A turn that did not finish (error, timeout, watchdog stop, dead runtime):
+// dead like a completion, but it stays visible as the failure it is.
+const FAILED_AGENT_STATUS = /^(?:error|fail|failed|timeout)$/i;
+// A turn that finished normally. The row rests as `idle` (or an equivalent
+// done status) and is listed as `completed` for the pane window.
+const COMPLETED_AGENT_STATUS = /^(?:idle|done|complete|completed|success)$/i;
 const SESSION_CANCEL_FIELDS = [
   'cancelStatus',
   'status',
@@ -52,19 +62,6 @@ const SESSION_CANCEL_FIELDS = [
   'outcome',
   'terminationReason',
 ];
-const AGENT_POOL_HEARTBEAT_FRESH_MS = 2 * 60 * 1000;
-
-function runtimeAlive(pid) {
-  const id = positiveNumber(pid, 0);
-  if (id <= 0 || id === process.pid) return true;
-  try {
-    process.kill(id, 0);
-    return true;
-  } catch (error) {
-    return error?.code === 'EPERM';
-  }
-}
-
 function workerOwnerSessionId(row, session) {
   return (
     cleanValue(row?.ownerSessionId || session?.ownerSessionId || row?.parentSessionId || session?.parentSessionId) ||
@@ -100,12 +97,6 @@ function frozenIdleSince(sessionId, working, fallback) {
   return value;
 }
 
-function agentStatusValues(row) {
-  return [row?.stage, row?.status]
-    .map(cleanValue)
-    .filter((status, index, values) => Boolean(status) && values.indexOf(status) === index);
-}
-
 /** The worker's lifecycle. `status` decides; `stage` is only the runtime phase
  *  copied in by the progress sweep, so mid-work it may read idle/done/error
  *  beside a worker that is still running. Only a row with no status falls
@@ -114,17 +105,8 @@ function workerLifecycle(row) {
   return cleanValue(row?.status) || cleanValue(row?.stage);
 }
 
-function activeAgentWorker(row) {
-  // A cancel in either field ends the work (bare `cancelling` is still work).
-  if (
-    agentStatusValues(row).some(
-      (status) => CANCELLED_AGENT_STATUS.test(status) || CANCEL_UNCONFIRMED_AGENT_STATUS.test(status)
-    )
-  ) {
-    return false;
-  }
-  const lifecycle = workerLifecycle(row);
-  return Boolean(lifecycle) && !DEAD_AGENT_STATUS.test(lifecycle) && LIVING_AGENT_STATUS.test(lifecycle);
+function failedAgentWorker(row) {
+  return FAILED_AGENT_STATUS.test(workerLifecycle(row));
 }
 
 function stampMs(value) {
@@ -137,54 +119,137 @@ function stampMs(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
-function workStampMs(row) {
-  if (!row || typeof row !== 'object') return 0;
-  return Math.max(stampMs(row.turnStartedAt), stampMs(row.startedAt));
+function workStampMs(source) {
+  if (!source || typeof source !== 'object') return 0;
+  return Math.max(stampMs(source.turnStartedAt), stampMs(source.startedAt));
 }
 
-function cancelStampMs(row) {
-  if (!row || typeof row !== 'object') return 0;
-  return Math.max(stampMs(row.cancelledAt), stampMs(row.finishedAt));
+function cancelStampMs(source) {
+  if (!source || typeof source !== 'object') return 0;
+  return Math.max(stampMs(source.cancelledAt), stampMs(source.finishedAt));
 }
 
-/** Confirmed cancel yields to unconfirmed when both are present so a
- *  still-tearing-down or unobservable stop is never reported as success.
- *  `cancelling` alone is working and is not a cancel. */
-function sessionCancelState(row) {
-  if (!row || typeof row !== 'object') return null;
-  const statuses = SESSION_CANCEL_FIELDS.map((key) => cleanValue(row[key])).filter(
-    (status, index, values) => Boolean(status) && values.indexOf(status) === index
-  );
+/** When a settled agent finished: its finish/cancel/failure stamp, else its
+ *  last update. The index row decides; the session header only fills a gap. */
+function finishedAtMs(row, session = null) {
+  return cancelStampMs(row) || stampMs(row?.updatedAt) || cancelStampMs(session) || stampMs(session?.updatedAt);
+}
+
+/** The cancel one source (index row or session header) records, or null.
+ *  An unconfirmed stop outranks a confirmed one so a stop that was never
+ *  proven is not reported as success. `cancelling` alone is working and is
+ *  not a cancel. */
+function cancelState(source) {
+  if (!source || typeof source !== 'object') return null;
+  const statuses = SESSION_CANCEL_FIELDS.map((key) => cleanValue(source[key])).filter(Boolean);
   const status =
     statuses.find((value) => CANCEL_UNCONFIRMED_AGENT_STATUS.test(value)) ||
     statuses.find((value) => CANCELLED_AGENT_STATUS.test(value)) ||
     '';
-  if (!status) return null;
-  return { status, at: cancelStampMs(row) };
+  return status ? { status, at: cancelStampMs(source) } : null;
 }
 
-/** Rank two cancel states: an unconfirmed stop always outranks a confirmed
- *  one, so no source can report success for a kill another source could not
- *  prove. Same-class states keep the index row (`a`) as the richer source. */
-function preferUnconfirmedCancel(a, b) {
-  if (!a) return b || null;
-  if (!b) return a;
-  const aUnconfirmed = CANCEL_UNCONFIRMED_AGENT_STATUS.test(a.status);
-  const bUnconfirmed = CANCEL_UNCONFIRMED_AGENT_STATUS.test(b.status);
-  if (aUnconfirmed === bUnconfirmed) return a;
-  return aUnconfirmed ? a : b;
+/** The cancel that still holds across the index row and its session header:
+ *  the unconfirmed one when the sources disagree (the row first otherwise).
+ *  Only demonstrably newer work — a turn/start stamp strictly after a stamped
+ *  cancel — supersedes it; an unstamped cancel is never superseded. */
+function effectiveCancel(row, session) {
+  const rowCancel = cancelState(row);
+  const sessionCancel = cancelState(session);
+  const cancel =
+    rowCancel && sessionCancel && CANCEL_UNCONFIRMED_AGENT_STATUS.test(sessionCancel.status)
+      ? CANCEL_UNCONFIRMED_AGENT_STATUS.test(rowCancel.status)
+        ? rowCancel
+        : sessionCancel
+      : rowCancel || sessionCancel;
+  if (!cancel) return null;
+  const newerWork = cancel.at > 0 && Math.max(workStampMs(row), workStampMs(session)) > cancel.at;
+  return newerWork ? null : cancel;
 }
 
-function storedAgentWorkerIndex() {
-  const path = storedAgentWorkerIndexPath();
+/** The stage shown beside a cancel: a stage that itself names the cancel (or
+ *  the `cancelling` phase) is kept, any other phase is the cancel. */
+function cancelStage(cancel, declaredStage) {
+  return /^cancel/i.test(declaredStage) || CANCELLED_AGENT_STATUS.test(declaredStage) ? declaredStage : cancel.status;
+}
+
+// The worker indexes were re-parsed in full on every pool listing and ancestry
+// lookup, changed or not. Each keeps its last parse beside the bytes it came
+// from: the file is still read every time (a few hundred KB), but an
+// unchanged one — byte for byte, so no timestamp collision can serve a stale
+// document — reuses that parse.
+// Before the read, the full file stamp is checked under the same canonical
+// policy the session headers use: a file that still has the exact settled
+// { dev, ino, size, mtimeNs, ctimeNs } its bytes were proven to come from is
+// not read again (each pool listing re-read the whole index synchronously).
+const workerIndexCache = new Map(); // path -> { bytes, doc, stamp|null }
+// The index documents an asynchronous listing read before its (synchronous)
+// assembly; live only during that assembly.
+let passIndexes = null; // path -> doc | null
+
+function readWorkerIndexFile(path) {
+  if (passIndexes?.has(path)) return passIndexes.get(path);
   // This process's own queued (not yet persisted) writes win over the file.
   const projected = readJsonProjection(path);
   if (projected) return projected;
+  const before = observeStamp(path);
+  const cached = workerIndexCache.get(path);
+  if (before && cached?.stamp && sameSessionStamp(cached.stamp, before)) return cached.doc;
+  let bytes;
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
+    bytes = readFileSync(path);
   } catch {
+    workerIndexCache.delete(path);
     return null;
   }
+  const stamp = before && isSettledSessionStamp(before) && sameSessionStamp(before, observeStamp(path)) ? before : null;
+  if (cached?.bytes.equals(bytes)) {
+    cached.stamp = stamp;
+    return cached.doc;
+  }
+  let doc = null;
+  try {
+    doc = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    /* malformed: no rows */
+  }
+  workerIndexCache.set(path, { bytes, doc, stamp });
+  return doc;
+}
+
+/** readWorkerIndexFile with every stat and read awaited, under the same
+ *  stamp and byte-equality cache. */
+async function readWorkerIndexFileAsync(path) {
+  const projected = readJsonProjection(path);
+  if (projected) return projected;
+  const before = await observeStampAsync(path);
+  const cached = workerIndexCache.get(path);
+  if (before && cached?.stamp && sameSessionStamp(cached.stamp, before)) return cached.doc;
+  let bytes;
+  try {
+    bytes = await readFile(path);
+  } catch {
+    workerIndexCache.delete(path);
+    return null;
+  }
+  const settled = before && isSettledSessionStamp(before);
+  const stamp = settled && sameSessionStamp(before, await observeStampAsync(path)) ? before : null;
+  if (cached?.bytes.equals(bytes)) {
+    cached.stamp = stamp;
+    return cached.doc;
+  }
+  let doc = null;
+  try {
+    doc = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    /* malformed: no rows */
+  }
+  workerIndexCache.set(path, { bytes, doc, stamp });
+  return doc;
+}
+
+function storedAgentWorkerIndex() {
+  return readWorkerIndexFile(storedAgentWorkerIndexPath());
 }
 
 function storedAgentWorkerIndexRows() {
@@ -220,9 +285,15 @@ export function listStoredAgentWorkerLinks() {
 
 // The agent pool only reads top-level session fields, yet each refresh used to
 // JSON.parse every active worker's whole transcript (megabytes per worker,
-// every catalog publish). Cache the header per file fingerprint instead.
-const WORKER_HEADER_CACHE_MAX = 256;
+// every catalog publish). Cache the header per full file stamp instead (see
+// probeWorkerSessionHeader).
+// The cache holds exactly the headers the latest pool assembly read: a fixed
+// LRU cap below the index size (263 headers against 256 slots) evicted every
+// entry just before its reuse, so each refresh re-parsed every worker
+// transcript synchronously (~130 MB, ~1 s of blocked daemon event loop).
 const workerSessionHeaderCache = new Map();
+/** Assembly the cache entries were last read by; older entries are dropped. */
+let headerPass = 0;
 // Pool rows need identity, routing, and lifecycle metadata only. Keeping the
 // rest of a session here also retained its tool catalogs and provider state.
 const WORKER_HEADER_FIELDS = [
@@ -254,33 +325,118 @@ const WORKER_HEADER_FIELDS = [
   ...SESSION_CANCEL_FIELDS,
 ];
 
+// One assembly reads a session's header up to three times (reap check, row
+// projection, orphan prune); each read used to stat the file again. Within an
+// assembly the first answer stands, absent or unreadable included.
+let passHeaders = null; // path -> header | null, live only during an assembly
+
+function workerSessionHeaderPath(sessionId) {
+  return join(dataDir(), 'sessions', `${sessionId}.json`);
+}
+
 function readWorkerSessionHeader(sessionId) {
-  const path = join(dataDir(), 'sessions', `${sessionId}.json`);
-  const probe = probePath(path);
-  if (probe.state !== PROBE_PRESENT) return null;
-  const cached = workerSessionHeaderCache.get(path);
-  if (cached && cached.mtimeMs === probe.mtimeMs && cached.size === probe.size) {
-    // Refresh insertion order so the eviction below stays LRU-ish.
-    workerSessionHeaderCache.delete(path);
-    workerSessionHeaderCache.set(path, cached);
-    return cached.header;
-  }
-  let session = null;
+  const path = workerSessionHeaderPath(sessionId);
+  if (passHeaders?.has(path)) return passHeaders.get(path);
+  const header = probeWorkerSessionHeader(path);
+  passHeaders?.set(path, header);
+  return header;
+}
+
+let workerHeaderReads = 0;
+
+function observeStamp(path) {
   try {
-    session = JSON.parse(readFileSync(path, 'utf8'));
+    return statSessionStamp(path);
   } catch {
     return null;
   }
-  if (!session || typeof session !== 'object') return null;
-  const header = {};
-  for (const field of WORKER_HEADER_FIELDS) {
-    if (Object.hasOwn(session, field)) header[field] = session[field];
+}
+
+// A header is reused only under the canonical full-stamp policy: the file
+// still has the exact { dev, ino, size, mtimeNs, ctimeNs } its bytes were
+// proven to come from (stat → read → stat), and that stamp was past the racy
+// window when read. Size + mtime alone let an equal-length rewrite that kept
+// its mtime serve stale ownership, status and cancel fields.
+function probeWorkerSessionHeader(path) {
+  // Absent and unreadable alike: no header.
+  const before = observeStamp(path);
+  if (!before) return null;
+  const cached = workerSessionHeaderCache.get(path);
+  if (cached && sameSessionStamp(cached.stamp, before)) {
+    cached.pass = headerPass;
+    return cached.header;
   }
-  workerSessionHeaderCache.set(path, { mtimeMs: probe.mtimeMs, size: probe.size, header });
-  if (workerSessionHeaderCache.size > WORKER_HEADER_CACHE_MAX) {
-    workerSessionHeaderCache.delete(workerSessionHeaderCache.keys().next().value);
+  workerSessionHeaderCache.delete(path);
+  // A rewrite re-reads only this record, and only its top-level fields are
+  // decoded: the transcript bytes are validated, never materialized.
+  let header = null;
+  try {
+    header = readTopLevelFields(readFileSync(path), WORKER_HEADER_FIELDS);
+  } catch {
+    return null;
+  }
+  if (!header) return null;
+  workerHeaderReads += 1;
+  if (isSettledSessionStamp(before) && sameSessionStamp(before, observeStamp(path))) {
+    workerSessionHeaderCache.set(path, { stamp: before, header, pass: headerPass });
   }
   return header;
+}
+
+async function observeStampAsync(path) {
+  try {
+    return sessionStampOf(await stat(path, { bigint: true }));
+  } catch {
+    return null;
+  }
+}
+
+/** probeWorkerSessionHeader with every stat and read awaited, under the
+ *  same full-stamp cache policy. */
+async function probeWorkerSessionHeaderAsync(path) {
+  const before = await observeStampAsync(path);
+  if (!before) return null;
+  const cached = workerSessionHeaderCache.get(path);
+  if (cached && sameSessionStamp(cached.stamp, before)) return cached.header;
+  workerSessionHeaderCache.delete(path);
+  let header = null;
+  try {
+    header = readTopLevelFields(await readFile(path), WORKER_HEADER_FIELDS);
+  } catch {
+    return null;
+  }
+  if (!header) return null;
+  workerHeaderReads += 1;
+  if (isSettledSessionStamp(before) && sameSessionStamp(before, await observeStampAsync(path))) {
+    workerSessionHeaderCache.set(path, { stamp: before, header, pass: headerPass });
+  }
+  return header;
+}
+
+// Header reads in flight at once: each is a stat (and a read only when the
+// file changed) on the shared libuv pool, which other file I/O also needs.
+const HEADER_READ_CONCURRENCY = 4;
+
+async function prefetchWorkerHeaders(sessionIds, headers) {
+  const paths = [...new Set([...sessionIds].map(workerSessionHeaderPath))].filter((path) => !headers.has(path));
+  let next = 0;
+  const drain = async () => {
+    while (next < paths.length) {
+      const path = paths[next++];
+      headers.set(path, await probeWorkerSessionHeaderAsync(path));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(HEADER_READ_CONCURRENCY, paths.length) }, drain));
+}
+
+/** Test/diagnostic seam: cached headers and the records this process read. */
+export function storedAgentWorkerHeaderStats() {
+  return {
+    entries: workerSessionHeaderCache.size,
+    reads: workerHeaderReads,
+    stickyIdle: stickyIdleSince.size,
+    indexes: workerIndexCache.size,
+  };
 }
 
 /** Owner record of a child row that is a Lead CONVERSATION. Only such an owner
@@ -293,37 +449,61 @@ function leadConversationHeader(header) {
   return owner !== 'agent' && (agent === 'lead' || cleanValue(header.sourceType).toLowerCase() === 'lead');
 }
 
-const withinPoolWindow = (at, now) => at > 0 && now - at <= AGENT_POOL_HEARTBEAT_FRESH_MS;
-
-/** Live-work proof for an already projected row: a fresh heartbeat sidecar, or
- *  a working status whose own stamp is still inside the pool window. */
-function poolRowWorking(row, heartbeatMtimes, now) {
-  if (withinPoolWindow(heartbeatMtimes.get(cleanValue(row?.sessionId)) || 0, now)) return true;
-  if (!WORKING_AGENT_STATUS.test(workerLifecycle(row))) return false;
-  return withinPoolWindow(Date.parse(cleanValue(row?.updatedAt)) || 0, now);
+/** Whether the daemon reports the session's turn in flight. */
+function sessionRunning(sessionId, { runningSessionIds }) {
+  return runningSessionIds instanceof Set && runningSessionIds.has(sessionId);
 }
 
-/** A child worker-index row projected into the pool, or null. Cancelled rows
- *  stay visible so the 2-minute heartbeat lease cannot resurrect them as
- *  `running` once DEAD_AGENT_STATUS would have dropped them from the map;
- *  unconfirmed cancels are not dead, but also must not be overwritten by the
- *  sidecar. */
-function projectChildWorkerRow(row, { now, heartbeatMtimes }) {
+/** An already projected row is live work: its projected status is working
+ *  only when the daemon reported it running (otherwise it reads `unknown`). */
+function poolRowWorking(row) {
+  return WORKING_AGENT_STATUS.test(workerLifecycle(row));
+}
+
+/** A child worker-index row projected into the pool, or null. A finished
+ *  child — completed, cancelled or failed — stays listed for the pane window
+ *  after its finish stamp so consumers see the outcome instead of the row
+ *  vanishing; unconfirmed cancels are not dead and keep their own status. */
+function projectChildWorkerRow(row, context) {
   if (!row || typeof row !== 'object') return null;
-  if (!activeAgentWorker(row) && !sessionCancelState(row)) return null;
   if (cleanValue(row.agent).toLowerCase() === 'lead') return null;
   const sessionId = cleanValue(row.sessionId);
   const tag = cleanValue(row.tag);
   if (!sessionId || !tag || !isStoredSessionId(sessionId)) return null;
-  // A new row may precede its first session save (null header).
+  // A stale done/error row does not hide a child the daemon is running. The
+  // header is read before any pane-window cutoff: an expired row can still sit
+  // beside a header that records a cancel-unconfirmed (possibly running)
+  // process. A new row may precede its first session save (null header).
   const session = readWorkerSessionHeader(sessionId);
   const declaredStatus = cleanValue(row.status) || 'running';
   const declaredStage = cleanValue(row.stage || row.status) || 'running';
   const declaredWorking = WORKING_AGENT_STATUS.test(workerLifecycle(row) || 'running');
-  const heartbeatFresh = withinPoolWindow(heartbeatMtimes.get(sessionId) || 0, now);
-  const recentlyUpdated = withinPoolWindow(Date.parse(cleanValue(row.updatedAt)) || 0, now);
-  const runtimePid = positiveNumber(row.runtimePid, 0);
-  const working = declaredWorking && (!runtimePid || runtimeAlive(runtimePid)) && (heartbeatFresh || recentlyUpdated);
+  // A cancel in the row (any field, stage included) or in the durable session
+  // header holds until demonstrably newer work supersedes it.
+  const cancel = effectiveCancel(row, session);
+  // The daemon's in-memory run state is authoritative: a running session is
+  // working whatever the durable row says. Only an explicit cancel outranks it.
+  const working = !cancel && sessionRunning(sessionId, context);
+  const completed = COMPLETED_AGENT_STATUS.test(workerLifecycle(row));
+  const unconfirmedCancel = Boolean(cancel) && CANCEL_UNCONFIRMED_AGENT_STATUS.test(cancel.status);
+  if (!working && !unconfirmedCancel && (cancel || !declaredWorking)) {
+    // Settled: only a completed, failed or cancelled outcome is listed, and
+    // only inside the pane window.
+    if (!cancel && !completed && !failedAgentWorker(row)) return null;
+    if (!agentPaneVisible(finishedAtMs(row, session), context.now)) return null;
+  }
+  let shownStatus = declaredStatus;
+  let shownStage = declaredStage;
+  if (cancel) {
+    shownStatus = cancel.status;
+    shownStage = cancelStage(cancel, declaredStage);
+  } else if (working) {
+    if (!declaredWorking) shownStatus = shownStage = 'running';
+  } else if (declaredWorking) {
+    shownStatus = shownStage = 'unknown';
+  } else if (completed) {
+    shownStatus = shownStage = 'completed';
+  }
   return {
     tag,
     sessionId,
@@ -339,11 +519,15 @@ function projectChildWorkerRow(row, { now, heartbeatMtimes }) {
     effort: cleanValue(row.effort || session?.effort) || null,
     fast: row.fast === true || session?.fast === true,
     ...(row.autoEffort === false || session?.autoEffort === false ? { autoEffort: false } : {}),
-    status: declaredWorking && !working ? 'unknown' : declaredStatus,
-    stage: declaredWorking && !working ? 'unknown' : declaredStage,
+    status: shownStatus,
+    stage: shownStage,
     // A live turn blocked on the user's approval (persisted by the agent
     // tool's worker index); never carried by a row that is no longer working.
     ...(working && row.awaitingUser === 'approval' ? { awaitingUser: 'approval' } : {}),
+    // Why a settled failed row failed; a row working again has no failure.
+    ...(!working && failedAgentWorker(row) && cleanValue(row.failureReason)
+      ? { failureReason: cleanValue(row.failureReason) }
+      : {}),
     startedAt: row.startedAt || row.createdAt || session?.createdAt || null,
     turnStartedAt: working ? row.turnStartedAt || null : null,
     createdAt: row.createdAt || session?.createdAt || null,
@@ -357,93 +541,9 @@ function projectChildWorkerRow(row, { now, heartbeatMtimes }) {
   };
 }
 
-/** The row a fresh heartbeat sidecar publishes over the current index row. */
-function sidecarWorkerRow(
-  current,
-  session,
-  { sessionId, heartbeatAt, ownerSessionId, parentSessionId, agent, status }
-) {
-  return {
-    ...current,
-    tag: cleanValue(session?.agentTag) || cleanValue(current.tag) || `${agent || 'agent'}:${sessionId}`,
-    sessionId,
-    ownerSessionId,
-    parentSessionId,
-    title: cleanValue(session?.title) || current.title || null,
-    agent: agent || current.agent || null,
-    provider: cleanValue(session?.provider) || current.provider || null,
-    model: cleanValue(session?.model) || current.model || null,
-    effort: cleanValue(session?.effort) || current.effort || null,
-    fast: session?.fast === true || current.fast === true,
-    ...(session?.autoEffort === false || current.autoEffort === false ? { autoEffort: false } : {}),
-    status,
-    stage: status,
-    startedAt: session?.createdAt || current.startedAt || heartbeatAt,
-    turnStartedAt: current.turnStartedAt || null,
-    createdAt: session?.createdAt || current.createdAt || null,
-    updatedAt: heartbeatAt,
-    cwd: cleanValue(session?.cwd) || current.cwd || null,
-    clientHostPid: positiveNumber(session?.clientHostPid, 0) || current.clientHostPid || null,
-    taskId: cleanValue(session?.task_id || session?.taskId) || current.taskId || null,
-    ...sessionUsageTotals(session),
-  };
-}
-
-/** Promote one fresh heartbeat sidecar into the pool.
- *
- *  The durable index row is authoritative for FINISHED work: a worker's
- *  runtime unloads at turn end but its heartbeat sidecar stays fresh for up to
- *  the 2-minute window, and overwriting an idle row to `running` here made
- *  every completed agent show as working and then flip back — the dock read as
- *  blinking (user: 유휴인데 계속 살아있고 깜빡인다). The sidecar promotes only
- *  rows the index does not already mark idle. A cancel is the same class of
- *  authority: the lease must not rewrite cancelled / cancel-unconfirmed as
- *  running at any point. Bare `cancelling` stays working. Genuinely new work is
- *  a strictly later turn/start stamp, not a heartbeat-rewritten updatedAt. */
-function promoteHeartbeatSidecar(bySessionId, sessionId, heartbeatAt) {
-  const session = readWorkerSessionHeader(sessionId);
-  if (!session) return;
-  const current = bySessionId.get(sessionId) || {};
-  const ownerSessionId = workerOwnerSessionId(current, session);
-  const parentSessionId = workerParentSessionId(current, session);
-  const owner = cleanValue(session?.owner).toLowerCase();
-  const agent = cleanValue(session?.agent);
-  if (!ownerSessionId || (owner !== 'agent' && (!agent || agent === 'lead'))) return;
-  const identity = { sessionId, heartbeatAt, ownerSessionId, parentSessionId, agent };
-  // An UNCONFIRMED cancel outranks a confirmed one whichever side holds it.
-  // Taking the index row first let a row still stamped `cancelled` MASK the
-  // durable `cancel-unconfirmed` on the session, reporting a stop that was
-  // never proven as a success. Never the reverse: a confirmed row only wins
-  // when the session is not unconfirmed.
-  const currentCancel = sessionCancelState(current);
-  const cancel = preferUnconfirmedCancel(currentCancel, sessionCancelState(session));
-  const newerWork = Boolean(cancel?.at) && (workStampMs(current) > cancel.at || workStampMs(session) > cancel.at);
-  if (cancel && !newerWork) {
-    // A cancel outranks a leftover heartbeat. Newer work is only a strictly
-    // later turn/start stamp — never updatedAt, which the sidecar rewrites
-    // every tick.
-    if (currentCancel) return;
-    bySessionId.set(sessionId, sidecarWorkerRow(current, session, { ...identity, status: cancel.status }));
-    return;
-  }
-  const currentStatus = workerLifecycle(current);
-  if (currentStatus && !WORKING_AGENT_STATUS.test(currentStatus)) return;
-  // The sidecar is the live lease. Durable child sessions are intentionally
-  // detached/closed while their external owner runs.
-  bySessionId.set(sessionId, sidecarWorkerRow(current, session, { ...identity, status: 'running' }));
-}
-
 function storedLeadWorkerRows() {
-  const path = storedLeadWorkerIndexPath();
-  let parsed = readJsonProjection(path);
-  if (!parsed) {
-    try {
-      parsed = JSON.parse(readFileSync(path, 'utf8'));
-    } catch {
-      /* no resident Lead pool */
-    }
-  }
-  return workerRows(parsed);
+  // Absent or unreadable: no resident Lead pool.
+  return workerRows(readWorkerIndexFile(storedLeadWorkerIndexPath()));
 }
 
 /** A Lead-index row whose durable session turned out to be an agent's.
@@ -456,19 +556,24 @@ function leadRowOwnedByAgent(sessionId) {
 }
 
 /** A Lead worker-index row projected into the pool, or null. */
-function projectLeadWorkerRow(row, { now, heartbeatMtimes }) {
+function projectLeadWorkerRow(row, context) {
+  const { now } = context;
   if (!row || typeof row !== 'object') return null;
   const sessionId = cleanValue(row.sessionId);
   if (!sessionId || !isStoredSessionId(sessionId)) return null;
   if (leadRowOwnedByAgent(sessionId)) return null;
-  const heartbeatAt = heartbeatMtimes.get(sessionId) || 0;
-  const heartbeatFresh = withinPoolWindow(heartbeatAt, now);
-  const recentlyUpdated = withinPoolWindow(Date.parse(cleanValue(row.updatedAt)) || 0, now);
   const declaredStatus = workerLifecycle(row) || 'idle';
-  const working = WORKING_AGENT_STATUS.test(declaredStatus) && (heartbeatFresh || recentlyUpdated);
-  const reapAt = Date.parse(cleanValue(row.reapAt)) || 0;
-  if (!heartbeatFresh && reapAt > 0 && now >= reapAt) return null;
-  const shownStatus = !working && WORKING_AGENT_STATUS.test(declaredStatus) ? 'unknown' : declaredStatus;
+  const declaredWorking = WORKING_AGENT_STATUS.test(declaredStatus);
+  // As for child rows: an explicit cancel outranks the daemon's running report.
+  const cancel = effectiveCancel(row, null);
+  const working = !cancel && sessionRunning(sessionId, context);
+  // Live work outlasts the pane window; a settled Lead is listed for it after
+  // its finish stamp, whatever its provider reap window is.
+  if (!working && !agentPaneVisible(finishedAtMs(row), now)) return null;
+  let shownStatus = declaredStatus;
+  if (cancel) shownStatus = cancel.status;
+  else if (working) shownStatus = declaredWorking ? declaredStatus : 'running';
+  else if (declaredWorking) shownStatus = 'unknown';
   return {
     tag: `lead:${sessionId}`,
     sessionId,
@@ -485,7 +590,7 @@ function projectLeadWorkerRow(row, { now, heartbeatMtimes }) {
     startedAt: row.startedAt || row.createdAt || null,
     turnStartedAt: working ? row.turnStartedAt || null : null,
     createdAt: row.createdAt || null,
-    updatedAt: working ? heartbeatAt || row.updatedAt || null : row.updatedAt || null,
+    updatedAt: row.updatedAt || null,
     idleSince: frozenIdleSince(sessionId, working, row.finishedAt || row.updatedAt || null),
     cwd: cleanValue(row.cwd) || null,
     clientHostPid: positiveNumber(row.clientHostPid, 0) || null,
@@ -500,26 +605,89 @@ function projectLeadWorkerRow(row, { now, heartbeatMtimes }) {
  *  above it (user report). Only a Lead CONVERSATION owner is judged — and a
  *  child that is still working always stays, so live work never disappears
  *  from the window. */
-function pruneOrphanChildRows(bySessionId, { liveLeadSessionIds, heartbeatMtimes, now }) {
+function pruneOrphanChildRows(bySessionId, { liveLeadSessionIds }) {
   for (const [sessionId, row] of [...bySessionId]) {
     if (cleanValue(row.agent).toLowerCase() === 'lead') continue;
     const ownerSessionId = cleanValue(row.ownerSessionId);
     if (!ownerSessionId || liveLeadSessionIds.has(ownerSessionId)) continue;
     if (!leadConversationHeader(readWorkerSessionHeader(ownerSessionId))) continue;
-    if (poolRowWorking(row, heartbeatMtimes, now)) continue;
+    if (poolRowWorking(row)) continue;
     bySessionId.delete(sessionId);
   }
 }
 
-/** Process-global active agent pool. Fresh child heartbeat sidecars are the
- * cross-process running source even when their durable session is detached
- * (`closed`) and a terminal reaper has already removed the worker-index row.
- * The child and Lead indexes remain additive for living rows (running or idle)
- * published before the heartbeat or by runtimes without a sidecar. No runtime
- * starts and durable session history is never projected into either pool. */
-export function listStoredAgentWorkers() {
+/** Process-global active agent pool: the living rows (running or idle) of the
+ * child and Lead indexes. No runtime starts and durable session history is
+ * never projected into either pool. `runningSessionIds` is the daemon's set of
+ * sessions whose turn is in flight; omitted, no row is shown as running. */
+export function listStoredAgentWorkers({ runningSessionIds = null } = {}) {
+  headerPass += 1;
+  passHeaders = new Map();
+  try {
+    return assembleListedWorkers(runningSessionIds);
+  } finally {
+    passHeaders = null;
+    forgetUnreadHeaders();
+  }
+}
+
+// Keep what the latest assembly read, whatever the index size; forget the rest.
+function forgetUnreadHeaders() {
+  for (const [path, entry] of workerSessionHeaderCache) {
+    if (entry.pass !== headerPass) workerSessionHeaderCache.delete(path);
+  }
+}
+
+/** listStoredAgentWorkers without blocking the event loop on the store: both
+ *  indexes and every header the assembly can consult (each row's session,
+ *  each Lead row's, and each child's owner) are read first with awaited
+ *  stats and reads; the assembly then runs over what was read, with no file
+ *  access left in it (any header it still asks for falls back to a read).
+ *  `runningSessionIds` may be a function, asked once the reads are done. */
+export async function listStoredAgentWorkersAsync({ runningSessionIds = null } = {}) {
+  const agentIndexPath = storedAgentWorkerIndexPath();
+  const leadIndexPath = storedLeadWorkerIndexPath();
+  const [agentIndex, leadIndex] = await Promise.all([
+    readWorkerIndexFileAsync(agentIndexPath),
+    readWorkerIndexFileAsync(leadIndexPath),
+  ]);
+  const headers = new Map();
+  const childRows = workerRows(agentIndex);
+  const sessionIds = new Set(childRows.map((row) => cleanValue(row?.sessionId)));
+  for (const row of workerRows(leadIndex)) {
+    const sessionId = cleanValue(row?.sessionId);
+    if (sessionId && isStoredSessionId(sessionId)) sessionIds.add(sessionId);
+  }
+  await prefetchWorkerHeaders(sessionIds, headers);
+  const owners = new Set();
+  for (const row of childRows) {
+    const header = headers.get(workerSessionHeaderPath(cleanValue(row?.sessionId)));
+    const owner = row && typeof row === 'object' ? workerOwnerSessionId(row, header) : null;
+    if (owner) owners.add(owner);
+  }
+  await prefetchWorkerHeaders(owners, headers);
+  const running = typeof runningSessionIds === 'function' ? runningSessionIds() : runningSessionIds;
+  headerPass += 1;
+  for (const path of headers.keys()) {
+    const entry = workerSessionHeaderCache.get(path);
+    if (entry) entry.pass = headerPass;
+  }
+  passHeaders = headers;
+  passIndexes = new Map([
+    [agentIndexPath, agentIndex],
+    [leadIndexPath, leadIndex],
+  ]);
+  try {
+    return assembleListedWorkers(running);
+  } finally {
+    passHeaders = null;
+    passIndexes = null;
+    forgetUnreadHeaders();
+  }
+}
+
+function assembleListedWorkers(runningSessionIds) {
   const now = Date.now();
-  const heartbeatMtimes = sessionHeartbeatMtimes();
   const index = storedAgentWorkerIndex();
   const rows = workerRows(index);
   const byId = new Map(rows.map((row) => [cleanValue(row.sessionId), row]));
@@ -544,14 +712,9 @@ export function listStoredAgentWorkers() {
   };
   return assembleStoredAgentWorkers({
     now,
-    heartbeatMtimes,
+    runningSessionIds,
     storedAgentWorkerIndexRows: () => rows.filter((row) => !isReaped(cleanValue(row.sessionId))),
     projectChildWorkerRow,
-    promoteHeartbeatSidecar: (bySessionId, sessionId, heartbeatAt) => {
-      if (withinPoolWindow(heartbeatAt, now) && !isReaped(sessionId)) {
-        promoteHeartbeatSidecar(bySessionId, sessionId, heartbeatAt);
-      }
-    },
     storedLeadWorkerRows,
     projectLeadWorkerRow,
     pruneOrphanChildRows,

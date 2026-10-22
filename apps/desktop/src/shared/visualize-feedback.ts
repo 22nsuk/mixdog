@@ -26,93 +26,27 @@ import {
   type VisualizeElementRole,
   visualizeElementRole,
 } from './visualize-comment-kinds';
+import { withHeadScript } from './sandbox-storage-shim';
 import { MAX_VISUALIZE_TWEAKS_CHARS, type VisualizeTweakOp } from './visualize-tweaks';
+import { type VisualizeFeedbackRect, visualizeUnitRect } from './visualize-rect';
 
 export const VISUALIZE_FEEDBACK_TAG = '__mixdogVisualize';
 /** Hover, selection and pins share this one pink (panel CSS: --mx-visualize-pin). */
 export const VISUALIZE_PIN_COLOR = '#ff3b6b';
 
-export interface VisualizeFeedbackRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-// ── Rectangles (one set, for the panel and the gates) ────────────────────
-
-export const sameRect = (a: VisualizeFeedbackRect, b: VisualizeFeedbackRect): boolean =>
-  a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
-
-/** The overlap of two rectangles, or null under 1px either way. */
-export function intersectRect(a: VisualizeFeedbackRect, b: VisualizeFeedbackRect): VisualizeFeedbackRect | null {
-  const x = Math.max(a.x, b.x);
-  const y = Math.max(a.y, b.y);
-  const right = Math.min(a.x + a.width, b.x + b.width);
-  const bottom = Math.min(a.y + a.height, b.y + b.height);
-  return right - x >= 1 && bottom - y >= 1 ? { x, y, width: right - x, height: bottom - y } : null;
-}
-
-/** A DOMRect-like box as a rectangle. */
-export const rectOfBox = (box: {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}): VisualizeFeedbackRect => ({
-  x: box.left,
-  y: box.top,
-  width: box.width,
-  height: box.height,
-});
-
-/** The rectangle two points span. */
-export const spanRect = (a: { x: number; y: number }, b: { x: number; y: number }): VisualizeFeedbackRect => ({
-  x: Math.min(a.x, b.x),
-  y: Math.min(a.y, b.y),
-  width: Math.abs(a.x - b.x),
-  height: Math.abs(a.y - b.y),
-});
-
-const unit = (value: number): number => Math.min(1, Math.max(0, value));
-
-/** `rect` as fractions (0-1, clamped) of `frame`; both in one space. */
-export function rectToFractions(rect: VisualizeFeedbackRect, frame: VisualizeFeedbackRect): VisualizeFeedbackRect {
-  if (!frame.width || !frame.height) return { x: 0, y: 0, width: 0, height: 0 };
-  const x = unit((rect.x - frame.x) / frame.width);
-  const y = unit((rect.y - frame.y) / frame.height);
-  return {
-    x,
-    y,
-    width: Math.max(0, unit((rect.x + rect.width - frame.x) / frame.width) - x),
-    height: Math.max(0, unit((rect.y + rect.height - frame.y) / frame.height) - y),
-  };
-}
-
-/** Fractions of `frame` back in `frame`'s space. */
-export const rectFromFractions = (
-  rect: VisualizeFeedbackRect,
-  frame: VisualizeFeedbackRect
-): VisualizeFeedbackRect => ({
-  x: frame.x + rect.x * frame.width,
-  y: frame.y + rect.y * frame.height,
-  width: rect.width * frame.width,
-  height: rect.height * frame.height,
-});
-
-export const roundRect = (rect: VisualizeFeedbackRect, digits = 4): VisualizeFeedbackRect => {
-  const round = (value: number) => Math.round(value * 10 ** digits) / 10 ** digits;
-  return { x: round(rect.x), y: round(rect.y), width: round(rect.width), height: round(rect.height) };
-};
-
-const UNIT_FRAME: VisualizeFeedbackRect = { x: 0, y: 0, width: 1, height: 1 };
-
-/** A rectangle of fractions (0-1) clamped inside the unit square and
- *  rounded, or null when nothing of it is left. */
-export function visualizeUnitRect(rect: VisualizeFeedbackRect): VisualizeFeedbackRect | null {
-  const unitRect = roundRect(rectToFractions(rect, UNIT_FRAME));
-  return unitRect.width > 0 && unitRect.height > 0 ? unitRect : null;
-}
+// The rectangle helpers live in visualize-rect.ts (the composer store needs
+// them without this module's page sources); existing importers keep this path.
+export {
+  intersectRect,
+  rectFromFractions,
+  rectOfBox,
+  rectToFractions,
+  roundRect,
+  sameRect,
+  spanRect,
+  type VisualizeFeedbackRect,
+  visualizeUnitRect,
+} from './visualize-rect';
 
 /** One element as the page names it: a selector, its kind and a short text. */
 export interface VisualizePageNode {
@@ -173,10 +107,14 @@ export type VisualizeFeedbackPageMessage =
   | ({ type: 'measured'; id: string } & VisualizePageMeasure)
   | { type: 'choice'; group: string; choice: string; label: string; selected: boolean }
   | { type: 'exit-comment' }
+  /** A web link the user clicked; `external`: Ctrl/Cmd asked for the system browser. */
+  | { type: 'link'; url: string; external: boolean }
   /** The answer to `inspect` (screen reading: elements and layout findings). */
   | { type: 'inspected'; id: string; inspection: PageInspection | { error: string } }
   /** The page's mx-tweaks block text (null: it has none), sent once the page is ready. */
-  | { type: 'tweaks'; raw: string | null };
+  | { type: 'tweaks'; raw: string | null }
+  /** The page's document scroll position (settled), so a reload of the same file can restore it. */
+  | { type: 'scrolled'; x: number; y: number };
 
 /** Renderer → page. `choices` (the pane's queued picks) is sent only in
  *  answer to `ready`, so a reloaded page shows them again. Points are in the
@@ -207,6 +145,8 @@ export type VisualizeFeedbackParentMessage =
   /** Outline one element (the Elements list's hover); null clears it. */
   | { type: 'highlight'; selector: string | null }
   | { type: 'scroll'; dx: number; dy: number }
+  /** Put the document at an absolute scroll position (a reloaded page, before it is shown). */
+  | { type: 'scroll-to'; x: number; y: number }
   /** Set (or, alue: null, remove) the tweak overrides on the page root. */
   | { type: 'tweaks'; ops: VisualizeTweakOp[] }
   /** The page's mx-tweaks block is malformed: the page logs it as a console error. */
@@ -235,6 +175,17 @@ export function postToPage(
 
 const clip = (value: unknown, max: number): string => (typeof value === 'string' ? value.slice(0, max) : '');
 
+/** An http(s) address a page names, normalized; '' for anything else. */
+function webUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 2_048) return '';
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
 function finite(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.round(value * 100) / 100 : 0;
 }
@@ -256,6 +207,11 @@ export function visualizeFeedbackPageMessage(value: unknown): VisualizeFeedbackP
   const data = value as Record<string, unknown>;
   if (data[VISUALIZE_FEEDBACK_TAG] !== 1) return null;
   if (data.type === 'ready' || data.type === 'exit-comment') return { type: data.type };
+  if (data.type === 'scrolled') return { type: 'scrolled', x: finite(data.x), y: finite(data.y) };
+  if (data.type === 'link') {
+    const url = webUrl(data.url);
+    return url ? { type: 'link', url, external: data.external === true } : null;
+  }
   if (data.type === 'inspected') {
     const inspection = visualizePageInspection(data.inspection);
     const id = clip(data.id, 64);
@@ -790,8 +746,30 @@ const FEEDBACK_SOURCE = String.raw`(function (target) {
   addEventListener('click', function (event) {
     if (!state.comment) choose(event.target);
   }, true);
+  // A web link to another origin (or one asking for a new window): the panel
+  // window may not frame it and the pane may not open windows, so the panel
+  // opens it the way a chat link opens. Links the page handles itself, and
+  // its own pages, keep their default.
+  addEventListener('click', function (event) {
+    if (state.comment || event.defaultPrevented || event.button !== 0) return;
+    var link = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+    if (!link) return;
+    var url;
+    try { url = new URL(link.href, location.href); } catch (error) { return; }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+    var blank = (link.getAttribute('target') || '').toLowerCase() === '_blank';
+    if (!blank && url.origin === new URL(location.href).origin) return;
+    event.preventDefault();
+    post({ type: 'link', url: url.href, external: Boolean(event.ctrlKey || event.metaKey) });
+  });
   addEventListener('keydown', function (event) {
     if (event.key === 'Escape' && state.comment) post({ type: 'exit-comment' });
+  }, true);
+  // A press on the page gives it the keyboard. In a frame, focus moves in only
+  // as the default of the press: a game that cancels pointerdown/mousedown (no
+  // text selection, no drag) kept the keys going to the app (its composer).
+  addEventListener('pointerdown', function () {
+    if (!document.hasFocus()) window.focus();
   }, true);
 
   api.apply = function (message) {
@@ -878,6 +856,10 @@ const FEEDBACK_SOURCE = String.raw`(function (target) {
       if (typeof message.dx === 'number' && typeof message.dy === 'number') window.scrollBy(message.dx, message.dy);
       return;
     }
+    if (message.type === 'scroll-to') {
+      if (typeof message.x === 'number' && typeof message.y === 'number') window.scrollTo(message.x, message.y);
+      return;
+    }
     if (message.type !== 'state') return;
     state.comment = message.comment === true;
     if (!state.comment) { state.hover = null; state.lifted = null; }
@@ -896,8 +878,19 @@ const FEEDBACK_SOURCE = String.raw`(function (target) {
     // The default selected look: zero specificity, so any mockup rule wins.
     addSheet(document, ':where([data-choice]){cursor:pointer}' +
       ':where([data-choice][data-choice-selected]){outline:2px solid #2f6feb;outline-offset:2px;box-shadow:0 0 0 5px rgba(47,111,235,.18)}', true);
+    // The page itself always scrolls under the wheel or a finger: a nested box
+    // with overscroll-behavior contain/none (common in app-style mockups) kept
+    // the gesture even when it had nothing to scroll. A layered !important
+    // outranks the page's own, unlayered !important.
+    addSheet(document, '@layer mixdog-visualize-scroll{body *{overscroll-behavior:auto!important}}', false);
     addEventListener('scroll', schedule, true);
     addEventListener('resize', schedule);
+    // The document's own scroll (not an inner box's), settled: a reload of the same file restores it.
+    var scrollTimer = 0;
+    addEventListener('scroll', function () {
+      if (scrollTimer) return;
+      scrollTimer = setTimeout(function () { scrollTimer = 0; post({ type: 'scrolled', x: window.scrollX, y: window.scrollY }); }, 100);
+    });
     if (window.MutationObserver) {
       new MutationObserver(schedule).observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
     }
@@ -928,9 +921,5 @@ export function visualizeFeedbackScriptFor(targetExpression: string): string {
  *  its head (the sandboxed frame runs inline scripts through the relay's
  *  /preview-frame page). */
 export function withVisualizeFeedbackScript(html: string): string {
-  const tag = `<script>${visualizeFeedbackScript()}</script>`;
-  const head = /<head(?:\s[^>]*)?>/i.exec(html);
-  if (!head) return `${tag}${html}`;
-  const at = head.index + head[0].length;
-  return `${html.slice(0, at)}${tag}${html.slice(at)}`;
+  return withHeadScript(html, visualizeFeedbackScript());
 }

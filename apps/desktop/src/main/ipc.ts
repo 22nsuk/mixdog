@@ -15,10 +15,12 @@ import type {
 
 import { resolve as resolvePath } from 'node:path';
 import { DESKTOP_IPC, type DesktopRemoteAccessInfo, type DesktopSettings } from '../shared/contract';
+import { ipcErrorEnvelope } from '../shared/file-error-codes';
 import { translateNativeUi } from '../shared/native-ui';
 import type { DesktopService } from './desktop-service-contract';
 import type { DesktopSettingsStore } from './settings-store';
 import type { BrowserHost } from './browser/host';
+import type { BrowserLoginPopup } from './browser/login-popup';
 import { registerBrowserIpc } from './ipc-browser';
 import { registerComputerIpc, type ComputerIpcHost } from './ipc-computer';
 import { registerFileDialogIpc } from './ipc-file-dialogs';
@@ -30,14 +32,16 @@ import type { RemoteHostWindows } from './remote-host-windows';
 import { registerSourceControlIpc } from './ipc-source-control';
 import { DesktopStateBridge, type DesktopUpdater } from './ipc-state-bridge';
 import { registerTerminalIpc, type DesktopTerminalHost } from './ipc-terminal';
-import { registerWindowSettingsIpc } from './ipc-window-settings';
+import { registerWindowSettingsIpc, type PcQuotaHost } from './ipc-window-settings';
 import { SelectedFileAccess } from './selected-file-access';
+import { registerScreenSessions } from './screen-sessions';
 import type { ConnectionKind } from './connections/contract';
 import { connectionFeatureGate } from './connections/feature-gates';
 import {
   requiredAttachmentFile,
   requiredVisualizeCaptureRect,
   requiredVisualizeGestureTarget,
+  requiredVisualizePanelSize,
   requiredVisualizeTabCommand,
 } from './ipc-validation';
 import { createServerFiles, uploadServerBytes } from './server-file-access';
@@ -97,9 +101,11 @@ const SERVICE_OPERATION_NAMES = [
   'gitRevertFile',
   'gitReview',
   'gitReviewDiff',
+  'gitReviewDiffs',
   'gitShow',
   'gitShowDiff',
   'gitShowFile',
+  'gitRequestContext',
   'gitStage',
   'gitStash',
   'gitStashApply',
@@ -151,11 +157,16 @@ interface DesktopIpcDependencies {
     | 'browserPageMetadata'
     | 'browserPresentNative'
     | 'browserPageIdentity'
+    | 'browserSignedInSites'
+    | 'browserSignOutSite'
+    | 'browserClearSignIns'
   >;
+  /** Login takeovers' sign-in windows (this PC's window only). */
+  browserLogin?: Pick<BrowserLoginPopup, 'open' | 'status'>;
   /** Extensions → Computer Use: OS readiness reads and one-press fixes. */
   computer?: ComputerIpcHost;
   /** Agent `visualize` tabs (this PC's window only). */
-  visualize?: Pick<VisualizeService, 'snapshot' | 'command' | 'paneText'> &
+  visualize?: Pick<VisualizeService, 'snapshot' | 'command' | 'paneText' | 'setPanelSize'> &
     Partial<Pick<DesktopVisualize, 'attachFeedback' | 'captureRect' | 'consumeChoiceGesture'>>;
   /** Settings → Connection pairing card; resolves null while the bridge is off. */
   remoteAccessInfo?: (options?: { activate?: boolean }) => Promise<DesktopRemoteAccessInfo | null>;
@@ -167,12 +178,17 @@ interface DesktopIpcDependencies {
   remoteHosts?: RemoteHostWindows;
   updater?: DesktopUpdater;
   terminals?: DesktopTerminalHost;
+  /** Agent `terminal` tool: the renderer claims a command before entering it. */
+  terminalRuns?: { claim(requestId: string): boolean };
   /** The kind of daemon connection `host` is: a server (`ssh`) window refuses
    *  every feature that acts on this PC (see connections/feature-gates). */
   connectionKind?: ConnectionKind;
   /** Where the connection's daemon keeps user data (editor backups, editor
    *  settings); this PC's userData unless given. */
   serviceUserDataPath?: () => string;
+  /** This PC's own daemon, for a server window: the sign-ins a server's model
+   *  calls run on are this PC's, so their quota reads are answered here. */
+  pcHost?: PcQuotaHost;
 }
 
 export function registerDesktopIpc(
@@ -189,8 +205,10 @@ export function registerDesktopIpc(
     onDesktopSettingsChanged,
     previewNotificationSound,
     browserHost,
+    browserLogin,
     updater,
     terminals,
+    terminalRuns,
     computer,
     remoteAccessInfo,
     rotateRemoteAccess,
@@ -199,6 +217,7 @@ export function registerDesktopIpc(
     visualize,
     connectionKind = 'local',
     serviceUserDataPath,
+    pcHost,
   }: DesktopIpcDependencies
 ): () => void {
   const nativeT = translateUi || ((key: string) => translateNativeUi(app.getLocale?.() || 'en', key));
@@ -212,17 +231,28 @@ export function registerDesktopIpc(
       assertSender(event);
       const refused = connectionFeatureGate(connectionKind, channel);
       if (refused) throw refused;
-      return listener(event, ...args);
+      // Custom Error properties do not survive Electron's invoke, so a
+      // refusal with a structured code is returned as an envelope the
+      // preload turns back into an Error with that code.
+      const refusal = (error: unknown): unknown => {
+        const envelope = ipcErrorEnvelope(error);
+        if (envelope) return envelope;
+        throw error;
+      };
+      // The listener still starts in this tick: handlers' call order matters.
+      try {
+        const result = listener(event, ...args);
+        return result instanceof Promise ? result.catch(refusal) : result;
+      } catch (error) {
+        return refusal(error);
+      }
     });
   };
   // The daemon's own user-data directory for paths handed to the service.
+  const serviceGetPath = (name: Parameters<App['getPath']>[0]) =>
+    name === 'userData' ? serviceUserDataPath?.() : app.getPath?.(name);
   const serviceApp: Partial<Pick<App, 'getPath'>> =
-    serviceUserDataPath && typeof app.getPath === 'function'
-      ? {
-          getPath: ((name: Parameters<App['getPath']>[0]) =>
-            name === 'userData' ? serviceUserDataPath() : app.getPath!(name)) as App['getPath'],
-        }
-      : app;
+    serviceUserDataPath && typeof app.getPath === 'function' ? { getPath: serviceGetPath as App['getPath'] } : app;
   const invokeDesktopOperation = <T>(method: string, args: unknown[]): Promise<T> =>
     host.invokeDesktopOperation(method, args) as Promise<T>;
   type ServiceOperation = (...args: unknown[]) => Promise<unknown>;
@@ -241,13 +271,14 @@ export function registerDesktopIpc(
   // A server window's files live on the server: its one-file grants name
   // server paths (agent output links, uploads) and its bytes travel over the
   // window's own connection. This PC's selected-file grants never apply there.
+  const downloadsDir = () => (typeof app.getPath === 'function' ? app.getPath('downloads') : '');
   const server =
     connectionKind === 'ssh'
       ? createServerFiles({
           invoke: invokeDesktopOperation,
           listProjects: () => host.listProjects(),
           session: () => window.webContents.session,
-          downloadsDir: () => (typeof app.getPath === 'function' ? app.getPath('downloads') : ''),
+          downloadsDir,
         })
       : null;
   const grantedFile = async (accessToken: unknown, projectPath: unknown, relPath: unknown) =>
@@ -301,7 +332,7 @@ export function registerDesktopIpc(
     revokeRemoteAccessClient,
     remoteHosts,
   });
-  registerBrowserIpc({ handle, browserHost });
+  registerBrowserIpc({ handle, browserHost, browserLogin });
   registerComputerIpc({ handle, shell, computer });
   handle(DESKTOP_IPC.visualizeState, () => visualize?.snapshot() ?? []);
   handle(DESKTOP_IPC.visualizeCommand, async (_event, command) =>
@@ -311,6 +342,9 @@ export function registerDesktopIpc(
     if (!visualize) throw new Error('Visualize is unavailable.');
     const target = requiredVisualizeGestureTarget({ sessionId, tabId, pane: index });
     return visualize.paneText(target.sessionId, target.tabId, target.pane);
+  });
+  handle(DESKTOP_IPC.visualizePanelSize, (_event, size) => {
+    visualize?.setPanelSize(requiredVisualizePanelSize(size));
   });
   handle(DESKTOP_IPC.visualizeFeedbackAttach, async (_event, sessionId, tabId) => {
     const target = requiredVisualizeTabCommand({ sessionId, tabId, action: 'activate' });
@@ -330,6 +364,8 @@ export function registerDesktopIpc(
     host,
     handle,
     readsLocalOnboardingStatus: connectionKind === 'local',
+    raiseOnSignIn: connectionKind === 'local',
+    pcHost: connectionKind === 'local' ? undefined : pcHost,
     invokeDesktopOperation,
     settingsStore,
     onDesktopSettingsChanged,
@@ -349,11 +385,14 @@ export function registerDesktopIpc(
     (host as { perfLog?: (line: string) => void }).perfLog?.(String(line ?? ''));
   };
   ipcMain.on(DESKTOP_IPC.perfLog, onPerfLog);
+  // What this window paints, for the completion-notification rule.
+  const disposeScreenSessions = registerScreenSessions(window, ipcMain);
   const disposeTerminalIpc = registerTerminalIpc({
     window,
     ipcMain,
     handle,
     terminals,
+    terminalRuns,
     invokeDesktopOperation,
   });
   registerSourceControlIpc({
@@ -374,12 +413,15 @@ export function registerDesktopIpc(
     DESKTOP_IPC.stateResync,
     DESKTOP_IPC.updaterState,
     DESKTOP_IPC.perfLog,
+    DESKTOP_IPC.reportScreenSessions,
     DESKTOP_IPC.rendererDiagnostic,
     DESKTOP_IPC.termWrite,
     DESKTOP_IPC.termResize,
     DESKTOP_IPC.termAcknowledge,
     DESKTOP_IPC.termData,
     DESKTOP_IPC.termSizeOwner,
+    DESKTOP_IPC.termActivityChanged,
+    DESKTOP_IPC.termFocus,
     DESKTOP_IPC.lspDiagnostics,
     DESKTOP_IPC.lspStatus,
     DESKTOP_IPC.remoteClientClaim,
@@ -396,6 +438,7 @@ export function registerDesktopIpc(
     void server?.dispose();
     disposeTerminalIpc();
     ipcMain.removeListener(DESKTOP_IPC.perfLog, onPerfLog);
+    disposeScreenSessions();
     for (const channel of channels) ipcMain.removeHandler(channel);
   };
 }

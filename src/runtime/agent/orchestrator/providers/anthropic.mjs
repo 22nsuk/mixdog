@@ -13,6 +13,7 @@ import { ANTHROPIC_MAX_MIDSTREAM_RETRIES, parseSSEStream } from './anthropic-sse
 import { buildAnthropicBetaHeaders } from './anthropic-betas.mjs';
 import { buildAnthropicApiRequest } from './anthropic-api-request.mjs';
 import { isCustomProviderName } from './custom-reasoning.mjs';
+import { createAnthropicApiKeyFetch } from './anthropic-api-key-fetch.mjs';
 import { ANTHROPIC_EFFORT_LEVELS, withEffortRejectionFallback } from './effort-rejection.mjs';
 import { armFirstByteWatchdog, createAnthropicApiTransport } from './anthropic-api-transport.mjs';
 import { createAnthropicApiRecovery } from './anthropic-api-recovery.mjs';
@@ -26,7 +27,12 @@ import { enrichModels } from './model-catalog.mjs';
 import { sanitizeModelList } from './model-list-sanitize.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 
-import { loadAnthropic, _normalizeAnthropicModel, _setApiKeyCatalogMirror } from './anthropic-messages.mjs';
+import {
+  loadAnthropic,
+  resolveEscalatedMaxTokens,
+  _normalizeAnthropicModel,
+  _setApiKeyCatalogMirror,
+} from './anthropic-messages.mjs';
 import { ANTHROPIC_VERSION, MODELS } from './lib/anthropic-models.mjs';
 import { streamCallbacks } from './lib/send-callbacks.mjs';
 import { preparePdfTextForProvider } from './media-normalization.mjs';
@@ -75,12 +81,28 @@ export class AnthropicProvider {
     return new (loadAnthropic())({
       ...credentials,
       ...(this.config.baseURL ? { baseURL: this.config.baseURL } : {}),
+      // Gzip only toward the official origin (decided per request URL); a
+      // custom-* gateway keeps the SDK's plain fetch.
+      ...(custom ? {} : { fetch: createAnthropicApiKeyFetch() }),
       defaultHeaders: {
         ...(betaHeaders ? { 'anthropic-beta': betaHeaders } : {}),
         ...(keyless ? { 'x-api-key': null, authorization: null } : {}),
         ...(this.config.extraHeaders || {}),
       },
       maxRetries: 0,
+    });
+  }
+  // The model id capability lookups (output cap, thinking/effort shape) read;
+  // a gateway engine maps its routing slug to the Claude id it stands for.
+  _capabilityModel(model) {
+    return model;
+  }
+  // The larger max_tokens the loop may retry a max_tokens-truncated turn with
+  // (one-shot, via opts.maxOutputTokensOverride), or null when the model has
+  // nothing above the normal request.
+  escalatedMaxTokens(model, opts = {}) {
+    return resolveEscalatedMaxTokens(this._capabilityModel(model), {
+      modelMaxOutputTokens: opts.modelMaxOutputTokens ?? null,
     });
   }
   reloadApiKey() {
@@ -149,10 +171,12 @@ export class AnthropicProvider {
       fastModeLatched: this.fastModeBetaHeaderLatched,
       // Custom providers carry per-model reasoning settings on their own rows.
       modelInfo: isCustomProviderName(this.name) ? this.getCachedModelInfo?.(useModel) || null : null,
+      capabilityModel: this._capabilityModel(useModel),
     });
     this.fastModeBetaHeaderLatched = fastModeLatched;
 
-    const { onStageChange, onStreamDelta, onToolCall, onTextDelta, onTextReset } = streamCallbacks(opts);
+    const { onStageChange, onStreamDelta, onToolCall, onTextDelta, onTextReset, onStreamItemStart } =
+      streamCallbacks(opts);
 
     // No absolute wall-clock cap on streaming generation: a stream still
     // emitting SSE deltas must not be killed by a fixed total-lifetime timer.
@@ -278,6 +302,7 @@ export class AnthropicProvider {
             {
               relayProgressUpdates: params.thinking?.display === 'updates',
               labels: { display: 'Anthropic', tag: this.name },
+              onStreamItemStart,
             }
           );
           try {

@@ -381,6 +381,16 @@ test('Deploy is the one-click release entry with incremental native workers', as
     /run_critical: \$\{\{ needs\.plan\.outputs\.run_critical == 'true' \}\}/,
     'release validate must honor the gate-verified critical skip'
   );
+  assert.match(
+    deploy,
+    /import \{ nativeReleaseStatuses, unreleasedProblems \} from '\.\/scripts\/native-release-status\.mjs'[\s\S]*if \(mode === 'skip'\) \{[\s\S]*unreleasedProblems\(nativeReleaseStatuses\(\)\)[\s\S]*native=skip would ship stale native tools/,
+    'native=skip must fail while a native tool has unreleased source'
+  );
+  assert.match(
+    await workflow('release.yml'),
+    /node scripts\/verify-release-assets\.mjs[\s\S]*node scripts\/native-release-status\.mjs --check/,
+    'release validate must fail when native sources differ from the pinned native releases'
+  );
   assert.match(deploy, /const preBumped = !currentTagExists && !currentReleaseExists/);
   assert.match(deploy, /const appVersion = resume \|\| preBumped/);
   assert.match(deploy, /needs\.runtime\.result == 'success' \|\| needs\.runtime\.result == 'skipped'/);
@@ -537,8 +547,15 @@ test('the gate shards its long lanes, installs in parallel, and adds history and
 
   // Sharded lanes: a matrix without its --test-shard flag, or the reverse, would
   // run the whole lane twice or half of it once.
-  for (const name of ['runtime', 'runtime-slow', 'runtime-macos'])
-    assert.deepEqual(jobs[name].strategy.matrix.shard, [1, 2], `${name} shard matrix`);
+  for (const name of ['runtime', 'runtime-macos'])
+    assert.deepEqual(jobs[name].strategy.matrix.shard, [1, 2, 3], `${name} shard matrix`);
+  assert.deepEqual(jobs['runtime-slow'].strategy.matrix.shard, [1, 2], 'runtime-slow shard matrix');
+  for (const name of ['runtime', 'runtime-macos'])
+    assert.match(
+      stepRun(jobs[name], /--test-shard/).run,
+      /npm test -- --test-shard=\$\{\{ matrix\.shard \}\}\/3/,
+      `${name} shard flag`
+    );
   assert.match(
     stepRun(jobs['runtime-slow'], /test:slow/).run,
     /npm run test:slow -- --test-shard=\$\{\{ matrix\.shard \}\}\/2/
@@ -550,15 +567,16 @@ test('the gate shards its long lanes, installs in parallel, and adds history and
     [
       ['ubuntu-22.04', 1],
       ['ubuntu-22.04', 2],
+      ['ubuntu-22.04', 3],
     ],
-    'the desktop fast lane is two legs on separate machines'
+    'the desktop fast lane is three legs on separate machines'
   );
   assert.deepEqual(
     legs.filter((leg) => leg.lane !== 'fast').map((leg) => leg.shard),
     [undefined, undefined]
   );
   const fastStep = desktopTests.steps.find((step) => step.if === "matrix.lane == 'fast'");
-  assert.equal(fastStep.run, 'npm test --prefix apps/desktop -- --test-shard=${{ matrix.shard }}/2');
+  assert.equal(fastStep.run, 'npm test --prefix apps/desktop -- --test-shard=${{ matrix.shard }}/3');
 
   // Parallel installs wait on every PID, so one failed install fails the step.
   for (const install of [
@@ -681,7 +699,7 @@ function assertIncrementalGateContract(automaticGate) {
   // A shard flag without its matrix would silently drop half the lane.
   assert.match(
     automaticGate,
-    /runtime:[\s\S]*shard:\s*\[1,\s*2\][\s\S]*npm test -- --test-shard=\$\{\{\s*matrix\.shard\s*\}\}\/2/,
+    /runtime:[\s\S]*shard:\s*\[1,\s*2,\s*3\][\s\S]*npm test -- --test-shard=\$\{\{\s*matrix\.shard\s*\}\}\/3/,
     'the default lane must run every shard of its split'
   );
   assert.match(
@@ -722,7 +740,7 @@ function assertReleaseWorkflowContract(release) {
   assert.match(release, /validate:[\s\S]*needs:\s*identity[\s\S]*fetch-depth:\s*0/);
   assert.match(
     release,
-    /validate:[\s\S]*Verify bundled release assets[\s\S]*Verify changed source-critical release invariants[\s\S]*if: inputs\.run_critical[\s\S]*npm run build:spawn:test\s*\n\s*npm test\b/,
+    /validate:[\s\S]*Verify bundled release assets[\s\S]*Build the native spawn test binary\s*\n\s*if: inputs\.run_critical && steps\.spawn-bin\.outputs\.cache-hit != 'true'\s*\n\s*run: npm run build:spawn:test[\s\S]*Verify changed source-critical release invariants\s*\n\s*if: inputs\.run_critical\s*\n\s*run: \|\s*\n\s*npm test\b/,
     'the deploy gate re-runs the default lane only when the gate did not cover it'
   );
   assert.doesNotMatch(

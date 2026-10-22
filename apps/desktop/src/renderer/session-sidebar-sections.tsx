@@ -1,11 +1,19 @@
-import { ChevronDown, ChevronRight, type FolderPlus, Plus } from 'lucide-react';
+import { ChevronDown, ChevronRight, type FolderPlus, Plus, Star } from 'lucide-react';
+import { AgentAvatar } from './agent-avatar';
+import type { AgentContact } from './agent-contacts-model';
+import { RoomAvatar } from './agent-room-parts';
+import { useSessionDragSource } from './agent-row-parts';
+import { useBotReorder } from './bot-reorder';
+import type { SidebarRoomRow } from './session-sidebar-agents';
 import { MxIcon } from './MxIcon';
-import { elementMenuPoint, isContextMenuKey, pointerMenuPoint } from './ScmContextMenu';
+import { contextMenuRowProps, elementMenuPoint, isContextMenuKey, pointerMenuPoint } from './ScmContextMenu';
 import type { usePersistedListOrder } from './use-persisted-list-order';
 import React, { useContext } from 'react';
 import { createPortal } from 'react-dom';
 import { InitialSurface } from './InitialSurface';
 import type { DesktopProjectSummary, DesktopSessionSummary } from '../shared/contract';
+import { strongestSessionAttention, type SessionAttention } from '../shared/session-attention';
+import { SessionRowStatusIcon, SessionRowUnreadDot } from './session-status-mark';
 import {
   clampDesktopPanelWidth,
   DESKTOP_SIDEBAR_DEFAULT_WIDTH,
@@ -13,6 +21,7 @@ import {
 } from '../shared/window-layout';
 import { ProgressSpinner } from './ProgressSpinner';
 import { t, uiFormatLocale } from './i18n';
+import { timeFormatOptions } from './time-format-preference';
 import { RowOverflowMenu, rowOverflowHostProps } from './RowOverflowMenu';
 import { sessionLabel } from './session-sidebar-rows';
 import { projectIdentity, sessionProjectKey } from './project-catalog-cache';
@@ -90,6 +99,7 @@ export function groupAutomationSessions(activityOrderedRows: DesktopSessionSumma
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
+        ...timeFormatOptions(),
       }),
     });
   }
@@ -155,7 +165,7 @@ export function automationsSection({
   workingSessionIds,
   unreadSessionIds,
   headerProps,
-  renderSessionRow,
+  renderRuns,
 }: {
   headerProps?: ReorderProps;
   groups: AutomationGroup[];
@@ -168,7 +178,7 @@ export function automationsSection({
   onToggleGroup(key: string): void;
   workingSessionIds?: ReadonlySet<string>;
   unreadSessionIds?: ReadonlySet<string>;
-  renderSessionRow(session: DesktopSessionSummary): React.ReactNode;
+  renderRuns(runs: readonly DesktopSessionSummary[]): React.ReactNode;
 }) {
   return (
     <section
@@ -249,7 +259,7 @@ export function automationsSection({
                     />
                   )}
                 </button>
-                {expanded && <div className="automation-group-past">{runs.map(renderSessionRow)}</div>}
+                {expanded && <div className="automation-group-past">{renderRuns(runs)}</div>}
               </div>
             );
           })}
@@ -259,22 +269,237 @@ export function automationsSection({
   );
 }
 
+/** Agents section: one single-line row per agent (face + name, a dot for an
+ *  unread reply), opening that agent's chat on the Agents page. Right-click
+ *  or Menu / Shift+F10 opens the 봇 page's contact menu. */
+export function agentsSection(props: AgentsSectionProps) {
+  return <AgentsSection {...props} />;
+}
+
+interface AgentsSectionProps {
+  contacts: readonly AgentContact[];
+  /** A session's status as its sidebar row shows it. */
+  attentionOf?(sessionId: string): SessionAttention | '';
+  /** Group rooms, in the 봇 page's order; listed right under the bots. */
+  rooms?: readonly SidebarRoomRow[];
+  onOpenRoom?(row: SidebarRoomRow): void;
+  open: boolean;
+  onToggleOpen(): void;
+  selectedSessionId: string;
+  onOpenAgent(contact: AgentContact): void;
+  onOpenMenu?(contact: AgentContact, point: { x: number; y: number }): void;
+  onOpenRoomMenu?(row: SidebarRoomRow, point: { x: number; y: number }): void;
+}
+
+/** One bot row: a session drag source (drop it on a pane to open it) and a
+ *  reorder target (drop it on another bot's row, or Alt+Arrow, to move it). */
+function AgentBotRow({
+  contact,
+  selected,
+  status,
+  reorderProps,
+  onReorderKey,
+  onOpenAgent,
+  onOpenMenu,
+}: {
+  contact: AgentContact;
+  selected: boolean;
+  status: SessionAttention | '';
+  reorderProps: { 'data-bot-drop'?: string };
+  onReorderKey?(event: React.KeyboardEvent<HTMLElement>): void;
+  onOpenAgent(contact: AgentContact): void;
+  onOpenMenu?(contact: AgentContact, point: { x: number; y: number }): void;
+}) {
+  const { dragProps, clickSuppressed } = useSessionDragSource(
+    contact.session?.id ?? '',
+    contact.name,
+    contact.mixy ? undefined : contact.agentId
+  );
+  return (
+    <div
+      className={`session-row agent-session-row${selected ? ' selected' : ''}${status === 'running' ? ' working' : ''}`}
+      data-agent-contact={contact.agentId}
+      {...reorderProps}
+      {...(onOpenMenu ? contextMenuRowProps((point) => onOpenMenu(contact, point)) : {})}
+    >
+      <button
+        type="button"
+        className="session-row-main"
+        aria-current={selected ? 'page' : undefined}
+        aria-haspopup={onOpenMenu ? 'menu' : undefined}
+        aria-keyshortcuts={onReorderKey ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
+        {...dragProps}
+        onKeyDown={onReorderKey}
+        onClick={() => {
+          if (!clickSuppressed()) onOpenAgent(contact);
+        }}
+      >
+        <span className="session-agent-avatar">
+          <AgentAvatar
+            agentId={contact.agentId}
+            avatar={contact.avatar}
+            className="agent-contact-mascot"
+            priority={2}
+          />
+          {contact.mixy && (
+            <span className="agent-contact-badge" title={t('Representative bot')}>
+              <Star size={8} fill="currentColor" strokeWidth={0} aria-hidden="true" />
+            </span>
+          )}
+        </span>
+        <span className="session-row-copy">
+          <b>{contact.name}</b>
+        </span>
+      </button>
+      {status && status !== 'unread' && (
+        <span className="session-row-status" data-working={status === 'running' || undefined}>
+          <SessionRowStatusIcon status={status} name={contact.name} />
+        </span>
+      )}
+      {status === 'unread' && <SessionRowUnreadDot name={contact.name} />}
+    </div>
+  );
+}
+
+function AgentsSection({
+  contacts,
+  rooms = [],
+  onOpenRoom,
+  open,
+  onToggleOpen,
+  selectedSessionId,
+  onOpenAgent,
+  onOpenMenu,
+  onOpenRoomMenu,
+  attentionOf,
+}: AgentsSectionProps) {
+  const botList = useBotReorder().bind(contacts);
+  return (
+    <section className="sidebar-recent sidebar-agents" aria-label={t('Bots')}>
+      <div className="sidebar-category-header">
+        <button
+          type="button"
+          className="sidebar-recent-heading sidebar-heading-toggle"
+          aria-expanded={open}
+          onClick={onToggleOpen}
+        >
+          <span>{t('Bots')}</span>
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </button>
+      </div>
+      {open && (
+        <nav className="session-list agent-session-list" aria-label={t('Bots')} {...botList.listProps}>
+          {contacts.map((contact) => {
+            const selected = Boolean(contact.session) && contact.session?.id === selectedSessionId;
+            // The status a session row shows (running spinner, needs-you, failure,
+            // unread); a running home thread the caller's signal missed still spins.
+            const status = strongestSessionAttention([
+              contact.session ? (attentionOf?.(contact.session.id) ?? '') : '',
+              contact.indicator?.kind === 'running' ? 'running' : '',
+              contact.indicator?.kind === 'unread' ? 'unread' : '',
+            ]);
+            return (
+              <AgentBotRow
+                key={contact.agentId}
+                contact={contact}
+                selected={selected}
+                status={status}
+                reorderProps={botList.rowProps(contact)}
+                onReorderKey={contact.mixy ? undefined : (event) => botList.onKeyDown(contact, event)}
+                onOpenAgent={onOpenAgent}
+                onOpenMenu={onOpenMenu}
+              />
+            );
+          })}
+          {rooms.map((row) => {
+            const selected = row.sessionId === selectedSessionId;
+            const { indicator } = row;
+            return (
+              <div
+                key={row.sessionId}
+                className={`session-row agent-session-row${selected ? ' selected' : ''}`}
+                data-agent-room={row.room.id}
+                {...(onOpenRoomMenu ? contextMenuRowProps((point) => onOpenRoomMenu(row, point)) : {})}
+              >
+                <button
+                  type="button"
+                  className="session-row-main"
+                  aria-current={selected ? 'page' : undefined}
+                  aria-haspopup={onOpenRoomMenu ? 'menu' : undefined}
+                  onClick={() => onOpenRoom?.(row)}
+                >
+                  <span className="session-agent-avatar">
+                    <RoomAvatar members={row.members} />
+                  </span>
+                  <span className="session-row-copy">
+                    <b>{row.name}</b>
+                  </span>
+                </button>
+                {indicator?.kind === 'running' && <SessionRowStatusIcon status="running" name={row.name} />}
+                {indicator?.kind === 'unread' && <SessionRowUnreadDot name={row.name} />}
+              </div>
+            );
+          })}
+        </nav>
+      )}
+    </section>
+  );
+}
+
+/** Scroller-level drag handlers: the dead space around the drop targets
+ *  (side padding, gaps between sections) resolves to the nearest target. */
+export interface SessionGapDrop {
+  onDragOver(event: React.DragEvent<HTMLElement>): void;
+  onDragLeave(event: React.DragEvent<HTMLElement>): void;
+  onDrop(event: React.DragEvent<HTMLElement>): void;
+}
+
+/** A session row dragged onto Favorites stars it. */
+export interface FavoriteSessionDrop {
+  /** Drop-zone key of the Favorites section (never a project key). */
+  key: string;
+  /** A session that may be starred is being dragged. */
+  available: boolean;
+  /** Favorites is highlighted as the drop target. */
+  active: boolean;
+  /** True when the dragged session may drop here (claims the event). */
+  onDragOver(event: React.DragEvent<HTMLElement>): boolean;
+  onDragLeave(event: React.DragEvent<HTMLElement>): void;
+  onDrop(event: React.DragEvent<HTMLElement>): boolean;
+}
+
 /** Favorites section: starred, non-archived sessions pinned above Recent. */
 export function favoritesSection({
   rows,
+  sessionDrop,
   open,
   onToggleOpen,
   headerProps,
   renderRows,
 }: {
   rows: DesktopSessionSummary[];
+  sessionDrop?: FavoriteSessionDrop;
   open: boolean;
   onToggleOpen(): void;
   headerProps?: ReorderProps;
   renderRows: RenderForkRows;
 }) {
+  const reorder = reorderTarget(headerProps);
   return (
-    <section className="sidebar-recent sidebar-favorites" aria-label={t('Favorites')} {...reorderTarget(headerProps)}>
+    <section
+      className="sidebar-recent sidebar-favorites"
+      aria-label={t('Favorites')}
+      data-session-drop={sessionDrop?.active ? 'true' : undefined}
+      data-session-drop-zone={sessionDrop?.key}
+      {...reorder}
+      onDragOver={(event) => {
+        if (!sessionDrop?.onDragOver(event)) reorder?.onDragOver?.(event);
+      }}
+      onDragLeave={sessionDrop?.onDragLeave}
+      onDrop={(event) => {
+        if (!sessionDrop?.onDrop(event)) reorder?.onDrop?.(event);
+      }}
+    >
       <div className="sidebar-category-header" {...reorderHandle(headerProps)}>
         <button
           type="button"
@@ -366,7 +591,7 @@ export function recentSection({
           {!sessionsReady && rowCount === 0 ? (
             <InitialSurface />
           ) : (
-            sessionsReady && rowCount === 0 && <p className="sidebar-section-empty">{t('No sessions')}</p>
+            sessionsReady && rowCount === 0 && <p className="sidebar-section-empty">{t('No sessions.')}</p>
           )}
           {renderRows(allRows, visibleRows.length)}
           {hasMoreRows && (
@@ -392,10 +617,10 @@ export type ReorderProps = ReturnType<ReturnType<typeof usePersistedListOrder>['
 
 /** The heading/folder row is the grip; the whole section/folder group is the
  *  drop target, so releasing over its rows still reorders. */
-function reorderHandle(props?: ReorderProps) {
+export function reorderHandle(props?: ReorderProps) {
   return props && { draggable: props.draggable, onDragStart: props.onDragStart, onDragEnd: props.onDragEnd };
 }
-function reorderTarget(props?: ReorderProps) {
+export function reorderTarget(props?: ReorderProps) {
   if (!props) return undefined;
   const { draggable: _grip, onDragStart: _start, onDragEnd: _end, ...target } = props;
   return target;
@@ -460,7 +685,9 @@ interface ProjectsSectionProps {
   onNewTask(projectPath: string): void;
   folderReorderProps(key: string): ReorderProps;
   headerProps?: ReorderProps;
-  unreadSessionIds?: ReadonlySet<string>;
+  /** The strongest status of one session; a collapsed folder shows its
+   *  sessions' strongest. */
+  attentionOf(sessionId: string): SessionAttention | '';
   renderRows(rows: readonly DesktopSessionSummary[], limit: number, groupKey: string): React.ReactNode;
 }
 
@@ -475,7 +702,7 @@ function projectFolderGroup(
     onNewTask,
     onToggleProject,
     folderReorderProps,
-    unreadSessionIds,
+    attentionOf,
     renderRows,
     onFolderMenu,
     rename,
@@ -485,7 +712,8 @@ function projectFolderGroup(
   const expanded = isOpen(projectOpen, group.key);
   const reorder = folderReorderProps(group.key);
   const limit = rowLimits.get(group.key) ?? PROJECT_SESSION_PAGE_ROWS;
-  const unread = !expanded && group.rows.some((session) => unreadSessionIds?.has(session.id));
+  // A collapsed folder speaks for its hidden sessions with their strongest status.
+  const attention = expanded ? '' : strongestSessionAttention(group.rows.map((session) => attentionOf(session.id)));
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: drag-and-drop target; the keyboard path is the session menu's Move to project
     <div
@@ -493,6 +721,7 @@ function projectFolderGroup(
       key={group.key}
       data-project-key={group.key}
       data-session-drop={sessionDrop?.activeKey === group.key ? 'true' : undefined}
+      data-session-drop-zone={sessionDrop ? group.key : undefined}
       {...reorderTarget(reorder)}
       onDragOver={(event) => {
         if (!sessionDrop?.onDragOver(group, event)) reorder.onDragOver?.(event);
@@ -557,17 +786,16 @@ function projectFolderGroup(
           <span className="session-row-copy">
             <b>{group.name}</b>
           </span>
-          {unread && (
-            <span
-              className="session-row-unread-dot"
-              role="status"
-              aria-label={t('{{name}} has new activity', { name: group.name })}
-            />
+          {attention === 'unread' && <SessionRowUnreadDot name={group.name} />}
+          {attention && attention !== 'unread' && (
+            <span className="session-row-status">
+              <SessionRowStatusIcon status={attention} name={group.name} />
+            </span>
           )}
         </button>
-        {/* Like a collapsed section heading: the unread dot takes the
+        {/* Like a collapsed section heading: the status mark takes the
             trailing slot, so the + yields until the folder opens. */}
-        {!unread && (
+        {!attention && (
           <button
             type="button"
             className="row-overflow-trigger project-folder-new"
@@ -581,7 +809,7 @@ function projectFolderGroup(
       </div>
       {expanded && (
         <div className="project-group-sessions">
-          {group.rows.length === 0 && <p className="sidebar-section-empty">{t('No sessions')}</p>}
+          {group.rows.length === 0 && <p className="sidebar-section-empty">{t('No sessions.')}</p>}
           {renderRows(group.rows, limit, group.key)}
           {group.rows.length > limit && (
             <button type="button" className="session-row project-group-more" onClick={() => onShowMore(group.key)}>

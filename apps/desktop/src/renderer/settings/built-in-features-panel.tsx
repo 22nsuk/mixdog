@@ -1,5 +1,4 @@
 import { CapabilityIcon } from '../CapabilityIcon';
-import { skillDisplayDescription } from '../skill-presentation';
 import { useEffect, useMemo, useState } from 'react';
 
 import type {
@@ -17,15 +16,7 @@ import { publishAutoEffort } from '../auto-effort-store';
 import type { SidebarResourceTag } from '../sidebar-resource-row';
 import { CompactSwitch, Group } from './capability-controls';
 import { sectionLoaded, type PanelContext, type RecordValue } from './capability-data';
-import {
-  ExtensionDetailDialog,
-  ExtensionAction,
-  ExtensionItemList,
-  ExtensionItemRow,
-  ExtensionNote,
-  ExtensionRow,
-  ExtensionSection,
-} from './extension-detail';
+import { ExtensionDetailDialog, ExtensionNote, ExtensionRow } from './extension-detail';
 import { BUILT_IN_FEATURES, type BuiltInFeatureDefinition, type BuiltInFeatureId } from './built-in-feature-registry';
 import { SlotProgress } from './built-in-install-progress';
 import { LocalProviderModels } from './local-provider-models';
@@ -43,6 +34,12 @@ import { getCachedDesktopStatus, readDesktopStatus, storeDesktopStatus } from '.
 import { useTidyEngineStatus } from './tidy-status';
 import { useAutoEffortStatus } from './auto-effort-status';
 import { TidyEngines } from './tidy-engines';
+import {
+  MediaGenerationSettings,
+  mediaGeneratorNames,
+  useMediaGeneration,
+  type MediaGenerationData,
+} from './media-generation-settings';
 import { computerReadinessBlocking } from './computer-readiness';
 import { ComputerReadinessSection, useComputerReadiness } from './computer-readiness-section';
 import { isSshConnectionWindow } from '../desktop-connection';
@@ -121,8 +118,6 @@ function useDesktopFeatureStatus(api: PanelContext['api']) {
 
 type FeatureState = {
   feature: BuiltInFeatureDefinition;
-  /** Built-in skills that install and toggle with this feature. */
-  bundledSkills: RecordValue[];
   installed: boolean;
   enabled: boolean;
   ready: boolean;
@@ -138,6 +133,8 @@ type FeatureState = {
   info: RecordValue;
   /** Computer Use only: the OS still lacks something that blocks work. */
   readinessBlocking: boolean;
+  /** Code Tidy only: installed, but a core engine it should have is missing. */
+  enginesMissing?: boolean;
 };
 
 /** Short list tag for noteworthy states (not installed, installing, failed, disabled). */
@@ -150,6 +147,7 @@ export function featureStatus({
   progressPercent,
   enabled,
   readinessBlocking,
+  enginesMissing,
 }: FeatureState): SidebarResourceTag | null {
   if (!ready) return null;
   if (!available) return supported ? null : { label: t('Unavailable'), tone: 'muted' };
@@ -160,7 +158,7 @@ export function featureStatus({
   if (action?.status === 'failed') return { label: t('Failed'), tone: 'danger' };
   if (!installed) return { label: t('Not installed'), tone: 'muted' };
   if (!enabled) return { label: t('Disabled'), tone: 'muted' };
-  if (readinessBlocking) return { label: t('Setup needed'), tone: 'warn' };
+  if (readinessBlocking || enginesMissing) return { label: t('Setup needed'), tone: 'warn' };
   return null;
 }
 
@@ -221,21 +219,25 @@ function FeatureDetailDialog({
   officeDependency,
   tidyStatus,
   tidyInstallStatus,
+  onInstallTidyEngine,
   computerReadiness,
+  media,
 }: {
   api: PanelContext['api'];
+  media: MediaGenerationData;
   state: FeatureState;
   computerReadiness: ReturnType<typeof useComputerReadiness>;
   gitStatus: DesktopGitCliStatus | null;
   officeDependency: DesktopLibreOfficeStatus | null;
   tidyStatus: DesktopTidyEngineStatus | null;
   tidyInstallStatus: DesktopTidyInstallStatus | null;
+  onInstallTidyEngine(id: string): void;
   onInstall(): void;
   onToggle(enabled: boolean): void;
   onClose(): void;
   localActions: LocalProviderActions;
 }) {
-  const { feature, bundledSkills, action, ready, installed } = state;
+  const { feature, action, ready, installed } = state;
   const title = t(feature.title);
   const requirement = featureRequirement(feature.id);
   return (
@@ -270,27 +272,18 @@ function FeatureDetailDialog({
       />
       {feature.id === 'git' && <GitPanel api={api} />}
       {feature.id === 'localProvider' && <LocalProviderModels status={state.localProvider} actions={localActions} />}
-      {feature.id === 'tidy' && <TidyEngines status={tidyStatus} installStatus={tidyInstallStatus} />}
-      {bundledSkills.length > 0 && (
-        <ExtensionSection title={t('Skills')} count={bundledSkills.length}>
-          <ExtensionItemList>
-            {bundledSkills.map((skill) => {
-              const name = String(skill.name);
-              const off = !ready || !installed || !state.enabled || !state.available;
-              return (
-                <ExtensionItemRow
-                  key={name}
-                  icon={<CapabilityIcon name={name} size={16} />}
-                  title={name}
-                  description={skillDisplayDescription(skill).trim()}
-                  tone={off ? 'off' : 'ok'}
-                  control={<ExtensionAction disabled>{t('Required tools')}</ExtensionAction>}
-                />
-              );
-            })}
-          </ExtensionItemList>
-        </ExtensionSection>
+      {feature.id === 'tidy' && (
+        <TidyEngines
+          status={tidyStatus}
+          installStatus={tidyInstallStatus}
+          installed={installed}
+          busy={state.busy}
+          onInstallEngine={onInstallTidyEngine}
+        />
       )}
+      {/* Provider accounts live on the desktop, so a server window has no
+          generators or accounts to choose from. */}
+      {feature.id === 'media' && !serverWindow && <MediaGenerationSettings data={media} />}
       <BuiltInFeatureInfo
         state={state}
         gitStatus={gitStatus}
@@ -308,8 +301,12 @@ export function BuiltInFeaturesPanel({
   run,
   api,
   initialFeature = null,
+  onDetailClose,
 }: PanelContext & {
   initialFeature?: BuiltInFeatureId | null;
+  /** Detail only: no list, just `initialFeature`'s card (the 커넥터 tab's
+   *  GitHub row opens Git & GitHub here); called when it closes. */
+  onDetailClose?(): void;
 }) {
   const localActions = useLocalProviderActions(run, pending);
   const { settings, setSettings, gitStatus, setGitStatus, officeDependency, setOfficeDependency } =
@@ -328,28 +325,15 @@ export function BuiltInFeaturesPanel({
   );
   const tidy = useTidyEngineStatus(
     api,
-    openId === 'tidy' || action?.id === 'tidy',
-    action?.id === 'tidy' && action?.status === 'installing'
+    openId === 'tidy' || action?.id === 'tidy' || record(toolModules.tidy).installed === true,
+    action?.id === 'tidy' && action?.status === 'installing',
+    openId === 'tidy'
   );
   const autoEffort = useAutoEffortStatus(api, toolModules.autoEffort);
   const computerReadiness = useComputerReadiness(api, openId === 'computer');
+  const media = useMediaGeneration(api, openId === 'media' && !serverWindow);
   const voice = record(data.voice);
   const progress = voiceProgress(snapshot);
-  // Built-in skills ride their feature's Install and toggle, so the card names
-  // them instead of the Skills panel listing them as loose entries.
-  const bundledSkills = useMemo<Partial<Record<BuiltInFeatureId, RecordValue[]>>>(() => {
-    const byFeature: Partial<Record<BuiltInFeatureId, RecordValue[]>> = {};
-    const skills = record(data.skills).skills;
-    for (const skill of Array.isArray(skills) ? skills : []) {
-      const owner = record(record(skill).owner);
-      if (owner.kind !== 'builtin' || typeof owner.feature !== 'string') continue;
-      const feature = owner.feature as BuiltInFeatureId;
-      const list = byFeature[feature] ?? [];
-      list.push(record(skill));
-      byFeature[feature] = list;
-    }
-    return byFeature;
-  }, [data.skills]);
   useEffect(() => {
     if (voice.installed === true) setVoiceInstalled(true);
   }, [voice.installed]);
@@ -361,6 +345,8 @@ export function BuiltInFeaturesPanel({
       browser: settings?.browserInstalled === true,
       computer: settings?.computerInstalled === true,
       office: record(toolModules.office).installed === true,
+      // Ships with the app and has no install step: toggle only.
+      media: true,
       tidy: record(toolModules.tidy).installed === true,
       localProvider: localProvider.installed === true,
       autoEffort: autoEffort.installed === true,
@@ -377,6 +363,7 @@ export function BuiltInFeaturesPanel({
       browser: settings?.browserControl === true,
       computer: settings?.computerControl === true,
       office: record(toolModules.office).enabled !== false,
+      media: record(toolModules.media).enabled !== false,
       tidy: record(toolModules.tidy).enabled !== false,
       localProvider: localProvider.enabled === true,
       autoEffort: autoEffort.enabled === true,
@@ -408,6 +395,7 @@ export function BuiltInFeaturesPanel({
     if (
       id === 'git' ||
       id === 'office' ||
+      id === 'media' ||
       id === 'localProvider' ||
       id === 'tidy' ||
       id === 'autoEffort' ||
@@ -438,7 +426,7 @@ export function BuiltInFeaturesPanel({
       .finally(() => setOptimistic(null));
   };
   const install = (id: BuiltInFeatureId) => {
-    if (id === 'localProvider' || id === 'visualize') return;
+    if (id === 'localProvider' || id === 'visualize' || id === 'media') return;
     if ((action && action.status !== 'failed') || pending) return;
     setAction({ id, status: 'installing' });
     void (async () => {
@@ -486,6 +474,16 @@ export function BuiltInFeaturesPanel({
       setAction(null);
     })().catch((error: unknown) => setAction({ id, status: 'failed', message: reason(error) }));
   };
+  // Retry/Install for one missing Code Tidy engine: only that engine is
+  // downloaded, and the feature's installed/enabled state is left alone.
+  const installTidyEngine = (engine: string) => {
+    if ((action && action.status !== 'failed') || pending) return;
+    setAction({ id: 'tidy', status: 'installing' });
+    void run('installBuiltinFeature', ['tidy', { engines: [engine] }], 'built-in-tidy')
+      .then(() => tidy.refresh())
+      .then(() => setAction(null))
+      .catch((error: unknown) => setAction({ id: 'tidy', status: 'failed', message: reason(error) }));
+  };
   const localInstalling =
     Array.isArray(localProvider.installations) &&
     localProvider.installations.some((entry) => installationActive(record(entry)));
@@ -515,7 +513,6 @@ export function BuiltInFeaturesPanel({
     }
     return {
       feature,
-      bundledSkills: bundledSkills[feature.id] || [],
       installed: installed[feature.id],
       enabled: optimistic?.id === feature.id ? optimistic.value : enabled[feature.id],
       ready,
@@ -532,11 +529,36 @@ export function BuiltInFeaturesPanel({
             : null,
       progressPercent,
       localProvider,
-      info: record(feature.id === 'voice' ? voice.info : record(toolModules[feature.id]).info),
+      info:
+        feature.id === 'media'
+          ? { generators: mediaGeneratorNames(media.lanes) }
+          : record(feature.id === 'voice' ? voice.info : record(toolModules[feature.id]).info),
       readinessBlocking: feature.id === 'computer' && computerReadinessBlocking(computerReadiness.rows),
+      enginesMissing:
+        feature.id === 'tidy' &&
+        tidy.status?.engines.some((engine) => engine.core && engine.installable && engine.source === 'missing'),
     };
   };
   const open = openId ? BUILT_IN_FEATURES.find((feature) => feature.id === openId) : undefined;
+  const detail = open ? (
+    <FeatureDetailDialog
+      key={open.id}
+      state={stateOf(open)}
+      api={api}
+      localActions={localActions}
+      gitStatus={gitStatus}
+      officeDependency={officeDependency}
+      tidyStatus={tidy.status}
+      tidyInstallStatus={tidy.installStatus}
+      onInstallTidyEngine={installTidyEngine}
+      computerReadiness={computerReadiness}
+      media={media}
+      onInstall={() => install(open.id)}
+      onToggle={(next) => toggle(open.id, next)}
+      onClose={onDetailClose ?? (() => setOpenId(null))}
+    />
+  ) : null;
+  if (onDetailClose) return detail;
   return (
     <Group title={t('Built-in')}>
       {BUILT_IN_FEATURES.filter((feature) => !(serverWindow && PC_ONLY_FEATURES.has(feature.id))).map((feature) => {
@@ -555,22 +577,7 @@ export function BuiltInFeaturesPanel({
           />
         );
       })}
-      {open && (
-        <FeatureDetailDialog
-          key={open.id}
-          state={stateOf(open)}
-          api={api}
-          localActions={localActions}
-          gitStatus={gitStatus}
-          officeDependency={officeDependency}
-          tidyStatus={tidy.status}
-          tidyInstallStatus={tidy.installStatus}
-          computerReadiness={computerReadiness}
-          onInstall={() => install(open.id)}
-          onToggle={(next) => toggle(open.id, next)}
-          onClose={() => setOpenId(null)}
-        />
-      )}
+      {detail}
     </Group>
   );
 }

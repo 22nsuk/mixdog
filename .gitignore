@@ -3,6 +3,14 @@ node_modules/
 vendor/pi/node_modules/
 refs/
 
+# Local leftovers: PowerShell module cache, screen recordings
+/Microsoft/
+/design/recordings/
+# Local bench experiments
+/benchmarks/terminal-bench-2.1/harness/dsh-driver.mjs
+/benchmarks/terminal-bench-2.1/harness/dsh_agent.py
+/benchmarks/terminal-bench-2.1/harness/dsh_smoke.py
+
 # Build output
 src/tui/dist/
 apps/desktop/.runtime/
@@ -57,6 +65,8 @@ Thumbs.db
 
 # Scratch
 *.tmp
+# Atomic-writer temp files (`<name>.mixdog-tmp-<hex>`) a crashed write leaves.
+*.mixdog-tmp-*
 tmp/
 .tmp-internal-comms-live.*
 # Every local probe/profile scratch dir follows the same .tmp- prefix, so one
@@ -150,6 +160,8 @@ bench-results/
 # are regenerated on demand.
 /.runtime/
 /deliverables/
+/design/mockups/
+/design/skin-loops/
 /dist/
 /output/
 /outputs/

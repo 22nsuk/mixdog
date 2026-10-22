@@ -1,6 +1,9 @@
-import type { DesktopSessionSummary } from '../shared/contract';
+import { normalizeRoutineProvenance } from '../../../../src/runtime/agent/orchestrator/session/routine-result.mjs';
+import type { DesktopAgentRoomSummary, DesktopSessionSummary } from '../shared/contract';
+import { cleanIncomingTail } from '../shared/incoming-tail';
 import { catalogStorageKey, catalogStorageScope } from './catalog-storage-scope';
 import { deleteSessionImagePreviews } from './image-preview-store';
+import { contentLocalStorage } from './remote-conversation-privacy';
 
 const SESSION_CATALOG_STORAGE_KEY = 'mixdog.desktop-session-catalog.v1';
 const SESSION_CATALOG_LIMIT = 500;
@@ -34,6 +37,12 @@ function cachedSessionRow(value: unknown): DesktopSessionSummary | null {
   const activityAt = finiteNumber(row.activityAt, Number.NaN);
   const createdAt = finiteNumber(row.createdAt, Number.NaN);
   const inheritedFrom = text(row.inheritedFromSessionId, 256);
+  const agentHome = text(row.agentHome, 256);
+  const taskAgent = text(row.taskAgent, 256);
+  const agentRoom = cachedAgentRoom(row.agentRoom);
+  const lastMessagePreview = text(row.lastMessagePreview, 1_024);
+  const lastMessageRoutine = normalizeRoutineProvenance(row.lastMessageRoutine);
+  const incomingTail = cleanIncomingTail(row.incomingTail);
 
   return {
     id,
@@ -53,6 +62,35 @@ function cachedSessionRow(value: unknown): DesktopSessionSummary | null {
     ...(sourceName ? { sourceName } : {}),
     ...(Number.isFinite(createdAt) && createdAt > 0 ? { createdAt } : {}),
     ...(inheritedFrom ? { inheritedFromSessionId: inheritedFrom } : {}),
+    ...(agentHome ? { agentHome } : {}),
+    ...(agentHome && row.agentDeleted === true ? { agentDeleted: true } : {}),
+    ...(taskAgent ? { taskAgent } : {}),
+    ...(agentRoom ? { agentRoom } : {}),
+    ...(lastMessagePreview ? { lastMessagePreview } : {}),
+    ...(lastMessagePreview && lastMessageRoutine ? { lastMessageRoutine } : {}),
+    ...(incomingTail ? { incomingTail } : {}),
+  };
+}
+
+/** A group room's catalog stamp, without its live `running` flag. */
+function cachedAgentRoom(value: unknown): DesktopAgentRoomSummary | null {
+  if (!value || typeof value !== 'object') return null;
+  const room = value as Record<string, unknown>;
+  const id = text(room.id, 64);
+  const name = text(room.name, 256);
+  const members = Array.isArray(room.members)
+    ? room.members.filter((member): member is string => typeof member === 'string').slice(0, 6)
+    : [];
+  if (!id || !name || !members.length) return null;
+  const lastSpeaker = text(room.lastSpeaker, 256);
+  return {
+    id,
+    name,
+    members,
+    maxRounds: Math.floor(finiteNumber(room.maxRounds, 3)),
+    maxMessages: Math.floor(finiteNumber(room.maxMessages, 8)),
+    shareTools: room.shareTools === true,
+    ...(lastSpeaker ? { lastSpeaker } : {}),
   };
 }
 
@@ -78,7 +116,7 @@ function normalizeCachedSessionCatalog(value: unknown): CachedSessionCatalog {
 
 export function readCachedSessionCatalog(): DesktopSessionSummary[] {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(catalogStorageKey(SESSION_CATALOG_STORAGE_KEY)) || 'null');
+    const stored = JSON.parse(contentLocalStorage().getItem(catalogStorageKey(SESSION_CATALOG_STORAGE_KEY)) || 'null');
     return normalizeCachedSessionCatalog(stored).rows;
   } catch {
     return [];
@@ -92,7 +130,7 @@ export function writeCachedSessionCatalog(rows: DesktopSessionSummary[], scope =
     rows,
   });
   try {
-    window.localStorage.setItem(catalogStorageKey(SESSION_CATALOG_STORAGE_KEY, scope), JSON.stringify(catalog));
+    contentLocalStorage().setItem(catalogStorageKey(SESSION_CATALOG_STORAGE_KEY, scope), JSON.stringify(catalog));
   } catch {
     // The authoritative live catalog remains usable when storage is unavailable.
   }

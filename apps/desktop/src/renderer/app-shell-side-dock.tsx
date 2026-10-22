@@ -1,12 +1,16 @@
 import type React from 'react';
 import { Suspense } from 'react';
+import { isAgentChatSession } from './agent-chat-mode';
 import { SideMarkdownPreview } from './lazy-widgets';
 import type { PaneLeaf } from './pane-layout';
 import { paneActiveSelection } from './pane-layout';
 import { navigationKey } from './text-format';
 import { paneDockActiveRoot, paneDockFileCloseEndsDock, PaneSideDock, type PaneSideDockFile } from './pane-side-dock';
 import { PaneDockToggles } from './pane-dock-toggles';
-import { PaneDockFilesSurface } from './pane-dock-files';
+import { agentChatStripGroups, codingStripGroups, paneRightGroupsFor } from './routines-tile';
+import type { PaneDockFilesSurface as PaneDockFilesSurfaceComponent } from './pane-dock-files';
+import { useDeferredModule } from './deferred-module';
+import { paneDockFilesModule } from './first-screen-deferred';
 import { DeferredPersistentSurface } from './PaneSurfaceGate';
 import { EDITOR_STARTUP_DELAY_MS, ReadyEditorPane } from './app-shell-components';
 import { DesktopLoadingSurface } from './RendererRecovery';
@@ -27,6 +31,13 @@ import type {
   WorkbenchSideViewDescriptor,
   WorkbenchSideViewId,
 } from './workbench-side-view-layout';
+
+/** The Files tree (Explorer) is no first screen's surface: its chunk loads on
+ *  first mount or from the idle lane, behind the delayed loading surface. */
+function PaneDockFilesSurface(props: React.ComponentProps<typeof PaneDockFilesSurfaceComponent>) {
+  const module = useDeferredModule(paneDockFilesModule, { bootSurface: props.active ? 'dock-files' : undefined });
+  return module ? <module.PaneDockFilesSurface {...props} /> : <DesktopLoadingSurface label={t('Loading view…')} />;
+}
 
 interface PaneDockContext {
   paneWorkspace: ReturnType<typeof usePaneWorkspace>;
@@ -76,6 +87,7 @@ export function renderPaneSideDockView(leaf: PaneLeaf, focused: boolean, context
   const sessionId = active?.kind === 'session' ? active.id : '';
   const entry = sessionDockEntry(leaf.id, sessionId, context.paneSideDocks, context.sessionSurfaces);
   const prewarm = focused && context.dockBodyWarm;
+  const groups = paneRightGroupsFor(context.workbenchSideLayout.layout.right, sessionId);
   const projectPath = context.paneProjectPathFor(leaf);
   // The Files tree reopens on the folder it last revealed in this
   // Project, else on the Project root.
@@ -85,9 +97,14 @@ export function renderPaneSideDockView(leaf: PaneLeaf, focused: boolean, context
     <PaneSideDock
       leafId={leaf.id}
       entry={entry}
+      sessionId={sessionId}
       sessionBound={Boolean(sessionId)}
       onOpenFiles={projectPath ? () => context.paneSideDocks.openFolder(leaf.id, projectPath, filesRel) : undefined}
-      groups={context.workbenchSideLayout.layout.right}
+      groups={groups}
+      // Agent mode: no Changes in the phone ⋯ switch; the changes card opens it.
+      switchGroups={
+        isAgentChatSession(sessionId) ? groups.filter((group) => !group.includes('session-diff')) : undefined
+      }
       descriptors={context.sideViewDescriptors}
       focused={focused}
       prewarm={prewarm}
@@ -279,9 +296,11 @@ export function renderPaneDockStripTrailing(
 ): React.ReactNode {
   const active = leaf.tabs.find((tab) => navigationKey(tab) === leaf.activeKey);
   if (!active || (active.kind !== 'session' && active.kind !== 'new')) return null;
-  const groups = workbenchSideLayout.layout.right;
-  if (groups.length === 0) return null;
   const sessionId = active.kind === 'session' ? active.id : '';
+  const agentChat = isAgentChatSession(sessionId);
+  const paneGroups = paneRightGroupsFor(workbenchSideLayout.layout.right, sessionId);
+  const groups = agentChat ? agentChatStripGroups(paneGroups) : codingStripGroups(paneGroups);
+  if (groups.length === 0) return null;
   const entry = sessionDockEntry(leaf.id, sessionId, paneSideDocks, sessionSurfaces);
   return (
     <PaneDockToggles

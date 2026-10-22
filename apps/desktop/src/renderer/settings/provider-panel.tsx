@@ -9,10 +9,16 @@ import { startVisibleRefreshCadence } from '../visible-refresh-cadence';
 import { invalidateSidebarReferenceForMutation } from '../sidebar-reference-cache';
 import { OAuthLoginDialog, pasteErrorText, useOAuthLoginFlow } from './oauth-login-flow';
 import { useOAuthUsageRefresh } from './use-oauth-usage-refresh';
-import { ProviderAccountsList, PROVIDER_ACCOUNTS_CHANGED, preloadProviderAccounts } from '../ProviderAccountsList';
+import {
+  ProviderAccountsList,
+  PROVIDER_ACCOUNTS_CHANGED,
+  preloadProviderAccounts,
+  useProviderPoolsReady,
+} from '../ProviderAccountsList';
 import { ActionButton, Group, ListEmpty, ResourceRow } from './capability-controls';
+import { ClientManagedProviders } from './client-managed-providers';
 import { QuotaAutoResumeToggle } from './quota-auto-resume-toggle';
-import { CustomProvidersSection, isCustomProvider } from './custom-provider-section';
+import { CustomProvidersSection, providerPageGroups } from './custom-provider-section';
 import {
   preloadCapabilitySettings,
   providerLabel,
@@ -24,10 +30,12 @@ import {
 
 export function preloadProviderPanel(api: PanelContext['api']): Promise<unknown> {
   return preloadCapabilitySettings(api).then((next) =>
-    preloadProviderAccounts(
-      api,
-      rows(record(next.data.providerSetup).oauth).map((provider) => String(provider.id))
-    )
+    record(next.data.providerSetup).managedByClient === true
+      ? undefined
+      : preloadProviderAccounts(
+          api,
+          rows(record(next.data.providerSetup).oauth).map((provider) => String(provider.id))
+        )
   );
 }
 
@@ -35,12 +43,7 @@ export function ProvidersPanel({ api, data, pending, run, confirm }: PanelContex
   const host = (window as unknown as { mixdogDesktop?: DesktopApi }).mixdogDesktop;
   const openKeyConsole = (url: string) => void host?.openExternal?.(url).catch(() => undefined);
   const setup = record(data.providerSetup);
-  const allApiProviders = rows(setup.api);
-  const customProviders = allApiProviders.filter(isCustomProvider);
-  const apiProviders = allApiProviders.filter((provider) => !isCustomProvider(provider));
-  const openCodeGoProvider = apiProviders.find((provider) => String(provider.id) === 'opencode-go');
-  const otherApiProviders = apiProviders.filter((provider) => provider !== openCodeGoProvider);
-  const oauthProviders = rows(setup.oauth);
+  const { custom: customProviders, otherApi: otherApiProviders, oauth: oauthProviders } = providerPageGroups(setup);
   const busy = Boolean(pending);
   const loading = !sectionLoaded(data, 'providerSetup');
   const secretsPending = setup.pendingSecrets === true;
@@ -59,9 +62,9 @@ export function ProvidersPanel({ api, data, pending, run, confirm }: PanelContex
       status={providerStatus(provider)}
       actions={
         <>
-          {!provider.authenticated && typeof provider.url === 'string' && /^https:\/\//.test(provider.url) && (
+          {typeof provider.url === 'string' && /^https:\/\//.test(provider.url) && (
             <ActionButton disabled={busy} onClick={() => openKeyConsole(String(provider.url))}>
-              {t('Get API key ↗')}
+              {provider.authenticated ? `${t('API keys')} ↗` : t('Get API key ↗')}
             </ActionButton>
           )}
           {!provider.authenticated && (
@@ -146,6 +149,27 @@ export function ProvidersPanel({ api, data, pending, run, confirm }: PanelContex
     };
   }, []);
   const keychainState = String(keychainIssue.state || '');
+  // Cold open: one same-size block until the setup and every account roster
+  // are in, then the whole page at once — nothing on screen has to move.
+  const poolsReady = useProviderPoolsReady(
+    api,
+    setup.managedByClient === true ? [] : oauthProviders.map((provider) => String(provider.id))
+  );
+  if (loading || !poolsReady) {
+    return (
+      <div className="settings-panel-placeholder" role="status" aria-busy="true">
+        <span>{t('Loading providers…')}</span>
+      </div>
+    );
+  }
+  if (setup.managedByClient === true) {
+    return (
+      <>
+        <QuotaAutoResumeToggle />
+        <ClientManagedProviders setup={setup} />
+      </>
+    );
+  }
   return (
     <>
       {keychainBlocked && (
@@ -213,7 +237,6 @@ export function ProvidersPanel({ api, data, pending, run, confirm }: PanelContex
           </div>
         )}
       </section>
-      {openCodeGoProvider && <Group>{renderApiProvider(openCodeGoProvider)}</Group>}
       <Group title={t('API-key providers')}>
         {otherApiProviders.length > 0 && otherApiProviders.map(renderApiProvider)}
         {otherApiProviders.length === 0 && (

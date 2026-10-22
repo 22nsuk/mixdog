@@ -32,8 +32,9 @@ import {
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { runChild } from './pg/run-child.mjs';
 import { renameWithRetrySync, writeFileAtomicSync, writeJsonAtomicSync } from '../../shared/atomic-file.mjs';
+import { fileHasData } from '../../shared/file-has-data.mjs';
 import { downloadToFileWithRetry } from '../../shared/bounded-download.mjs';
 import { platformKey, platformKeyCandidates, verifySha256File } from '../../shared/native-asset.mjs';
 
@@ -188,7 +189,7 @@ function runtimeAssetUrlCandidates(url) {
     .map((repo) => repo.trim())
     .filter(Boolean);
   for (const repo of overrides) {
-    if (repo && repo !== releaseRepo) add(value.replace(`/github.com/${releaseRepo}/`, `/github.com/${repo}/`));
+    if (repo && repo !== releaseRepo) add(value.replace(`/github.com/${releaseRepo}/`, () => `/github.com/${repo}/`));
   }
   return out;
 }
@@ -250,21 +251,23 @@ export function _validateRuntimeTarEntries(entries, details, stagingBase) {
   }
 }
 
-export function _extractRuntimeTarGz(tarPath, destDir, stagingBase) {
+// Async throughout: the first boot extracts the whole PG runtime here, and a
+// synchronous tar froze the daemon loop for seconds.
+export async function _extractRuntimeTarGz(tarPath, destDir, stagingBase) {
   mkdirSync(destDir, { recursive: true });
   const resolvedTarPath = resolve(tarPath);
-  const tarOptions = { cwd: dirname(resolvedTarPath), stdio: 'pipe', windowsHide: true };
+  const tarOptions = { cwd: dirname(resolvedTarPath) };
   const tarName = basename(resolvedTarPath);
 
   // List entries first and validate — reject traversal, external links, and
   // special files before the extractor can materialize archive content.
   // Keep the archive argument relative to cwd: GNU tar otherwise interprets
   // an absolute Windows path such as C:\runtime.tar.gz as a remote host path.
-  const listResult = spawnSync('tar', ['-tzf', tarName], tarOptions);
+  const listResult = await runChild('tar', ['-tzf', tarName], tarOptions);
   if (listResult.status !== 0) {
     throw new Error(`[runtime-fetcher] tar list failed: ${listResult.stderr?.toString() || 'unknown'}`);
   }
-  const detailResult = spawnSync('tar', ['-tvzf', tarName], tarOptions);
+  const detailResult = await runChild('tar', ['-tvzf', tarName], tarOptions);
   if (detailResult.status !== 0) {
     throw new Error(`[runtime-fetcher] tar detail list failed: ${detailResult.stderr?.toString() || 'unknown'}`);
   }
@@ -274,10 +277,7 @@ export function _extractRuntimeTarGz(tarPath, destDir, stagingBase) {
 
   const resolvedDestDir = resolve(destDir);
   const extractionArchive = relative(resolvedDestDir, resolvedTarPath);
-  const r = spawnSync('tar', ['-xzf', extractionArchive], {
-    ...tarOptions,
-    cwd: resolvedDestDir,
-  });
+  const r = await runChild('tar', ['-xzf', extractionArchive], { cwd: resolvedDestDir });
   if (r.status !== 0) {
     throw new Error(`[runtime-fetcher] tar extraction failed: ${r.stderr?.toString() || 'unknown error'}`);
   }
@@ -438,9 +438,9 @@ const runtimeCache = new Map();
 
 // One-shot tar availability probe; result cached after first call.
 let _tarProbed = false;
-function probeTar() {
+async function probeTar() {
   if (_tarProbed) return;
-  const r = spawnSync('tar', ['--version'], { stdio: 'pipe', windowsHide: true });
+  const r = await runChild('tar', ['--version']);
   if (r.status !== 0 || r.error) {
     throw new Error(
       '[runtime-fetcher] `tar` not found or not executable. ' +
@@ -498,8 +498,12 @@ function cachedRuntimeDir(runtimeBaseDir, version, sha256) {
 }
 
 // The asset digest stamped into a complete runtime tree, '' when absent.
+// A tree whose postgres executable holds no data (a crash after the extract
+// left it NUL-filled) is not complete, whatever its stamp says.
 function readRuntimeStamp(verDir) {
   try {
+    const postgres = join(verDir, 'bin', process.platform === 'win32' ? 'postgres.exe' : 'postgres');
+    if (existsSync(postgres) && !fileHasData(postgres)) return '';
     return readFileSync(join(verDir, '.version-sha256'), 'utf8').trim();
   } catch {
     return '';
@@ -532,7 +536,7 @@ async function installRuntimeVersion({ runtimeBaseDir, url, sha256, size, versio
   // tar is only required for the download/extract path. Probe here (not at
   // ensureRuntime entry) so a machine without tar can still reuse an
   // already-extracted, sha-matching cached runtime via the fast path.
-  probeTar();
+  await probeTar();
 
   __mixdogMemoryLog(`[runtime-fetcher] downloading runtime ${version} for ${pkey} (~${size} bytes) …\n`);
 
@@ -574,7 +578,7 @@ async function installRuntimeVersion({ runtimeBaseDir, url, sha256, size, versio
         }
       }
       if (!downloadOk && lastDownloadErr) throw lastDownloadErr;
-      _extractRuntimeTarGz(tarPath, stagingDir, stagingDir);
+      await _extractRuntimeTarGz(tarPath, stagingDir, stagingDir);
     } finally {
       try {
         rmSync(tarPath, { force: true });
@@ -589,7 +593,7 @@ async function installRuntimeVersion({ runtimeBaseDir, url, sha256, size, versio
     }
 
     // Stamp sha256 inside staging dir.
-    writeFileSync(join(stagingDir, '.version-sha256'), sha256);
+    writeFileAtomicSync(join(stagingDir, '.version-sha256'), sha256);
     normalizeBinExecBit(stagingDir);
 
     // Atomic swap:

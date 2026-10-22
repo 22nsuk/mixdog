@@ -29,10 +29,13 @@ import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 import { noteRequestServiceTier } from '../../../shared/llm/usage-context.mjs';
 import { resolveProviderCacheKey, resolveProviderPromptCacheLane } from '../agent-runtime/cache-strategy.mjs';
 
+function isUnsafeToRetry(err) {
+  return err?.liveTextEmitted === true || err?.emittedToolCall === true || err?.unsafeToRetry === true;
+}
+
 function shouldFallbackDirectTransport(err, options) {
   const status = Number(err?.httpStatus || err?.status || 0);
-  const unsafeToRetry = err?.liveTextEmitted === true || err?.emittedToolCall === true || err?.unsafeToRetry === true;
-  if (unsafeToRetry || options?.signal?.aborted || options?.enabled === false) return false;
+  if (isUnsafeToRetry(err) || options?.signal?.aborted || options?.enabled === false) return false;
   // Public OpenAI can reject the WebSocket upgrade while still supporting
   // the same request over HTTP/SSE. Only the shared transport's explicit
   // handshake marker may turn these application-looking statuses into a
@@ -111,6 +114,10 @@ export class OpenAIDirectProvider {
     }
     return null;
   }
+  /** Drop a disposed transport scope's sticky transport record. */
+  releaseTransportScope(scope) {
+    this._httpFallbackPoolKeys.delete(scope);
+  }
   send(messages, model, tools, sendOpts) {
     return withEffortConfigurationFallback('openai', model, sendOpts || {}, (opts) =>
       this._sendOnce(messages, model, tools, opts)
@@ -135,12 +142,15 @@ export class OpenAIDirectProvider {
     // Keep public response storage and model-specific cache options out of
     // the shared OAuth payload. Storage opt-out still forces full frames in
     // _computeDelta; retained output items make those frames self-contained.
-    applyOpenAIDirectCachePolicy(body, useModel, _envFlag('MIXDOG_OAI_STORE', true));
+    applyOpenAIDirectCachePolicy(body, useModel, _envFlag('MIXDOG_OAI_STORE', true), {
+      prefixTtl: opts.promptCachePrefixTtl || null,
+    });
     // poolKey MUST be sessionId-only. Falling back to promptCacheKey would
     // let unrelated raw sessions sharing the same provider-scoped cache
     // bucket reuse each other's pooled socket and inherit lastResponseId
-    // delta state, producing cross-session prompt corruption.
-    const poolKey = opts.sessionId || null;
+    // delta state, producing cross-session prompt corruption. A forked
+    // request runs in its own transport scope (transport-scope.mjs).
+    const poolKey = opts.transportScope || opts.sessionId || null;
     // cacheKey (prompt_cache_key) only groups the server-side prefix-cache
     // shard — safe to share across sessions, unlike the sessionId poolKey
     // above. buildRequestBody derives it from the base namespace plus a
@@ -200,8 +210,7 @@ export class OpenAIDirectProvider {
       try {
         return await sendHttp({ ...common, auth: a, opts, fetchFn: opts._fetchFn });
       } catch (err) {
-        const unsafe = err?.liveTextEmitted === true || err?.emittedToolCall === true || err?.unsafeToRetry === true;
-        if (!reload || err?.httpStatus !== 401 || unsafe) throw err;
+        if (!reload || err?.httpStatus !== 401 || isUnsafeToRetry(err)) throw err;
         // The replay discards this attempt; its reported usage stays billed.
         noteErrorUsage(err);
         process.stderr.write('[openai-ws] 401 — reloading apiKey and retrying once over HTTP\n');
@@ -228,7 +237,10 @@ export class OpenAIDirectProvider {
     // ws-delta only affects the delta gate inside openai-ws-delta.mjs.
     if (
       transportPolicy.transport === 'http' ||
-      (poolKey && httpFallbackEnabled && this._httpFallbackPoolKeys.has(poolKey))
+      (poolKey &&
+        httpFallbackEnabled &&
+        // A forked scope follows its session's refusal; it records its own.
+        (this._httpFallbackPoolKeys.has(poolKey) || this._httpFallbackPoolKeys.has(opts.sessionId)))
     ) {
       return await sendHttpWithKeyReload(auth);
     }
@@ -244,8 +256,7 @@ export class OpenAIDirectProvider {
       const status = err?.httpStatus;
       // Live-text/tool invariant: never reissue a turn that already
       // relayed visible output or dispatched a tool call.
-      const unsafeToRetry =
-        err?.liveTextEmitted === true || err?.emittedToolCall === true || err?.unsafeToRetry === true;
+      const unsafeToRetry = isUnsafeToRetry(err);
       // (1) 401 → reload only OpenAI auth and retry once over WS.
       // Ordinary 403 is a permission/policy decision, not evidence that
       // an API key rotated. Match the OAuth path and keep it terminal.

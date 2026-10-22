@@ -2,6 +2,7 @@ import type { TranscriptItem } from './desktop-types';
 import type { TurnChangesRef } from './turn-changes-model';
 import { completionTone } from './transcript-primitives';
 import { isVisibleTranscriptItem } from './transcript-row';
+import { streamingTextPaints } from './use-transcript-text-reveal';
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
 import { isTranscriptCancelledStatusText } from '../../../../src/runtime/shared/tool-execution-contract.mjs';
 
@@ -58,7 +59,7 @@ export type TranscriptRowModel =
       turnChanges?: TurnChangesRef;
     };
 
-export function isCompletionTranscriptItem(item: TranscriptItem | undefined): boolean {
+function isCompletionTranscriptItem(item: TranscriptItem | undefined): boolean {
   return item?.kind === 'statusdone' || item?.kind === 'turndone';
 }
 
@@ -85,6 +86,24 @@ interface TranscriptRowBuilder {
   previousRowWasUser: boolean;
   /** Tool group keys already used in this projection. */
   toolGroupKeys: Set<string>;
+  /** Message row keys this builder placed. */
+  rowKeys: Set<string>;
+  /** Message row keys placed before this builder started (the settled rows
+   *  under a live append). */
+  priorRowKey?: (key: string) => boolean;
+}
+
+/** Claims `key` for one message row; false when a row already carries it.
+ *  The virtual list owns a row's element by key: a second row under the same
+ *  key (a pending twin of its settled prompt, a transiently repeated item)
+ *  mounted a second element, the core's element cache moved to it, and the
+ *  original element was never positioned again — it stayed at its old offset
+ *  over whatever row took that slot (a compaction divider inserted above the
+ *  prompt), while the twin painted the prompt a second time below. */
+function claimRowKey(builder: TranscriptRowBuilder, key: string): boolean {
+  if (builder.rowKeys.has(key) || builder.priorRowKey?.(key)) return false;
+  builder.rowKeys.add(key);
+  return true;
 }
 
 /** pending:${id} and turn:${id} are one submission. The virtualizer identifies
@@ -122,11 +141,14 @@ function pushBuilderItem(
   completion?: TranscriptItem,
   turnChanges?: TurnChangesRef
 ): void {
+  const key = transcriptRowKey(sessionKey, item, index);
+  // The row already placed under this key is the one copy (its turn gap too).
+  if (!claimRowKey(builder, key)) return;
   beginBuilderTurn(builder, sessionKey, turnKey);
   if (item.kind === 'user') {
     builder.rows.push({
       _tag: 'UserMessage',
-      key: transcriptRowKey(sessionKey, item, index),
+      key,
       turnKey,
       item,
       attachedUser: builder.previousRowWasUser,
@@ -136,7 +158,7 @@ function pushBuilderItem(
   }
   builder.rows.push({
     _tag: 'AssistantPart',
-    key: transcriptRowKey(sessionKey, item, index),
+    key,
     turnKey,
     item,
     completion,
@@ -266,6 +288,8 @@ interface SettledTranscriptProjection {
    *  assistant row: that row's footer now stands where the live band was. */
   endsWithFoldedCompletion: boolean;
   hasSettledItem(id: unknown): boolean;
+  /** Message row keys the settled rows carry. */
+  rowKeys: ReadonlySet<string>;
 }
 
 /** Whether an id belongs to a settled item; the id set is built on first use. */
@@ -373,10 +397,12 @@ function pushCancelledPromptRow(
   index: number,
   turnKey: string
 ): void {
+  const key = transcriptRowKey(sessionKey, item, index);
+  if (!claimRowKey(builder, key)) return;
   beginBuilderTurn(builder, sessionKey, turnKey);
   builder.rows.push({
     _tag: 'AssistantPart',
-    key: transcriptRowKey(sessionKey, item, index),
+    key,
     turnKey,
     item: {
       ...item,
@@ -419,6 +445,7 @@ export function projectSettledTranscriptRows({
     currentTurnKey: '',
     previousRowWasUser: false,
     toolGroupKeys: new Set(),
+    rowKeys: new Set(),
   };
   let pendingToolActivity: PendingToolActivityItem[] = [];
   const flushToolActivity = () => {
@@ -481,21 +508,27 @@ export function projectSettledTranscriptRows({
     itemCount: items.length,
     endsWithFoldedCompletion: items.length > 0 && foldedCompletions.has(items.length - 1),
     hasSettledItem: settledItemLookup(items),
+    rowKeys: builder.rowKeys,
   };
 }
 
-/** Per-tick half: pending prompts, the live tail, and the thinking row are
- *  appended onto the memoized settled rows without mutating them. */
+/** Per-tick half: pending prompts, the live tail, the messages sent while the
+ *  turn runs, and the thinking row are appended onto the memoized settled rows
+ *  without mutating them. */
 export function appendLiveTranscriptRows({
   sessionKey,
   settled,
   pendingItems = [],
+  steerItems = [],
   liveItem,
   thinking = false,
 }: {
   sessionKey: string;
   settled: SettledTranscriptProjection;
-  pendingItems?: readonly (TranscriptItem & { queuedBehindTurn?: boolean })[];
+  pendingItems?: readonly TranscriptItem[];
+  /** Sent while the turn runs, not read yet: user bubbles after the live
+   *  output, where their durable rows land once the model reads them. */
+  steerItems?: readonly TranscriptItem[];
   liveItem?: TranscriptItem | null;
   thinking?: boolean;
 }): TranscriptRowModel[] {
@@ -504,11 +537,11 @@ export function appendLiveTranscriptRows({
     currentTurnKey: settled.currentTurnKey,
     previousRowWasUser: settled.previousRowWasUser,
     toolGroupKeys: new Set(),
+    rowKeys: new Set(),
+    priorRowKey: (key) => settled.rowKeys.has(key),
   };
   const itemCount = settled.itemCount;
-  const activePrompts = pendingItems.filter((item) => item.queuedBehindTurn !== true);
-  const queuedPrompts = pendingItems.filter((item) => item.queuedBehindTurn === true);
-  activePrompts.forEach((item, index) => {
+  pendingItems.forEach((item, index) => {
     pushBuilderItem(builder, sessionKey, item, itemCount + index, `pending:${String(item.id ?? index)}`);
   });
 
@@ -516,11 +549,18 @@ export function appendLiveTranscriptRows({
   // A delayed lane can briefly publish a tail whose id has already settled.
   // Never create a second stable-key row for that stale publication.
   const liveItemAlreadySettled = liveItem?.id != null && settled.hasSettledItem(liveItem.id);
-  if (liveItem && !liveItemAlreadySettled) {
+  // A streaming reply with nothing to paint yet (only whitespace or markdown
+  // markers) opens no row: its row takes a line and moves the band below it,
+  // so the followed transcript moved up before any reply text painted. It
+  // opens with the first text that shows, which it paints in that commit.
+  const liveItemPaintsNothing =
+    liveItem?.kind === 'assistant' && Boolean(liveItem.streaming) && !streamingTextPaints(String(liveItem.text || ''));
+  const liveKey = liveItem ? transcriptRowKey(sessionKey, liveItem, itemCount) : '';
+  if (liveItem && !liveItemAlreadySettled && !liveItemPaintsNothing && claimRowKey(builder, liveKey)) {
     beginBuilderTurn(builder, sessionKey, activeTurnKey);
     builder.rows.push({
       _tag: 'AssistantPart',
-      key: transcriptRowKey(sessionKey, liveItem, itemCount),
+      key: liveKey,
       turnKey: activeTurnKey,
       item: liveItem,
       active: true,
@@ -528,26 +568,29 @@ export function appendLiveTranscriptRows({
     });
     builder.previousRowWasUser = false;
   }
-  if (thinking) {
-    beginBuilderTurn(builder, sessionKey, activeTurnKey);
-    builder.rows.push({
-      _tag: 'Thinking',
-      key: thinkingRowKey(sessionKey, activeTurnKey),
-      turnKey: activeTurnKey,
-      active: true,
-    });
-    builder.previousRowWasUser = false;
-  }
 
-  queuedPrompts.forEach((item, index) => {
+  steerItems.forEach((item, index) => {
     pushBuilderItem(
       builder,
       sessionKey,
       item,
-      itemCount + activePrompts.length + index,
+      itemCount + pendingItems.length + index,
       `pending:${String(item.id ?? index)}`
     );
   });
+  // The working row stays last, in the turn of the newest message: the turn
+  // the model continues once it reads that message (no gap between them).
+  if (thinking) {
+    const thinkingTurnKey = steerItems.length ? builder.currentTurnKey : activeTurnKey;
+    beginBuilderTurn(builder, sessionKey, thinkingTurnKey);
+    builder.rows.push({
+      _tag: 'Thinking',
+      key: thinkingRowKey(sessionKey, thinkingTurnKey),
+      turnKey: thinkingTurnKey,
+      active: true,
+    });
+    builder.previousRowWasUser = false;
+  }
   return builder.rows;
 }
 

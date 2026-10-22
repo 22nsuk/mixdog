@@ -57,7 +57,7 @@ export function createTranscriptEndPin({
         if (spacer) spacer.style.height = `${instance.getTotalSize()}px`;
         // Reading scrollHeight right after that write forced a synchronous
         // layout of the whole list; the virtual geometry already knows it.
-        const max = getMaxScrollTop();
+        const target = getMaxScrollTop();
         // Cancel stale core compensation as well as its pending native timer:
         // this write already includes every measured delta in the commit.
         const core = instance as unknown as {
@@ -76,12 +76,12 @@ export function createTranscriptEndPin({
         core.scrollAdjustments = 0;
         // A replacement can briefly shrink the spacer and Chromium clamps
         // scrollTop before delivering its scroll event. The cached offset
-        // still equals `max` then: skipping the write loses the tail. Read the
+        // still equals the target then: skipping the write loses the tail. Read the
         // actual offset once per coalesced pin, after committing the spacer.
         const diagnose = transcriptScrollDiagnosticsEnabled();
         dropDeviation?.();
         const before = element.scrollTop;
-        if (Math.abs(before - max) >= 0.5) element.scrollTop = max;
+        if (Math.abs(before - target) >= 0.5) element.scrollTop = target;
         const landed = element.scrollTop;
         core.scrollOffset = landed;
         core._intendedScrollOffset = landed;
@@ -94,7 +94,7 @@ export function createTranscriptEndPin({
             height: element.scrollHeight,
           });
         }
-        markProgrammaticScroll(landed, max);
+        markProgrammaticScroll(landed, target);
       });
     },
     cancel() {

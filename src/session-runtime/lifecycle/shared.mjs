@@ -3,6 +3,8 @@
  * lifecycle groups (teardown, session switching, inheritance).
  */
 import { hasUserConversationMessage } from '../../runtime/agent/orchestrator/session/manager/prompt-utils.mjs';
+import { isAgentHomeSessionId } from '../../runtime/agent/orchestrator/session/agent-home.mjs';
+import { isRoomThreadSessionId } from '../../runtime/agent/orchestrator/session/agent-room.mjs';
 
 export { SESSION_ID_PATTERN } from '../../runtime/agent/orchestrator/runtime-core/session-id.mjs';
 
@@ -12,21 +14,41 @@ export { SESSION_ID_PATTERN } from '../../runtime/agent/orchestrator/runtime-cor
 // message there, not yet in session.messages, so it must also be checked or a
 // first-turn exit could still burn a real session.
 export function isScratchConversation(messages, liveTurnMessages) {
-  return !hasUserConversationMessage(messages) && !hasUserConversationMessage(liveTurnMessages);
+  return [messages, liveTurnMessages].every(
+    (items) =>
+      !hasUserConversationMessage(items) &&
+      !(Array.isArray(items) && items.some((message) => message?.meta?.transcript?.completion))
+  );
 }
 
+/** An agent's home thread is never scratch: a blank one is tombstoned on no
+ *  close, so its fixed id stays open for the next visit. Neither is a group
+ *  room's log or member session (agent-room.mjs), whose ids are fixed too. */
 export function isScratchSession(session) {
+  if (isAgentHomeSessionId(session?.id) || isRoomThreadSessionId(session?.id)) return false;
   return isScratchConversation(session?.messages, session?.liveTurnMessages);
 }
 
-export function createSurfaceSessionCloser(mgr) {
+/** `nonBlocking`: the closer returns the manager's closeSessionAsync promise
+ *  (when it has one), whose barrier never sleeps the event loop. */
+export function createSurfaceSessionCloser(mgr, nonBlocking = false) {
   return function closeSurfaceSession(session, reason, options) {
     if (!session?.id) return false;
-    // A remote-attached session is only a viewer handle owned by this surface.
-    // Closing it through the shared manager bumps the durable generation and
-    // invalidates the real owner's in-flight turn. Viewer exits therefore
-    // detach locally; only the process that owns the runtime may close it.
-    if (session.remoteAttached === true) return true;
-    return mgr.closeSession(session.id, reason, options);
+    return closeManagedSession(mgr, session.id, reason, options, nonBlocking);
   };
+}
+
+/** Await a switch path's close of the outgoing session. A close whose durable
+ *  barrier failed leaves the session open, so the switch must not proceed. */
+export async function closeOutgoingSession(closeSurfaceSession, session, reason, options) {
+  if ((await closeSurfaceSession(session, reason, options)) === false) {
+    throw new Error(`session close failed (reason=${reason}); the current session is kept`);
+  }
+}
+
+/** The manager's close: closeSessionAsync when asked for and available,
+ *  else its closeSession, unchanged. */
+export function closeManagedSession(mgr, id, reason, options, nonBlocking = true) {
+  if (nonBlocking && typeof mgr.closeSessionAsync === 'function') return mgr.closeSessionAsync(id, reason, options);
+  return mgr.closeSession(id, reason, options);
 }

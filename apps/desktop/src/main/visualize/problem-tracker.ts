@@ -4,6 +4,7 @@
  * inline render) to settle so its problems ride a tool result.
  */
 import type { VisualizeProblem } from '../../shared/visualize';
+import { blockedNetworkMessage, isOutsideNetworkUrl } from '../../shared/visualize-network-policy';
 import type { VisualizeServiceContext } from './context';
 import { buildProblem, classifyConsole, leasePrefixOf, type PageConsoleReport, recordProblem } from './page-problems';
 import { displayedPanes, realCwdOfTab, type TabState } from './tab-state';
@@ -26,27 +27,29 @@ const rootsOf = (tab: TabState): string[] => {
   return real === tab.cwd ? [tab.cwd] : [tab.cwd, real];
 };
 
+/** The tab and HTML pane whose page-server lease any of `urls` belongs to,
+ *  among the panes the tab displays (a kept version's, compare layout
+ *  included): `index` is the displayed index, `version` the kept version. */
+function paneOfLeaseUrl(sessions: VisualizeServiceContext['sessions'], urls: string[]): PaneOfTab | null {
+  for (const [sessionId, state] of sessions) {
+    for (const tab of state.tabs) {
+      const panes = displayedPanes(tab);
+      const index = panes.findIndex((pane) => {
+        const prefix = pane.kind === 'html' ? leasePrefixOf(pane.url) : '';
+        return prefix !== '' && urls.some((url) => url.startsWith(prefix));
+      });
+      if (index >= 0) return { sessionId, tab, index, version: panes[index].version };
+    }
+  }
+  return null;
+}
+
 export function createProblemTracker(ctx: Pick<VisualizeServiceContext, 'sessions' | 'delay' | 'views' | 'publish'>) {
   const { sessions, delay } = ctx;
   const { renderIdOf } = ctx.views;
   const publish = (sessionId: string) => ctx.publish(sessionId);
 
-  /** The tab and HTML pane whose page-server lease any of `urls` belongs to,
-   *  among the panes the tab displays (a kept version's, compare layout
-   *  included): `index` is the displayed index, `version` the kept version. */
-  const paneOfUrl = (urls: string[]): PaneOfTab | null => {
-    for (const [sessionId, state] of sessions) {
-      for (const tab of state.tabs) {
-        const panes = displayedPanes(tab);
-        const index = panes.findIndex((pane) => {
-          const prefix = pane.kind === 'html' ? leasePrefixOf(pane.url) : '';
-          return prefix !== '' && urls.some((url) => url.startsWith(prefix));
-        });
-        if (index >= 0) return { sessionId, tab, index, version: panes[index].version };
-      }
-    }
-    return null;
-  };
+  const paneOfUrl = (urls: string[]): PaneOfTab | null => paneOfLeaseUrl(sessions, urls);
 
   const recordPageProblem = (
     found: PaneOfTab,
@@ -64,12 +67,14 @@ export function createProblemTracker(ctx: Pick<VisualizeServiceContext, 'session
   const reportInlineRender = (sessionId: string, tab: TabState, index: number, renderId: string, error?: string) => {
     const pane = displayedPanes(tab)[index];
     if (pane?.kind !== 'inline' || !pane.inline) return;
-    // One report per render instance of exactly this tab / version / session;
+    // One report per render instance of exactly this tab / version / session,
+    // from the desktop window or a remote client (whichever reports first);
     // anything else (a stale, repeated or foreign id) is ignored.
     const expected = renderIdOf(sessionId, tab, index, pane);
+    const remote = renderIdOf(sessionId, tab, index, pane, 'remote');
     tab.rendersSpent ??= new Map();
     const spent = tab.rendersSpent;
-    if (renderId !== expected || spent.has(expected)) return;
+    if ((renderId !== expected && renderId !== remote) || spent.has(expected)) return;
     for (const [id, revision] of spent) if (revision !== tab.revision) spent.delete(id);
     spent.set(expected, tab.revision);
     tab.rendered?.add(index);
@@ -86,10 +91,37 @@ export function createProblemTracker(ctx: Pick<VisualizeServiceContext, 'session
     );
   };
 
+  /** A paired device's page frame refused an outside request (its CSP is the
+   *  policy there): recorded as the same `blocked-network` problem the desktop
+   *  files, unless the address is no outside network address. A tab that allows
+   *  network is reported too: the frame's CSP still refuses some requests there. */
+  const reportRemoteBlockedNetwork = (
+    sessionId: string,
+    tab: TabState,
+    index: number,
+    url: string,
+    resource: string
+  ) => {
+    const pane = displayedPanes(tab)[index];
+    if (pane?.kind !== 'html') return;
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      return;
+    }
+    if (!isOutsideNetworkUrl(target)) return;
+    recordPageProblem(
+      { sessionId, tab, index, version: pane.version },
+      { kind: 'blocked-network', message: blockedNetworkMessage(target.host, resource), source: '', line: 0 }
+    );
+  };
+
   return {
     paneOfUrl,
     recordPageProblem,
     reportInlineRender,
+    reportRemoteBlockedNetwork,
     /** Wait until no problem was reported (and no reload is pending) for one
      *  quiet interval, at most `rounds` intervals. */
     async settle(tab: TabState, rounds: number): Promise<void> {

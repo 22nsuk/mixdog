@@ -11,35 +11,34 @@
 html[data-mixdog-mobile-tabs] .topbar {
   display: none;
 }
-/* A surface that has not reached its desktop for the disconnect threshold is
-   frozen, not broken: ONE dim layer with the wifi glyph blocks input until the
-   leg returns. Temporary connection diagnostics may appear below the glyph.
-   Shorter gaps — every background return costs one — show nothing. Unscoped on
-   purpose: any relay surface must be blocked, not only the phone layout. */
-.remote-connection-overlay {
-  box-sizing: border-box;
+/* A relay surface whose link has been down past the threshold gets one tiny,
+   non-blocking status dot: no text, no card, no dim layer — the shim keeps
+   retrying on its own and everything around the dot stays usable. Shorter
+   gaps — every background return costs one — show nothing. Unscoped on
+   purpose: every relay surface shares it, not only the phone layout. */
+.remote-connection-indicator {
   position: fixed;
-  inset: 0;
+  top: calc(env(safe-area-inset-top, 0px) + 4px);
+  left: 50%;
   z-index: 240;
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  width: 100%;
-  height: 100%;
+  width: 20px;
+  height: 20px;
   margin: 0;
   padding: 0;
   border: 0;
   color: var(--mx-text-soft);
-  background: rgb(0 0 0 / 62%);
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
+  background: transparent;
+  transform: translateX(-50%);
+  cursor: pointer;
 }
-.remote-connection-overlay > svg {
-  width: 64px;
-  height: 64px;
-  flex: 0 0 auto;
+.remote-connection-indicator-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
   animation: remote-connection-pulse 1.8s ease-in-out infinite;
 }
 @keyframes remote-connection-pulse {
@@ -48,17 +47,13 @@ html[data-mixdog-mobile-tabs] .topbar {
     opacity: 1;
   }
   50% {
-    opacity: 0.55;
+    opacity: 0.35;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .remote-connection-overlay > svg {
+  .remote-connection-indicator-dot {
     animation: none;
   }
-}
-html[data-mixdog-mobile-tabs] .remote-connection-overlay > svg {
-  width: 40px;
-  height: 40px;
 }
 /* ── Tab strip ── [brand mark][title pill][+][dock toggles]: the Chrome-dp toolbar keeps its 44dp row, the pill names the active
    tab, and the + and the dock toggles are the desktop's own marks scaled to
@@ -154,8 +149,7 @@ html[data-mixdog-mobile-tabs] .workspace-tabs-trailing .pane-dock-toggle svg.luc
    rather than keeping the desktop 28 — a 28 + one pane away from a 44 + was
    the loudest half of the mismatch. Tier 2 (the standalone create +) is
    defined further down. */
-html[data-mixdog-mobile-tabs] .composer-footer,
-html[data-mixdog-mobile-tabs] .studio-composer-bar {
+html[data-mixdog-mobile-tabs] .composer-footer {
   height: 44px;
   /* Tighter than the desktop 8: the 44 touch boxes already carry their own
      air, so the +/model/gauge cluster hugs the card edge like the desktop
@@ -178,9 +172,7 @@ html[data-mixdog-mobile-tabs] .composer textarea {
   line-height: calc(24px * var(--mx-content-scale, 1));
 }
 html[data-mixdog-mobile-tabs] .composer-tool,
-html[data-mixdog-mobile-tabs] .send-button,
-html[data-mixdog-mobile-tabs] .studio-attach,
-html[data-mixdog-mobile-tabs] .studio-generate {
+html[data-mixdog-mobile-tabs] .send-button {
   width: 44px;
   height: 44px;
   min-width: 44px;
@@ -197,6 +189,16 @@ html[data-mixdog-mobile-tabs] :is(.composer-mic, .send-button) {
   padding: 4px;
   border-radius: var(--mx-radius-pill);
   background-clip: content-box;
+}
+/* Studio's card is the same pill as the chat one: 44px touch discs 6px in a
+   56px bar. */
+html[data-mixdog-mobile-tabs] .studio-composer {
+  --mx-chat-bar-inset: 6px;
+  min-height: 56px;
+}
+html[data-mixdog-mobile-tabs] .studio-composer textarea {
+  min-height: 56px;
+  padding: 16px 6px;
 }
 /* ── Composer discs, restated as DESKTOP proportions ── desktop draws a 28px button that IS the disc; the phone keeps a
    44 touch target and paints a 36 disc inside it, so the DISC is what the eye
@@ -217,25 +219,23 @@ html[data-mixdog-mobile-tabs] .composer-mic {
    here too. */
 html[data-mixdog-mobile-tabs] .composer-tool > svg,
 html[data-mixdog-mobile-tabs] .composer-mic-spinner,
-html[data-mixdog-mobile-tabs] .send-button > svg,
-html[data-mixdog-mobile-tabs] .studio-attach > svg,
-html[data-mixdog-mobile-tabs] .studio-generate > svg {
+html[data-mixdog-mobile-tabs] .send-button > svg {
   width: calc(36px * 16 / 28);
   height: calc(36px * 16 / 28);
 }
-html[data-mixdog-mobile-tabs] .composer-tool > svg.lucide,
-html[data-mixdog-mobile-tabs] .studio-attach > svg.lucide {
+/* The mic glyph is one step larger (18 on desktop) so it reads as big as the
+   send arrow beside it; the recording stop square keeps its own measure. */
+html[data-mixdog-mobile-tabs] .composer-mic:not(.is-recording) > svg.lucide {
+  width: calc(36px * 18 / 28);
+  height: calc(36px * 18 / 28);
+}
+html[data-mixdog-mobile-tabs] .composer-tool > svg.lucide {
   stroke-width: calc(1px * 36 / 28);
 }
 /* The two disc glyphs carry the composer's heavier 1.75px line; same measure. */
 html[data-mixdog-mobile-tabs] .composer-mic > svg.lucide,
-html[data-mixdog-mobile-tabs] .send-button > svg.lucide,
-html[data-mixdog-mobile-tabs] .studio-generate > svg.lucide {
+html[data-mixdog-mobile-tabs] .send-button > svg.lucide {
   stroke-width: calc(1.75px * 36 / 28);
-}
-html[data-mixdog-mobile-tabs] .studio-generate {
-  padding: 4px;
-  background-clip: content-box;
 }
 /* During dictation the send action stays disabled, but dimming the whole
    button made its equal 36dp disc look smaller beside the recording disc.
@@ -350,12 +350,6 @@ html[data-mixdog-mobile-tabs] .composer-model-aside .session-context-indicator >
   min-width: var(--mx-touch-main);
   flex-basis: var(--mx-touch-main);
 }
-/* The ring hugs the model label instead of floating mid-box: the 44 hit box
-   stays, its extra width is spent to the RIGHT of the mark. */
-html[data-mixdog-mobile-tabs] .composer-model-aside .session-context-indicator > button {
-  justify-items: start;
-  padding-left: 2px;
-}
 html[data-mixdog-mobile-tabs] .composer-model-aside .session-context-indicator svg {
   width: calc(36px * 15 / 28);
   height: calc(36px * 15 / 28);
@@ -368,11 +362,127 @@ html[data-mixdog-mobile-tabs] .composer-model-aside .session-context-indicator s
 html[data-mixdog-mobile-tabs] .composer-footer {
   position: relative;
 }
-html[data-mixdog-mobile-tabs] .composer-model-aside .session-context-indicator {
+html[data-mixdog-mobile-tabs] .composer-model-line .session-context-indicator {
   position: static;
 }
-html[data-mixdog-mobile-tabs] .composer-model-aside .session-context-popover {
+html[data-mixdog-mobile-tabs] .composer-model-line .session-context-popover {
   max-width: calc(100vw - 2 * var(--mx-mobile-edge-main));
+}
+/* The line under the card keeps the bar's touch height; the readout is
+   plain text that drops parts (see 15-composer.css) before the model chip
+   gives way. */
+html[data-mixdog-mobile-tabs] .composer-model-line {
+  min-height: var(--mx-touch-main);
+  margin-top: 0;
+  /* The bar's own 6px inset: the ring box (44, ring centred) then sits under
+     the send disc, and the readout under the attach +. */
+  padding-inline: 6px;
+}
+html[data-mixdog-mobile-tabs] .composer-model-line > .composer-usage-readout {
+  height: var(--mx-touch-main);
+  line-height: var(--mx-touch-main);
+}
+/* The phone's coding composer (Composer.tsx `phoneCard`): the two-row card of
+   1.2 — the typing band, then +, the model with its gauge, the mic and send.
+   The line under the card holds the readout alone, centred. A bot's 1:1 chat
+   uses the same card; a group room keeps the one-line bar (agent-chat.css). */
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] > .composer-input-row {
+  flex: 0 0 100%;
+  order: 0;
+}
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] > .composer-footer {
+  display: flex;
+  flex: 0 0 100%;
+  order: 1;
+  align-items: center;
+  min-width: 0;
+}
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] > .composer-footer > .composer-tool {
+  margin-block: 0;
+}
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] .composer-footer > .composer-model-line-controls {
+  margin-left: 0;
+}
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] .composer-primary-actions {
+  margin-block: 0;
+  margin-left: auto;
+}
+/* The gauge's card opens upward from the card's row, anchored to the row. */
+html[data-mixdog-mobile-tabs] .composer-footer .session-context-indicator {
+  position: static;
+}
+html[data-mixdog-mobile-tabs] .composer-footer .session-context-popover {
+  top: auto;
+  bottom: calc(100% + 6px);
+  max-width: calc(100vw - 2 * var(--mx-mobile-edge-main));
+}
+html[data-mixdog-mobile-tabs] .composer-model-line {
+  justify-content: center;
+}
+/* The card at the PC's proportions: a 44 typing band whose 24 line sits
+   centred over the 44 control row (88 in all), its text on the same 12dp edge
+   as the transcript and the + glyph below it (PC: 9px / 6px in a 42 bar). The
+   agent bar's 56 pill (agent-chat.css) is not this card. */
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] {
+  min-height: 88px;
+}
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] textarea {
+  min-height: 44px;
+  padding: 10px var(--composer-text-inset);
+}
+/* The phone's dark ramp is neutral grey (below); the card keeps the PC's own
+   composer plate so it reads the same on both. A skin's frosted card still
+   wins (33-skin.css sets the background itself). */
+:root[data-mixdog-mobile-tabs]:not([data-mixdog-theme="light"]) form.composer {
+  --mx-composer-surface: color-mix(in srgb, #222225 87.5%, #2a2a2d);
+}
+/* The readout line under the card at the PC's 36 line and 4 gap (not the 44
+   touch line): the line stays reserved so nothing shifts when the chat
+   starts, and the dock closes on the safe area alone (PC: 2px). */
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] ~ .composer-model-line {
+  min-height: 36px;
+  margin-top: 4px;
+}
+html[data-mixdog-mobile-tabs] form.composer[data-phone-card] ~ .composer-model-line > .composer-usage-readout {
+  height: auto;
+  line-height: inherit;
+}
+html[data-mixdog-mobile-tabs] .composer-region:has(> form.composer[data-phone-card]) {
+  padding-bottom: max(2px, env(safe-area-inset-bottom, 0px));
+}
+html[data-mixdog-mobile-tabs][data-mixdog-keyboard="open"] .composer-region:has(> form.composer[data-phone-card]) {
+  padding-bottom: 2px;
+}
+/* New session: Project / Workflow / Delegation / Branch in a line of their
+   own above the card, in the island's resting place (pill + stage gap). It
+   keeps that height once the chat starts, so the card never moves; chips keep
+   their width and the line scrolls sideways when they do not fit. */
+html[data-mixdog-mobile-tabs] .composer-context-line {
+  display: flex;
+  align-items: center;
+  min-height: var(--island-pill-height);
+  margin-bottom: var(--island-stage-gap);
+  padding-inline: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+/* In a chat the line is empty and the island takes its place: the slot is
+   pulled down over the reserved band, so the pill rests the PC's stage gap
+   above the card instead of floating a band higher, and the card stays put. */
+html[data-mixdog-mobile-tabs] .composer-island-slot:not([data-presence="closed"]) + .composer-context-line:empty {
+  margin-top: calc(-1 * var(--island-rest-height));
+}
+html[data-mixdog-mobile-tabs] .composer-context-line::-webkit-scrollbar {
+  display: none;
+}
+html[data-mixdog-mobile-tabs] .composer-context-line > .composer-model-line-context {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+html[data-mixdog-mobile-tabs] .composer-context-line .composer-model-line-context > * {
+  flex: none;
 }
 html[data-mixdog-mobile-tabs] .dock-scm-commit-back,
 html[data-mixdog-mobile-tabs] .mixdog-settings__close,
@@ -535,9 +645,14 @@ html[data-mixdog-mobile-tabs] .sidebar-drawer-frame {
   overflow: hidden;
   transform: translateX(-110%);
   visibility: hidden;
+  /* `visibility` eases only toward hidden (the exit stays visible until it is
+     off-screen); an open takes it at once (0s below). A drawer still hidden
+     when its slide starts has "no visible change" to Chromium, which then
+     runs the slide on the main thread, where any long task freezes it. */
+  --mx-drawer-visibility-motion: var(--mx-sheet-motion);
   transition:
     transform var(--mx-sheet-motion),
-    visibility var(--mx-sheet-motion);
+    visibility var(--mx-drawer-visibility-motion);
 }
 html[data-mixdog-mobile-tabs] .sidebar-drawer-frame > .workbench-side-panel {
   width: calc(100% - 48px);
@@ -569,18 +684,22 @@ html[data-mixdog-mobile-tabs] .sidebar-drawer-frame::after {
   pointer-events: none;
 }
 /* Remote phone drawer: the PC card spans the full width above the rail and the
-   active side panel; its menu overlays the content below. */
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame:has(> .remote-pc-card) {
+   active side panel; its menu overlays the content below. The frame carries
+   data-remote-pc (AppSidebarDrawer) instead of a :has(> .remote-pc-card)
+   test: Chromium evaluates :has() before the html ancestor check even on the
+   desktop, so every React update anywhere in the left panel restyled the
+   whole panel (hundreds of elements per transcript message). */
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-remote-pc="true"] {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
 }
 /* The frame-tall divider would cross the header: draw it on the rail instead,
    which starts below the header's own hairline. */
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame:has(> .remote-pc-card)::before {
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-remote-pc="true"]::before {
   display: none;
 }
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame:has(> .remote-pc-card) > .activity-rail {
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-remote-pc="true"] > .activity-rail {
   box-sizing: border-box;
   border-right: 1px solid var(--mx-border-muted);
 }
@@ -591,13 +710,13 @@ html[data-mixdog-mobile-tabs] .sidebar-drawer-frame > .remote-pc-card {
   grid-row: 1;
   border-bottom: 1px solid var(--mx-border-muted);
 }
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame:has(> .remote-pc-card) > :not(.remote-pc-card) {
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-remote-pc="true"] > :not(.remote-pc-card) {
   grid-row: 2;
 }
 /* The panel's own "100% - 48px" width assumed a flex row; inside the grid cell
    that left it narrower than the drawer. The cell (1fr) sets the width. */
 html[data-mixdog-mobile-tabs]
-  .sidebar-drawer-frame.sidebar-drawer-frame:has(> .remote-pc-card)
+  .sidebar-drawer-frame.sidebar-drawer-frame[data-remote-pc="true"]
   > :is(.workbench-side-panel, .sidebar.session-sidebar) {
   width: auto;
 }
@@ -606,7 +725,7 @@ html[data-mixdog-mobile-tabs] .sidebar-drawer-frame > .remote-pc-card > .remote-
   top: 100%;
   left: 8px;
   right: 8px;
-  max-height: 60vh;
+  max-height: calc(var(--mx-visible-height, 100dvh) * 0.6);
   margin-top: 4px;
   padding: 6px;
   overflow-y: auto;
@@ -619,8 +738,17 @@ html[data-mixdog-mobile-tabs] .sidebar-drawer-frame > .remote-pc-card > .remote-
 html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-state="open"] {
   transform: none;
   visibility: visible;
+  --mx-drawer-visibility-motion: 0s;
 }
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-motion="instant"] {
+/* An instant change (a navigation close, the phone start) never animates. A
+   tap's intent stamp is always animated, so it is exempt: the phone starts
+   with an instant close, and the first tap's stamp otherwise opened the
+   drawer in one jump before the commit reset data-motion. The scrim is the
+   frame's next sibling (AppShellLayout) and follows the same motion. */
+html[data-mixdog-mobile-tabs]:not([data-drawer-intent]) .sidebar-drawer-frame[data-motion="instant"],
+html[data-mixdog-mobile-tabs]:not([data-drawer-intent])
+  .sidebar-drawer-frame[data-motion="instant"]
+  + .sidebar-backdrop {
   transition: none;
 }
 html[data-mixdog-mobile-tabs] .sidebar-drawer-frame > .activity-rail {
@@ -662,17 +790,126 @@ html[data-mixdog-mobile-tabs] .sidebar-backdrop {
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
+  /* Same as the drawer: the fade-in takes `visibility` at once, so the
+     opacity runs on the compositor. */
+  --mx-drawer-visibility-motion: var(--mx-sheet-motion);
   transition:
     opacity var(--mx-sheet-motion),
-    visibility var(--mx-sheet-motion);
+    visibility var(--mx-drawer-visibility-motion);
 }
 html[data-mixdog-mobile-tabs] .sidebar-backdrop[data-state="open"] {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
+  --mx-drawer-visibility-motion: 0s;
+}
+/* Tap intent (drawer-intent.ts): a drawer tap stamps html[data-drawer-intent]
+   before its React state commits, so the sheet and scrim move on the tap's own
+   frame instead of waiting for the shell render. The stamp is dropped once the
+   committed data-state agrees, which restores the rules above. */
+html[data-mixdog-mobile-tabs][data-drawer-intent="open"] .sidebar-drawer-frame {
+  transform: none;
+  visibility: visible;
+  --mx-drawer-visibility-motion: 0s;
+}
+html[data-mixdog-mobile-tabs][data-drawer-intent="open"] .sidebar-drawer-frame > .workbench-side-panel[hidden] {
+  display: flex;
+}
+html[data-mixdog-mobile-tabs][data-drawer-intent="open"] .sidebar-backdrop {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  --mx-drawer-visibility-motion: 0s;
+}
+html[data-mixdog-mobile-tabs][data-drawer-intent="closed"] .sidebar-drawer-frame {
+  transform: translateX(-110%);
+  visibility: hidden;
+  --mx-drawer-visibility-motion: var(--mx-sheet-motion);
+}
+html[data-mixdog-mobile-tabs][data-drawer-intent="closed"] .sidebar-backdrop {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  --mx-drawer-visibility-motion: var(--mx-sheet-motion);
+}
+/* Edge swipes (touch-gestures.ts) read horizontal drags straight off the
+   content, so no overlay sits on the screen edge and every tap lands on the
+   control under it. A horizontal pan would make the browser cancel the touch,
+   so the shell allows vertical panning only. Elements that scroll sideways
+   (code blocks, tables, the tab strip) are their own scrollers: the rule
+   stops there and they keep their horizontal pan. */
+html[data-mixdog-mobile-tabs] .app-shell,
+html[data-mixdog-mobile-tabs] .sidebar-backdrop,
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-state="open"],
+html[data-mixdog-mobile-tabs]
+  .pane-side-dock[data-open="true"]
+  :is(header, .workbench-side-section-body, .workbench-side-panel-body) {
+  touch-action: pan-y;
 }
 html[data-mixdog-mobile-tabs] .session-sidebar-resize {
   display: none;
+}
+
+/* ── Drawer inset system ── ONE horizontal grammar for every drawer page. The
+   panel pads 8 and its containers 4, so header text, search, chips, section
+   headings, cards and footer pills open on the 12px box line (x 60 / 309.4 of
+   a 412dp phone). Row highlights (hover, selected, Mixy's card, a session or
+   launcher wash) bleed --mx-drawer-bleed past that line on BOTH sides, with
+   the row's own text padded back by the same amount, so text stays on the
+   line. Trailing controls keep their absolute centerline: a bleeding list
+   pays the bleed back in --mx-rail-trailing-center. */
+html[data-mixdog-mobile-tabs] {
+  --mx-drawer-bleed: 4px;
+}
+/* The pinned search/tab bar paints the panel's tone around itself; the drawer
+   panel sits on the workspace sheet, not the lighter window band the desktop
+   rail uses, so the old tone showed as a wider block behind the field. */
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame .workbench-side-panel {
+  --mx-side-panel-surface: var(--mx-workspace-sheet);
+}
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame .session-sidebar {
+  --mx-rail-pin-bg: var(--mx-workspace-sheet);
+}
+html[data-mixdog-mobile-tabs] .session-sidebar-sessions .sidebar-recent > .session-list {
+  margin-inline: calc(-1 * var(--mx-drawer-bleed));
+  --mx-rail-trailing-center: calc(20px + var(--mx-drawer-bleed));
+}
+html[data-mixdog-mobile-tabs] .session-sidebar .session-list .session-row:not(.editing) {
+  padding-left: calc(8px - var(--mx-drawer-bleed));
+  padding-right: calc(var(--mx-rail-gutter) + var(--mx-drawer-bleed));
+}
+html[data-mixdog-mobile-tabs] .session-sidebar .session-list .automation-group-past .session-row:not(.editing) {
+  padding-left: calc(20px - var(--mx-drawer-bleed));
+}
+html[data-mixdog-mobile-tabs] .session-sidebar .session-list .project-group-sessions .session-row:not(.editing) {
+  padding-left: calc(32px - var(--mx-drawer-bleed));
+}
+html[data-mixdog-mobile-tabs] .session-sidebar .session-list .sidebar-section-empty {
+  padding-left: calc(8px - var(--mx-drawer-bleed));
+}
+html[data-mixdog-mobile-tabs] .session-sidebar .session-list .project-group-sessions .sidebar-section-empty {
+  padding-left: calc(32px - var(--mx-drawer-bleed));
+}
+/* The static dot and status ride the row's right edge with fixed offsets. */
+html[data-mixdog-mobile-tabs] .session-sidebar .session-list .session-row-unread-dot {
+  right: calc(16.5px + var(--mx-drawer-bleed));
+}
+html[data-mixdog-mobile-tabs] .session-sidebar .session-list .session-row-status {
+  right: calc(14px + var(--mx-drawer-bleed));
+}
+html[data-mixdog-mobile-tabs] .session-sidebar .task-link.session-launcher-row {
+  width: calc(100% + 2 * var(--mx-drawer-bleed));
+  margin-inline: calc(-1 * var(--mx-drawer-bleed));
+  padding-inline: var(--mx-drawer-bleed);
+}
+/* Agents page: rows are the 56..313.4 highlight; their content sits on the line. */
+html[data-mixdog-mobile-tabs] .utility-dock .agent-chat-row-main {
+  padding-inline: var(--mx-drawer-bleed);
+}
+/* The footer pill is a box-line item. The desktop pull-out (-scrollbar gutter
+   + 2px) overflowed the panel wherever a gutter was measured. */
+html[data-mixdog-mobile-tabs] .agent-activity-page > .connectors-pill {
+  margin-inline: var(--mx-drawer-bleed);
 }
 
 /* ── Mobile right drawer ── the pane's side-dock UNIT — header (title,
@@ -703,9 +940,25 @@ html[data-mixdog-mobile-tabs] .pane-side-dock {
      it — the exit runs on the same curve as the entry. */
   transform: translateX(0);
   visibility: visible;
-  transition:
-    transform var(--mx-sheet-motion),
-    visibility var(--mx-sheet-motion);
+  /* The open takes `visibility` at once: a sheet still hidden when its slide
+     starts has "no visible change" to Chromium, which then runs the transform
+     on the main thread, where the body mount's long task froze it mid-slide. */
+  transition: transform var(--mx-sheet-motion);
+}
+/* The session drawer opens above an open dock sheet (and its terminal/browser
+   surfaces at 151): a chat tapped in it navigates, and the sheet yields as the
+   session's panel view folds, instead of the drawer hiding under the sheet. */
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame {
+  z-index: 153;
+}
+html[data-mixdog-mobile-tabs] .sidebar-backdrop {
+  z-index: 152;
+}
+/* Mica clears --mx-workspace-sheet inside the main panel, where the dock
+   lives, so the sheet above resolved to transparent and the chat and the tab
+   strip showed through. The root's solid copy keeps the full-screen sheet opaque. */
+html:is([data-window-material="mica"], [data-mixdog-skin])[data-mixdog-mobile-tabs] .pane-side-dock {
+  background: var(--mx-sheet-ink);
 }
 /* The closed sheet keeps its box and parks off the right edge so the exit
    runs on the same curve as the entry; the panel inside is already `inert` +
@@ -714,6 +967,10 @@ html[data-mixdog-mobile-tabs] .pane-side-dock[data-open="false"] {
   transform: translateX(100%);
   visibility: hidden;
   pointer-events: none;
+  /* The exit keeps the sheet visible until it is off-screen. */
+  transition:
+    transform var(--mx-sheet-motion),
+    visibility var(--mx-sheet-motion);
 }
 /* Responsive band corrections are layout, not gesture — they never animate. */
 html[data-mixdog-mobile-tabs]
@@ -838,6 +1095,17 @@ html[data-mixdog-mobile-tabs]
   scrollbar-width: none;
   scrollbar-gutter: auto;
 }
+/* The composer island's expanded tabs (shells, agents, files, branches) scroll
+   their lists inside the panel: a painted bar there appeared only once a list
+   overflowed and narrowed every row by its width, shifting the open panel. */
+html[data-mixdog-mobile-tabs] .composer-island,
+html[data-mixdog-mobile-tabs] .composer-island * {
+  scrollbar-width: none;
+  scrollbar-gutter: auto;
+}
+html[data-mixdog-mobile-tabs] .composer-island ::-webkit-scrollbar {
+  display: none;
+}
 /* The desktop rail deliberately expands its scroller into the reserved
    scrollbar column. Mobile hides that column entirely, so keeping the
    negative compensation consumes the sheet's trailing inset. */
@@ -859,8 +1127,8 @@ html[data-mixdog-mobile-tabs]
 /* ── Mobile dialogs ── the modal layer covers exactly the visible screen, and every
    dialog inside is clamped to the screen and stays dead-centered. */
 html[data-mixdog-mobile-tabs] .mixdog-settings-layer {
-  --settings-layer-safe-top: 12px;
-  --settings-layer-safe-bottom: 12px;
+  --settings-layer-safe-top: max(12px, env(safe-area-inset-top, 0px));
+  --settings-layer-safe-bottom: max(12px, env(safe-area-inset-bottom, 0px));
   width: 100vw;
   height: var(--mx-visible-height);
   padding: 12px;
@@ -1013,6 +1281,83 @@ html[data-mixdog-mobile-tabs] .utility-dock .agent-session-heading {
 html[data-mixdog-mobile-tabs] .utility-dock .agent-activity-page {
   padding-bottom: 8px;
 }
+/* Contacts at native dp, KakaoTalk's phone list: the desktop rule's layout
+   with phone sizes; the row menu opens by long-press. */
+html[data-mixdog-mobile-tabs] .utility-dock .agent-chat-row[data-kind="contact"] {
+  --agent-contact-avatar-size: 48px;
+  --agent-contact-padding: 10px var(--mx-drawer-bleed);
+  --agent-contact-gap: 10px;
+  --agent-contact-min-height: 72px;
+  /* A touch list keeps the meta size the desktop list steps under. */
+  --agent-contact-preview: var(--mx-font-meta);
+  --agent-contact-preview-line: var(--mx-line-meta);
+}
+/* The new-agent dialog is a bottom sheet: full width, grab bar, 44dp targets
+   and a footer of two equal thumb buttons above the safe area. */
+html[data-mixdog-mobile-tabs] .schedules-dialog-layer:has(> .agent-create-dialog) {
+  align-items: end;
+  padding: max(40px, env(safe-area-inset-top, 0px)) env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+}
+html[data-mixdog-mobile-tabs] .agent-create-dialog {
+  width: 100%;
+  max-height: 100%;
+  border-bottom: 0;
+  border-radius: var(--mx-popup-radius-card) var(--mx-popup-radius-card) 0 0;
+}
+html[data-mixdog-mobile-tabs] .agent-create-dialog::before {
+  content: "";
+  flex: none;
+  width: 36px;
+  height: 4px;
+  margin: 8px auto 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--mx-text) 25%, transparent);
+}
+html[data-mixdog-mobile-tabs] .agent-create-dialog .agent-create-name,
+html[data-mixdog-mobile-tabs] .agent-create-dialog .agent-create-advanced,
+html[data-mixdog-mobile-tabs] .agent-create-dialog .agent-create-field input {
+  min-height: var(--mx-touch);
+}
+html[data-mixdog-mobile-tabs] .agent-create-segments {
+  display: flex;
+  width: 100%;
+}
+html[data-mixdog-mobile-tabs] .agent-create-segments > button {
+  flex: 1 1 0;
+  height: var(--mx-touch);
+}
+html[data-mixdog-mobile-tabs] .agent-create-dialog .agent-create-field {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+html[data-mixdog-mobile-tabs] .agent-avatar-picker:not([data-compact]) .agent-avatar-options > button {
+  min-height: var(--mx-touch);
+}
+/* A 26dp swatch inside a 44dp target; the pick ring sits around the swatch. */
+html[data-mixdog-mobile-tabs] .agent-avatar-colors {
+  gap: 0;
+}
+html[data-mixdog-mobile-tabs] .agent-avatar-colors > button {
+  width: var(--mx-touch);
+  height: var(--mx-touch);
+  padding: 9px;
+  background-clip: content-box;
+}
+html[data-mixdog-mobile-tabs] .agent-avatar-colors > button[aria-pressed="true"] {
+  box-shadow: none;
+  outline: 2px solid var(--mx-text-soft);
+  outline-offset: -7px;
+}
+html[data-mixdog-mobile-tabs] .agent-create-dialog footer {
+  padding-bottom: max(var(--mx-dialog-inset), env(safe-area-inset-bottom, 0px));
+}
+html[data-mixdog-mobile-tabs] .agent-create-dialog footer > button {
+  flex: 1 1 0;
+}
+/* Work rows keep the drawer's original look; only the brand mark grows. */
+html[data-mixdog-mobile-tabs] .utility-dock .agent-activity-page .agent-pool-row > .sidebar-resource-icon {
+  --agent-brand-size: 28px;
+}
 /* Source Control's ONE action at native dp: the desktop 28px commit row is a
    fingernail band on a phone. The row and its full-width button take the 44dp primary tier. */
 html[data-mixdog-mobile-tabs] .utility-dock .dock-scm-commit-split {
@@ -1036,12 +1381,21 @@ html[data-mixdog-mobile-tabs] .transcript::-webkit-scrollbar {
 html[data-mixdog-mobile-tabs] .pane-cell {
   touch-action: pan-y;
 }
-/* The jump chip keeps the desktop 28px ink disc; only its hit frame reaches
-   the 44dp tier, so it no longer reads as a bright plate over the prose. */
+/* The jump chip grows to a 36px disc on touch (28px read as too small to hit);
+   its hit frame still reaches the 44dp tier. */
+html[data-mixdog-mobile-tabs] .jump-to-latest {
+  bottom: var(--island-stage-gap);
+  width: 36px;
+  height: 36px;
+}
+html[data-mixdog-mobile-tabs] .jump-to-latest > svg {
+  width: 20px;
+  height: 20px;
+}
 html[data-mixdog-mobile-tabs] .jump-to-latest::before {
   content: "";
   position: absolute;
-  inset: calc((var(--mx-touch-main) - 28px) / -2);
+  inset: calc((var(--mx-touch-main) - 36px) / -2);
 }
 /* Code/table surfaces keep vertical momentum while horizontal touch traverses
    pane tabs. Hide tracks that otherwise flash over the final line of content. */
@@ -1055,13 +1409,28 @@ html[data-mixdog-mobile-tabs] :is(.markdown-code > pre, .markdown-table)::-webki
   display: none;
 }
 
+/* Pane-scoped dialogs sit inside the pane (below the strip, above the
+   composer), so they take the phone gutter but no system-bar reserve. */
+html[data-mixdog-mobile-tabs] .pane-dialog-layer {
+  padding: 12px 16px;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 /* Modal polish: safe-area-aware centring, no live blur on a phone GPU, and
    footer actions large enough to tap without changing desktop density. */
 html[data-mixdog-mobile-tabs]
-:is(.onboarding-layer, .schedules-dialog-layer, .settings-confirm-layer, .mx-dialog-layer) {
-  padding: max(12px, env(safe-area-inset-top, 0px)) 12px max(12px, env(safe-area-inset-bottom, 0px));
+:is(.onboarding-layer, .schedules-dialog-layer, .settings-confirm-layer, .settings-oauth-layer, .mx-dialog-layer) {
+  padding: max(12px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
+    max(12px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
+}
+/* The guided-setup card fills the layer's gutter box; its own 100vw width
+   (21-onboarding) ignored the gutter and spilled over the right edge. */
+html[data-mixdog-mobile-tabs] .onboarding-dialog {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--mx-popup-radius-card);
 }
 html[data-mixdog-mobile-tabs]
   :is(.schedules-dialog, .settings-confirm-dialog, .settings-oauth-dialog, .mx-dialog)
@@ -1083,7 +1452,9 @@ html[data-mixdog-mobile-tabs]
 }
 html[data-mixdog-mobile-tabs]
   :is(.settings-confirm-dialog > footer, .settings-oauth-dialog > footer, .mx-dialog > footer) {
-  padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  /* The layer already clears the home indicator; the footer only keeps the
+     dialog's own gutter instead of reserving the inset a second time. */
+  padding-bottom: var(--mx-dialog-inset);
 }
 
 @media (orientation: landscape) and (max-height: 500px) {
@@ -1094,7 +1465,8 @@ html[data-mixdog-mobile-tabs]
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html[data-mixdog-mobile-tabs] :is(.sidebar-drawer-frame, .pane-side-dock, .sidebar-backdrop) {
+  html[data-mixdog-mobile-tabs] :is(.sidebar-drawer-frame, .pane-side-dock, .sidebar-backdrop),
+  html[data-mixdog-mobile-tabs] .pane-side-dock[data-open="false"] {
     transition: none;
   }
 }
@@ -1107,6 +1479,7 @@ html[data-mixdog-mobile-tabs]
    action the desktop reveals under the pointer rests visible here. */
 html[data-mixdog-mobile-tabs] .message .message-actions,
 html[data-mixdog-mobile-tabs] .message.assistant .response-footer .message-actions,
+html[data-mixdog-mobile-tabs] .response-footer-trailing .message-actions,
 html[data-mixdog-mobile-tabs] .dock-pr-row-actions {
   opacity: 1;
   pointer-events: auto;
@@ -1180,6 +1553,7 @@ html[data-mixdog-mobile-tabs] .attachment-card-edit {
    the box grows for the finger, the mark stays a mark. */
 html[data-mixdog-mobile-tabs] .message .message-actions,
 html[data-mixdog-mobile-tabs] .message.assistant .response-footer .message-actions,
+html[data-mixdog-mobile-tabs] .response-footer-trailing .message-actions,
 html[data-mixdog-mobile-tabs] .tool-detail-copy,
 html[data-mixdog-mobile-tabs] .markdown-code-copy,
 html[data-mixdog-mobile-tabs] .markdown-code-run,
@@ -1191,6 +1565,8 @@ html[data-mixdog-mobile-tabs] .turn-review-revert {
 }
 html[data-mixdog-mobile-tabs] .message .response-footer,
 html[data-mixdog-mobile-tabs] .message.assistant .response-footer:has(.turn-status),
+html[data-mixdog-mobile-tabs] .response-footer-trailing:has(.turn-status),
+html[data-mixdog-mobile-tabs] .live-activity-slot[data-busy="true"],
 html[data-mixdog-mobile-tabs] .markdown-code > header {
   min-height: var(--mx-touch-fixed-main);
 }
@@ -1249,7 +1625,6 @@ html[data-mixdog-mobile-tabs] .session-row-status {
 }
 html[data-mixdog-mobile-tabs] .row-overflow-trigger,
 html[data-mixdog-mobile-tabs] .session-sidebar-panels .row-overflow-trigger,
-html[data-mixdog-mobile-tabs] .queue-list .queue-remove,
 html[data-mixdog-mobile-tabs] .sidebar-usage-heading > .sidebar-usage-menu {
   width: var(--mx-touch-row);
   height: var(--mx-touch-row);
@@ -1276,6 +1651,13 @@ html[data-mixdog-mobile-tabs] .session-sidebar-panels .schedules-row .row-overfl
 }
 html[data-mixdog-mobile-tabs] .sidebar-usage-heading {
   min-height: var(--mx-touch);
+}
+/* An expanded account's name keeps a 44px tap target without growing its
+   20px line: the extra height hangs off negative margins. */
+html[data-mixdog-mobile-tabs] .sidebar-usage-account-name {
+  min-width: var(--mx-touch);
+  min-height: var(--mx-touch);
+  margin: calc((20px - var(--mx-touch)) / 2) 0;
 }
 
 /* ── 5. Side sheet views ──────────────────────────────────────────────────
@@ -1512,4 +1894,90 @@ html[data-mixdog-mobile-tabs] :is(.studio-detail-stage-close, .studio-detail-nav
   font-size: 16px;
   line-height: 20px;
   cursor: pointer;
+}
+
+/* Download / save controls share ONE phone spec with the header icon buttons:
+   the --mx-touch-row-main target, the header radius, glyph and hover/pressed fill,
+   visible without hover. */
+html[data-mixdog-mobile-tabs] .editor-breadcrumb-actions button.editor-breadcrumb-download,
+html[data-mixdog-mobile-tabs] .file-download-button,
+html[data-mixdog-mobile-tabs] .editor-pane-notice button,
+html[data-mixdog-mobile-tabs] .editor-pane-preview-error button {
+  min-width: var(--mx-touch-row-main);
+  min-height: var(--mx-touch-row-main);
+  border-radius: var(--mx-radius-md);
+}
+html[data-mixdog-mobile-tabs] .file-download-button svg {
+  width: var(--mx-icon-lg);
+  height: var(--mx-icon-lg);
+}
+html[data-mixdog-mobile-tabs] .editor-breadcrumb-actions button.editor-breadcrumb-download:active,
+html[data-mixdog-mobile-tabs] .file-download-button:active,
+html[data-mixdog-mobile-tabs] .dock-file-menu button:active:not(:disabled) {
+  background: var(--mx-hover);
+}
+html[data-mixdog-mobile-tabs] .dock-file-menu button {
+  min-height: var(--mx-touch-row-main);
+}
+
+/* ── Phone main screens, Direction 1 (design/mockups/main-window-polish) ──
+   One bar system, measured from the real main bar: 60px band, centre y 30,
+   logo slot 44 at x 8 (centre 30), 44px pill from x 56, the last right icon
+   centred 26.5 from the edge, no dividers. The session main keeps its
+   structure; its pill, user block and tool card share one step-up tone and
+   the composer lifts slightly. */
+:root[data-mixdog-mobile-tabs]:not([data-mixdog-theme="light"]) {
+  --mx-d1-step: #1d1d21;
+  --mx-user-bubble: var(--mx-d1-step);
+  /* The composer keeps the PC surface, outline and lift tokens: a phone-only
+     #1d1d22 plate with a 4% top highlight matched the user bubble and drew no
+     edge, so the bar read as an unframed, off-tone strip. */
+}
+:root[data-mixdog-mobile-tabs]:not([data-mixdog-theme="light"]) .workspace-tab-compact-current,
+:root[data-mixdog-mobile-tabs]:not([data-mixdog-theme="light"]) .workspace-tab-compact-current:hover:not(:active),
+:root[data-mixdog-mobile-tabs]:not([data-mixdog-theme="light"]) .tool-activity .tool-activity-content {
+  background: var(--mx-d1-step);
+}
+/* The list keeps the PC's hairline dividers and no section labels; Mixy is
+   a raised card, unread a bold name and a silver count pill, typing dots. */
+/* The card is the row itself, so its hover and selected fills (10-rail-pages)
+   take the same inset and radius instead of a full-width plate behind it. */
+html[data-mixdog-mobile-tabs] .utility-dock .agent-chat-row[data-kind="contact"][data-agent-contact="lead"] {
+  margin: 0;
+  overflow: hidden;
+  border-radius: 16px;
+}
+html[data-mixdog-mobile-tabs]
+  .utility-dock
+  .agent-chat-row[data-kind="contact"][data-agent-contact="lead"]:not(.selected):not(:hover) {
+  background: #18181d;
+}
+html[data-mixdog-mobile-tabs] .agent-chat-status[data-kind="unread"] {
+  color: #111113;
+  background: #e4e5e8;
+}
+html[data-mixdog-mobile-tabs] .agent-chat-status[data-kind="running"] > :not(.sr-only) {
+  display: none;
+}
+html[data-mixdog-mobile-tabs] .agent-chat-status[data-kind="running"]::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  margin-right: 14px;
+  border-radius: 50%;
+  background: #b9bfca;
+  box-shadow:
+    7px 0 #b9bfca,
+    14px 0 #b9bfca;
+  animation: mx-list-typing 1.2s ease-in-out infinite;
+}
+@keyframes mx-list-typing {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-mixdog-mobile-tabs] .agent-chat-status[data-kind="running"]::before {
+    animation: none;
+  }
 }

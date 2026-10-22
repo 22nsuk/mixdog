@@ -66,11 +66,65 @@ export function agentPoolStore(host?: DesktopApi): AgentPoolStore {
   return created;
 }
 
+/** Structural equality of two pool rows (plain JSON from the host). */
+function samePoolValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every(
+    (key) =>
+      Object.hasOwn(right, key) &&
+      samePoolValue((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key])
+  );
+}
+
+/** The next snapshot with every unchanged row kept as the object already
+ *  published, and the previous array itself when nothing changed. Every
+ *  reconcile (each 2 s per poller) and push delivers fresh objects; without
+ *  this each one re-rendered every pool subscriber — six session sidebars,
+ *  the tab strip, the island and every agent row — with identical content. */
+function sharePoolRows(previous: DesktopAgentPoolRow[] | null, next: DesktopAgentPoolRow[]): DesktopAgentPoolRow[] {
+  if (!previous) return next;
+  const identity = (row: DesktopAgentPoolRow) => `${row.sessionId}\0${desktopAgentIdentity(row)}`;
+  const byIdentity = new Map(previous.map((row) => [identity(row), row]));
+  let changed = previous.length !== next.length;
+  const shared = next.map((row, index) => {
+    const prior = byIdentity.get(identity(row));
+    const kept = prior && samePoolValue(prior, row) ? prior : row;
+    if (kept !== previous[index]) changed = true;
+    return kept;
+  });
+  return changed ? shared : previous;
+}
+
+/** A row that stays running keeps its run's origin: a snapshot (stale, or the
+ *  first after a reconnect) that carries an older turn start or none must not
+ *  move the elapsed backwards. A newer stamp is a new turn and wins. */
+function keepRunOrigin(previous: DesktopAgentPoolRow[] | null, next: DesktopAgentPoolRow[]): DesktopAgentPoolRow[] {
+  if (!previous) return next;
+  const identity = (row: DesktopAgentPoolRow) => `${row.sessionId}\0${desktopAgentIdentity(row)}`;
+  const byIdentity = new Map(previous.map((row) => [identity(row), row]));
+  return next.map((row) => {
+    const prior = byIdentity.get(identity(row));
+    if (!prior || !isActiveDesktopAgentEntry(prior) || !isActiveDesktopAgentEntry(row)) return row;
+    const origin = timeMs(prior.turnStartedAt);
+    if (!origin || timeMs(row.turnStartedAt) >= origin) return row;
+    return { ...row, turnStartedAt: prior.turnStartedAt };
+  });
+}
+
 function publishAgentPool(store: AgentPoolStore, rows: unknown): void {
-  // Every snapshot passes the cancellation ledger: the pool's heartbeat
-  // sidecar re-declares a session `running` once the durable index drops its
-  // cancelled row, and that promotion is a stale lease, not new work.
-  store.rows = store.cancellations.apply(Array.isArray(rows) ? (rows as DesktopAgentPoolRow[]) : []);
+  // Every snapshot passes the cancellation ledger: the daemon still reports a
+  // cancelled session as running until its turn unwinds, and a snapshot that
+  // shows it running again after the cancel is a stale report, not new work.
+  const next = sharePoolRows(
+    store.rows,
+    keepRunOrigin(store.rows, store.cancellations.apply(Array.isArray(rows) ? (rows as DesktopAgentPoolRow[]) : []))
+  );
+  if (next === store.rows) return;
+  store.rows = next;
   for (const listener of store.listeners) listener();
 }
 
@@ -146,7 +200,7 @@ function countOrNull(value: unknown): number | null {
 }
 
 /** The runtime's cumulative token totals of one row, or null when absent or malformed. */
-export function agentUsageTotals(value: unknown): DesktopAgentPoolUsage | null {
+function agentUsageTotals(value: unknown): DesktopAgentPoolUsage | null {
   const usage = record(value);
   const inputTokens = countOrNull(usage.inputTokens);
   const outputTokens = countOrNull(usage.outputTokens);
@@ -268,9 +322,12 @@ function mergeLiveAgentSummary(current: LiveAgentSummary, next: LiveAgentSummary
         ? next.status
         : current.status,
     // A twin that reports a pending user approval wins over plain work: the
-    // agent is blocked on the user whichever row saw it first.
+    // agent is blocked on the user whichever row saw it first. A twin that
+    // sees it parked on its background task likewise wins over running.
     state:
-      next.state === 'cancel-unconfirmed' || (next.state === 'needs-user' && current.state !== 'cancel-unconfirmed')
+      next.state === 'cancel-unconfirmed' ||
+      (next.state === 'needs-user' && current.state !== 'cancel-unconfirmed') ||
+      (next.state === 'waiting' && current.state === 'running')
         ? next.state
         : current.state,
     queued: current.queued && next.queued,
@@ -523,6 +580,8 @@ export interface IslandAgentRow {
   node: AgentActivityNode;
   state: DesktopAgentActivityState;
   waitingForTasks: boolean;
+  /** Idle, done or cancelled: listed after the active work. */
+  finished: boolean;
 }
 
 const ISLAND_AGENT_STATES: ReadonlySet<DesktopAgentActivityState> = new Set([
@@ -537,8 +596,9 @@ const ISLAND_AGENT_STATES: ReadonlySet<DesktopAgentActivityState> = new Set([
 ]);
 
 /** The agents the composer island lists for one session: its group in the
- *  Agents window (same grouping, nesting and depth-first order), minus the
- *  session's own Lead row and every agent that is idle, done or cancelled. */
+ *  Agents window (same grouping, nesting and depth-first order) minus the
+ *  session's own Lead row, finished agents included. Each top-level subtree
+ *  stays whole; subtrees with active work come first, finished ones after. */
 export function islandAgentRows(
   pool: readonly DesktopAgentPoolRow[] | null | undefined,
   ownerSessionId: string
@@ -553,10 +613,15 @@ export function islandAgentRows(
         hasPendingDesktopAgentWork(agent)
       );
       const state = desktopAgentActivityState(node.agent, { waitingForTasks });
-      const own = node.sessionId === ownerSessionId || !ISLAND_AGENT_STATES.has(state);
-      return [...(own ? [] : [{ node, state, waitingForTasks }]), ...walk(node.children)];
+      const own = node.sessionId === ownerSessionId;
+      const row = { node, state, waitingForTasks, finished: !ISLAND_AGENT_STATES.has(state) };
+      return [...(own ? [] : [row]), ...walk(node.children)];
     });
-  return walk(group.nodes);
+  // The Lead's children are the units under a Lead row; otherwise the top rows.
+  const units = group.nodes.flatMap((node) => (node.sessionId === ownerSessionId ? node.children : [node]));
+  const blocks = units.map((unit) => walk([unit]));
+  const active = (block: IslandAgentRow[]) => block.some((row) => !row.finished);
+  return [...blocks.filter(active), ...blocks.filter((block) => !active(block))].flat();
 }
 
 /** Depth-first render order: a parent is immediately followed by its subtree. */
@@ -583,16 +648,17 @@ export function visibleAgentTreeRows(
 function poolRowSeedAt(agent: DesktopAgentPoolRow): number {
   const idle = timeMs(agent.idleSince);
   if (idle) return idle;
-  // A working row has NO idle stamp, and its updatedAt is the live heartbeat:
-  // ranking on it made every running session climb on each tick, so cards
+  // A working row has NO idle stamp, and its updatedAt keeps advancing while
+  // it runs: ranking on it made every running session climb on each tick, so cards
   // leapfrogged mid-turn. Creation is frozen for the whole lifetime, so a
   // live row holds its place until it stops.
   return timeMs(agent.createdAt) || timeMs(agent.startedAt) || timeMs(agent.turnStartedAt);
 }
 
 /** Sticky ordering stamp for one owner group. The pool decides `working` from
- *  a 2-minute heartbeat freshness window, so `idleSince` can vanish and come
- *  back mid-turn and a raw ranking swapped rows on every flip. A group's stamp
+ *  the daemon's in-memory running state, so `idleSince` can vanish and come
+ *  back as a session starts and settles turns and a raw ranking swapped rows
+ *  on every flip. A group's stamp
  *  therefore only ever ADVANCES, and only when a genuinely newer turn start or
  *  completion lands. */
 export function stickyGroupOrder(
@@ -603,7 +669,7 @@ export function stickyGroupOrder(
   const prior = previous.get(ownerId) || 0;
   // Two moments move a group, and both are FROZEN values: the turn it started
   // and the moment it went idle.
-  // The live heartbeat in updatedAt stays out of the ranking, so a running
+  // The advancing updatedAt stays out of the ranking, so a running
   // session climbs once and then holds its slot for the whole turn.
   const moment = Math.max(0, ...agents.map((agent) => Math.max(timeMs(agent.idleSince), timeMs(agent.turnStartedAt))));
   if (moment > prior) return moment;

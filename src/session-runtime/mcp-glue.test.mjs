@@ -74,7 +74,10 @@ test('a connect that needs an OAuth sign-in is reported as sign-in required, not
   assert.equal(remote.connected, false);
   assert.equal(remote.enabled, true);
   assert.equal(remote.error, null);
-  assert.deepEqual(remote.oauth, { signedIn: false, lastError: 'MCP OAuth reauthenticationRequired: sign in to connect' });
+  assert.deepEqual(remote.oauth, {
+    signedIn: false,
+    lastError: 'MCP OAuth reauthenticationRequired: sign in to connect',
+  });
   assert.equal(status.failedCount, 0);
   const broken = status.servers.find((row) => row.name === 'broken');
   assert.equal(broken.oauth, undefined);
@@ -168,6 +171,24 @@ test('a disable cancels the pending login of the connect it queues behind before
   ]);
 });
 
+test('awaitInitialMcpConnect returns at the caller cap while a slow server is still handshaking', async () => {
+  const state = { mcpFailures: [], mcpConnectGeneration: 0, mcpConnectInFlight: new Promise(() => {}) };
+  const glue = createMcpGlue({
+    mcpClient: {
+      resolveMcpTransportKind: () => 'http',
+      getMcpServerStatus: () => [],
+      resolveMcpStartupTimeoutMs: () => 30000,
+    },
+    getConfig: () => ({ mcpServers: { slow: { type: 'http', url: 'http://127.0.0.1:1/mcp' } } }),
+    getCurrentCwd: () => process.cwd(),
+    state,
+  });
+  const started = Date.now();
+  await glue.awaitInitialMcpConnect(40);
+  const waited = Date.now() - started;
+  assert.ok(waited >= 30 && waited < 1000, `capped wait, got ${waited}ms`);
+});
+
 test('awaitInitialMcpConnect waits for the largest per-server startup budget', async () => {
   const seen = [];
   const state = { mcpFailures: [], mcpConnectGeneration: 0, mcpConnectInFlight: new Promise((r) => setTimeout(r, 60)) };
@@ -188,6 +209,64 @@ test('awaitInitialMcpConnect waits for the largest per-server startup budget', a
   await glue.awaitInitialMcpConnect();
   assert.ok(Date.now() - started >= 50, 'waited past the short budget for the long one');
   assert.deepEqual(seen.sort(), [5, undefined]);
+});
+
+function makeReconnectGate({ startupMs, connectMs }) {
+  const live = [];
+  const state = { mcpFailures: [], mcpConnectGeneration: 0, mcpConnectInFlight: null };
+  let releaseInitial;
+  state.mcpConnectInFlight = new Promise((r) => {
+    releaseInitial = r;
+  });
+  const glue = createMcpGlue({
+    mcpClient: {
+      resolveMcpTransportKind: () => 'stdio',
+      getMcpServerStatus: () => [],
+      resolveMcpStartupTimeoutMs: () => startupMs,
+      disconnectAll: async () => {},
+      connectMcpServers: async () => {
+        if (connectMs === Infinity) return new Promise(() => {});
+        await new Promise((r) => setTimeout(r, connectMs));
+        live.push('mcp__srv__tool');
+      },
+    },
+    getConfig: () => ({ mcpServers: { srv: { command: 'x' } } }),
+    getCurrentCwd: () => process.cwd(),
+    state,
+  });
+  return { glue, live, state, releaseInitial };
+}
+
+test('awaitInitialMcpConnect follows a reconnect that replaces the in-flight promise, so its tools fold on the first turn', async () => {
+  const { glue, live, releaseInitial } = makeReconnectGate({ startupMs: 2000, connectMs: 60 });
+  const gate = glue.awaitInitialMcpConnect();
+  const reconnect = glue.connectConfiguredMcp({ reset: true });
+  releaseInitial();
+  await gate;
+  assert.deepEqual(live, ['mcp__srv__tool'], 'gate returned only after the replacement connect registered its tools');
+  await reconnect;
+});
+
+test('awaitInitialMcpConnect keeps ONE fixed deadline across replacement connects', async () => {
+  const { glue, releaseInitial } = makeReconnectGate({ startupMs: 150, connectMs: Infinity });
+  const started = Date.now();
+  const gate = glue.awaitInitialMcpConnect();
+  glue.connectConfiguredMcp({ reset: true });
+  await new Promise((r) => setTimeout(r, 100));
+  releaseInitial();
+  await gate;
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 140 && elapsed < 400, `released at the original deadline, got ${elapsed}ms`);
+});
+
+test('awaitInitialMcpConnect skips waiting with no connect in flight or a disabled startup budget', async () => {
+  const idle = makeReconnectGate({ startupMs: 2000, connectMs: 0 });
+  idle.state.mcpConnectInFlight = null;
+  const t0 = Date.now();
+  await idle.glue.awaitInitialMcpConnect();
+  const off = makeReconnectGate({ startupMs: 0, connectMs: 0 });
+  await off.glue.awaitInitialMcpConnect();
+  assert.ok(Date.now() - t0 < 100);
 });
 
 test('a root marker alone never makes a configured server plugin-owned', () => {

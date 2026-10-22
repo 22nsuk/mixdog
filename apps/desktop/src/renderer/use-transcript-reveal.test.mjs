@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { installTestDom } from './test-support/test-dom.mjs';
-import { useTranscriptReveal } from './use-transcript-reveal';
+import { ENTRY_CHROME_MAX_MS, ENTRY_REVEAL_MAX_MS, useTranscriptReveal } from './use-transcript-reveal';
 
-function mount(t) {
+function mount(t, { eager = false } = {}) {
   let now = 0;
   let frameId = 0;
   const frames = new Map();
@@ -41,6 +41,7 @@ function mount(t) {
       content,
       scope,
       hasScrollGesture,
+      eager,
     });
     return null;
   }
@@ -89,6 +90,38 @@ test('returning to a session after an interrupted entry waits for its own reveal
   assert.equal(entry.revealed(), true);
 });
 
+test('a visit whose committed geometry is already final reveals in its first frame', async (t) => {
+  const entry = mount(t);
+  entry.ready();
+  entry.tick(16);
+  entry.tick(32);
+  assert.equal(entry.revealed(), true);
+  entry.visit('other');
+  assert.equal(entry.revealed(), false);
+  // The commit's own sample is taken once its microtasks (the end pin) ran.
+  await Promise.resolve();
+  entry.tick(48);
+  assert.equal(entry.revealed(), true, 'no blank frame is painted before the restored rows');
+});
+
+test('a dock still easing to its height holds the entry reveal', async (t) => {
+  const entry = mount(t);
+  entry.ready();
+  const slot = document.createElement('div');
+  slot.className = 'composer-island-slot';
+  slot.setAttribute('data-motion', '');
+  document.getElementById('scope').append(slot);
+  await Promise.resolve();
+  entry.tick(16);
+  entry.tick(32);
+  assert.equal(entry.revealed(), false, 'the viewport the tail is pinned to is still moving');
+  slot.removeAttribute('data-motion');
+  entry.tick(48);
+  assert.equal(entry.revealed(), false, 'the settled dock needs a stable frame');
+  entry.tick(64);
+  assert.equal(entry.revealed(), true);
+});
+
 test('entry waits past one second for dock chrome, then reveals only after stable frames', (t) => {
   const entry = mount(t);
   entry.tick(16);
@@ -104,28 +137,59 @@ test('entry waits past one second for dock chrome, then reveals only after stabl
   assert.equal(entry.revealed(), true, 'live updates never cover an entered conversation again');
 });
 
-test('a slow dock stays covered past two seconds and reveals at its settled height', (t) => {
+test('a dock that never answers cannot hold the laid-out transcript past the chrome bound', (t) => {
   const entry = mount(t);
-  entry.tick(1_999);
+  entry.tick(16);
+  entry.tick(ENTRY_CHROME_MAX_MS - 16);
+  assert.equal(entry.revealed(), false, 'chrome is still waited on inside the bound');
+  entry.tick(ENTRY_CHROME_MAX_MS);
+  assert.equal(entry.revealed(), false, 'the bound frame needs one stable sample');
+  entry.tick(ENTRY_CHROME_MAX_MS + 16);
+  assert.equal(entry.revealed(), true, 'rows are laid out; the review bar may appear late');
+  assert.ok(document.querySelector('[data-entry-pending]'), 'chrome never resolved');
+});
+
+test('the chrome bound counts total wait, not time since the last pending frame', (t) => {
+  const entry = mount(t);
+  for (let time = 16; time < ENTRY_CHROME_MAX_MS; time += 250) entry.tick(time);
   assert.equal(entry.revealed(), false);
-  entry.tick(2_000);
-  assert.equal(entry.revealed(), false);
-  entry.tick(5_000);
-  assert.equal(entry.revealed(), false);
-  entry.ready();
-  entry.tick(5_016);
-  assert.equal(entry.revealed(), false);
-  entry.tick(5_032);
+  entry.tick(ENTRY_CHROME_MAX_MS);
+  entry.tick(ENTRY_CHROME_MAX_MS + 16);
   assert.equal(entry.revealed(), true);
+});
+
+test('a phone entry reveals its rows in the commit, without waiting on dock chrome or a stable frame', async (t) => {
+  const entry = mount(t, { eager: true });
+  assert.ok(document.querySelector('[data-entry-pending]'), 'the dock chrome is still undecided');
+  await act(async () => {});
+  assert.equal(entry.revealed(), true, 'the latest messages paint in the frame they arrive');
+});
+
+test('a phone entry still holds a row whose Markdown body has not rendered', async (t) => {
+  const entry = mount(t, { eager: true });
+  const suspended = document.createElement('div');
+  suspended.setAttribute('data-transcript-pending', '');
+  document.getElementById('content').append(suspended);
+  entry.visit('next');
+  await act(async () => {});
+  entry.tick(16);
+  assert.equal(entry.revealed(), false, 'an empty row would grow under the reader a frame later');
+  suspended.remove();
+  entry.tick(32);
+  assert.equal(entry.revealed(), true, 'revealed in the first frame its rows hold content');
 });
 
 test('row settling still has a bounded wait after dock readiness', (t) => {
   const entry = mount(t);
   entry.tick(3_000);
   entry.ready();
-  document.getElementById('content').setAttribute('data-transcript-pending', '');
+  const suspended = document.createElement('div');
+  suspended.setAttribute('data-transcript-pending', '');
+  document.getElementById('content').append(suspended);
   entry.tick(3_016);
   assert.equal(entry.revealed(), false);
-  entry.tick(5_000);
+  entry.tick(3_000 + ENTRY_REVEAL_MAX_MS - 16);
+  assert.equal(entry.revealed(), false);
+  entry.tick(3_000 + ENTRY_REVEAL_MAX_MS);
   assert.equal(entry.revealed(), true);
 });

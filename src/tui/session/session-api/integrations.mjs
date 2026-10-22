@@ -38,8 +38,8 @@ export function createSessionIntegrationsApi(bag, { oauthFlows }) {
     getQuotaHistory: async (options = {}) => {
       return await runtime.getQuotaHistory?.(options);
     },
-    getSessionUsage: async () => {
-      return await runtime.getSessionUsage?.();
+    getSessionUsage: async (options = {}) => {
+      return await runtime.getSessionUsage?.(options);
     },
     consumeCodexRateLimitResetCredit: async (options = {}) => {
       // Desktop capability parity: without this delegation the session runtime
@@ -51,6 +51,12 @@ export function createSessionIntegrationsApi(bag, { oauthFlows }) {
       turnReviewReply((reviewOptions) => runtime.getTurnReviewDiff?.(reviewOptions), options),
     getSessionReviewDiff: async () => {
       return (await runtime.getSessionReviewDiff?.()) ?? { supported: false, files: [], patch: '' };
+    },
+    getSessionReviewFilePatch: async (file, oldPath) => {
+      return (await runtime.getSessionReviewFilePatch?.(file, oldPath)) ?? { supported: false, patch: '' };
+    },
+    getTurnReviewFilePatch: async (file) => {
+      return (await runtime.getTurnReviewFilePatch?.(file)) ?? { supported: false, patch: '' };
     },
     revertTurnReview: async (checkpointId) => {
       return await requireRuntimeMethod('revertTurnReview', 'Turn review revert is unavailable')(checkpointId);
@@ -133,6 +139,7 @@ export function createSessionIntegrationsApi(bag, { oauthFlows }) {
       (result) => `custom provider saved: ${result.id}`
     ),
     updateCustomProviderModel: (id, modelId, patch) => runtime.updateCustomProviderModel(id, modelId, patch),
+    setModelPreferences: (provider, changes) => runtime.setModelPreferences(provider, changes),
     removeCustomProvider: async (id) => {
       const result = await runtime.removeCustomProvider(id);
       refreshRouteStats();
@@ -142,11 +149,6 @@ export function createSessionIntegrationsApi(bag, { oauthFlows }) {
     testCustomProvider: (input) => runtime.testCustomProvider(input),
     checkCustomProviderKeyEnv: (name) => runtime.checkCustomProviderKeyEnv(name),
     discoverCustomProviderModels: (input) => runtime.discoverCustomProviderModels(input),
-    saveOpenCodeGoUsageAuth: async (opts) => {
-      await runtime.saveOpenCodeGoUsageAuth(opts);
-      pushNotice('OpenCode Go usage auth saved', 'info');
-      return true;
-    },
     saveOpenAIUsageSessionKey: async (secret) => {
       await runtime.saveOpenAIUsageSessionKey(secret);
       pushNotice('OpenAI usage auth saved', 'info');
@@ -188,6 +190,14 @@ export function createSessionIntegrationsApi(bag, { oauthFlows }) {
     runScheduleNow: announced(
       (name) => runtime.runScheduleNow(name),
       (_result, name) => `schedule ran: ${name}`
+    ),
+    runWebhookNow: announced(
+      (name) => runtime.runWebhookNow(name),
+      (_result, name) => `webhook ran: ${name}`
+    ),
+    retryRoutineDelivery: announced(
+      (kind, name) => runtime.retryRoutineDelivery(kind, name),
+      (_result, kind, name) => `${kind} result delivered: ${name}`
     ),
     saveWebhook: announced(
       (entry) => runtime.saveWebhook(entry),

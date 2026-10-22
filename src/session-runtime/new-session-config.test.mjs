@@ -102,9 +102,6 @@ function fixture() {
       invalidateOutputStyleStatusCache() {
         calls.push('invalidate-style');
       },
-      invalidateSkills() {
-        calls.push('invalidate-skills');
-      },
       connectConfiguredMcp: async () => {
         calls.push(['mcp', structuredClone(rt.config.mcpServers)]);
       },
@@ -277,7 +274,11 @@ test('the creation boundary refreshes before memory/tools/workflow, but skips an
     },
     reg: { getProvider: () => ({}) },
     cfgMod: f.cfgMod,
-    activeWorkflowContext: (config) => ({ summary: config.workflow, context: config.workflow.active }),
+    activeWorkflowContext: (config) => ({
+      summary: config.workflow,
+      packContext: config.workflow.active,
+      leadPromptParts: () => ({}),
+    }),
     hooks: { emit() {}, dispatch: async () => ({}) },
     hookCommonPayload: (value) => value,
     mcpClient: { getMcpTools: () => [] },
@@ -316,4 +317,17 @@ test('the creation boundary refreshes before memory/tools/workflow, but skips an
   assert.equal(next.model, 'next-only');
   assert.equal(next.coreMemoryContext, 'old memory');
   assert.equal(creations, 2);
+});
+
+test('a model picked for a still-empty conversation survives the first creation reload while no Lead model is configured', async () => {
+  const f = fixture();
+  f.root.agent = { ...configFor(''), presets: [], default: undefined };
+  const runtime = f.runtime();
+  assert.equal(runtime.rt.route.model || '', '');
+  runtime.rt.route = { ...runtime.rt.route, provider: 'test-provider', model: 'picked' };
+  await runtime.prepare();
+  assert.equal(runtime.rt.route.model, 'picked');
+  f.root.agent = configFor('configured');
+  await runtime.prepare();
+  assert.equal(runtime.rt.route.model, 'configured');
 });

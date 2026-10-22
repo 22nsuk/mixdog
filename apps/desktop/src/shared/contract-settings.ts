@@ -24,6 +24,11 @@ export interface DesktopTidyEngine {
   bytes?: number;
   /** How the user can provide a missing engine themselves. */
   installHint?: string;
+  /** Missing core engine that the Install/Retry control can download now. */
+  installable?: boolean;
+  /** Host-module engine whose probe has not answered yet: neither installed
+   *  nor known to be missing. */
+  probing?: boolean;
 }
 
 export type DesktopTidyInstallEngineStatus = 'pending' | 'downloading' | 'installed' | 'present' | 'skipped' | 'failed';
@@ -58,6 +63,8 @@ export interface DesktopTidyEngineStatus {
   /** Engine ids the built-in Install provisions. */
   core: string[];
   engines: DesktopTidyEngine[];
+  /** Some engine's host probe is still pending; ask again shortly. */
+  probing?: boolean;
   /** Null until this runtime has run an install. */
   installing: DesktopTidyInstallStatus | null;
 }
@@ -73,9 +80,13 @@ export type DesktopSettingKey =
   | 'turnNotifications'
   | 'usagePinned'
   | 'usageRailShortLong'
+  | 'usageAccountsExpanded'
+  | 'usageRailSlotsThree'
+  | 'usageRailSlotsAll'
   | 'computerControl'
   | 'computerObserveOnly'
   | 'browserControl'
+  | 'browserAutoSignIn'
   | 'computerInstalled'
   | 'browserInstalled';
 
@@ -98,6 +109,11 @@ export interface DesktopSettings {
   /** Pinned rail bars: false = the longest period only (default), true = the
    *  shortest plus the longest period as two bars. */
   usageRailShortLong: boolean;
+  /** Usage panel and rail show every account of a multi-account provider. */
+  usageAccountsExpanded: boolean;
+  /** Rail slot limit with expanded accounts: three on, else five; All overrides. */
+  usageRailSlotsThree: boolean;
+  usageRailSlotsAll: boolean;
   /** Opt-in: expose the agent `computer` tool that controls the local desktop
    *  (Windows). Default off — full-PC control is high risk. */
   computerControl: boolean;
@@ -107,6 +123,9 @@ export interface DesktopSettings {
   /** Opt-in: expose the agent `browser` tool over the in-app browser bridge.
    *  Default off; the browser pane itself stays available either way. */
   browserControl: boolean;
+  /** Browser Use signs in by itself with a saved login for the page's exact
+   *  origin (once per site per turn; 2FA/CAPTCHA go to the user). Default on. */
+  browserAutoSignIn: boolean;
   /** Extensions → Built-in install markers: the card presents Install first
    *  and only shows its toggle after activation. A profile that already had
    *  the control on is treated as installed (grandfathered). */

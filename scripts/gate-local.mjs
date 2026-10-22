@@ -32,6 +32,13 @@ if (failedPreChecks.length) {
   process.exit(1);
 }
 
+// Warning-level: a stale model list never blocks the gate.
+if (
+  spawnSync('node scripts/check-model-recommendations.mjs', { cwd: root, stdio: 'inherit', shell: true }).status !== 0
+) {
+  console.warn('[gate:local] warning: model recommendations stale or invalid (not blocking)');
+}
+
 const build = spawnSync('npm run build:spawn:test', { cwd: root, stdio: 'inherit', shell: true });
 if (build.status !== 0) {
   console.error('[gate:local] build:spawn:test failed');
@@ -41,11 +48,13 @@ if (build.status !== 0) {
 const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixdog-gate-local-'));
 const resourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixdog-gate-resources-'));
 const budget = gateTestBudget();
+// weight: relative worker share, roughly each leg's measured duration x its 3 workers
+// (runtime ~440s, runtime-slow ~545s, desktop fast ~390s, desktop slow ~280s).
 const legs = [
-  { name: 'runtime', cmds: ['npm test', 'npm run smoke:patch'] },
-  { name: 'desktop-tests-fast', cmds: ['npm test --prefix apps/desktop'] },
-  { name: 'runtime-slow', cmds: ['npm run test:slow'] },
-  { name: 'desktop-tests-slow', cmds: ['npm run test:slow --prefix apps/desktop'] },
+  { name: 'runtime', weight: 3, cmds: ['npm test', 'npm run smoke:patch'] },
+  { name: 'desktop-tests-fast', weight: 3, cmds: ['npm test --prefix apps/desktop'] },
+  { name: 'runtime-slow', weight: 4, cmds: ['npm run test:slow'] },
+  { name: 'desktop-tests-slow', weight: 2, cmds: ['npm run test:slow --prefix apps/desktop'] },
   { name: 'desktop', cmds: ['npm run build --prefix apps/desktop', 'npm run test:daemon:e2e --prefix apps/desktop'] },
 ];
 

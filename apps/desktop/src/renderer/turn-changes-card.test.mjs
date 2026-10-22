@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { installTestDom } from './test-support/test-dom.mjs';
-import { TurnChangesCard, TurnChangesContext } from './TurnChangesCard.tsx';
-import { resetTurnChangesCache } from './turn-changes-model.ts';
+import { TurnChangesCard, TurnChangesContext, TurnChangesUndo } from './TurnChangesCard.tsx';
+import { allChangesVisualized, resetTurnChangesCache, unvisualizedChanges } from './turn-changes-model.ts';
 import { useSessionDiffFileRequest } from './session-diff-focus.ts';
 
 const h = React.createElement;
@@ -30,7 +30,7 @@ const ready = (files, extra = {}) => ({
 });
 
 /** Mounts one card. `reply(request)` answers every capability call. */
-async function mountCard(t, { reply, surface = {}, turnChanges = {} }) {
+async function mountCard(t, { reply, surface = {}, turnChanges = {}, framed = false, visualized, undo = false }) {
   resetTurnChangesCache();
   const { dom, document, root } = installTestDom(t, {
     expose: ['HTMLElement', 'Node', 'Event', 'MouseEvent', 'CustomEvent'],
@@ -70,7 +70,15 @@ async function mountCard(t, { reply, surface = {}, turnChanges = {} }) {
         h(
           TurnChangesContext.Provider,
           { value: nextValue },
-          h(TurnChangesCard, { turnChanges: nextRef }),
+          undo
+            ? h(TurnChangesUndo, { turnChanges: nextRef, visualized })
+            : framed
+              ? h(TurnChangesCard, {
+                  turnChanges: nextRef,
+                  visualized,
+                  frame: (card) => h('div', { className: 'frame' }, card),
+                })
+              : h(TurnChangesCard, { turnChanges: nextRef, visualized }),
           h(RequestProbe)
         )
       );
@@ -98,6 +106,162 @@ test('none and missing replies render no card', async (t) => {
       assert.equal(view.calls[0].sessionId, 's1');
     });
   }
+});
+
+test('agent mode: the same card, seated by its frame only when it shows', async (t) => {
+  await t.test('the coding card, framed', async (t) => {
+    const two = await mountCard(t, { framed: true, reply: () => ready([file('a.ts'), file('src/b.ts')]) });
+    const card = two.q('.frame > .turn-changes-card');
+    assert.ok(card);
+    assert.equal(card.dataset.fileCount, '2');
+    assert.equal(two.qa('.turn-changes-file').length, 2, 'the same file rows');
+    assert.ok(card.querySelector('.turn-changes-view'), 'the same View changes action');
+    await two.click(card.querySelector('.turn-changes-view'));
+    assert.deepEqual(two.diffOpened, [true]);
+  });
+  await t.test('while its turn runs: no card, no frame', async (t) => {
+    const running = await mountCard(t, {
+      framed: true,
+      reply: () => ready([file('a.ts')]),
+      surface: { turnRunning: true },
+      turnChanges: { trailing: true },
+    });
+    assert.equal(running.q('.frame'), null);
+  });
+  await t.test('nothing changed: no card, no frame', async (t) => {
+    const none = await mountCard(t, { framed: true, reply: () => ready([]) });
+    assert.equal(none.q('.frame'), null);
+  });
+});
+
+// Entering a bot chat painted every bubble without its card, then each card
+// landed when its read answered and the chat jumped. Until the first read
+// answers the row is pending (the transcript's entry reveal waits for it).
+test('an unread card marks its row pending until the first read answers', async (t) => {
+  const pending = '[data-transcript-pending]';
+  await t.test('a read in flight: pending, then the card in its place', async (t) => {
+    let answer;
+    const view = await mountCard(t, { reply: () => new Promise((resolve) => (answer = resolve)) });
+    assert.ok(view.q(pending), 'pending while the read is in flight');
+    assert.equal(view.q('.turn-changes-card'), null);
+    await act(async () => answer(ready([file('mixdog-community-state.json', { additions: 1, deletions: 1 })])));
+    await settle();
+    assert.equal(view.q(pending), null);
+    assert.ok(view.q('.turn-changes-card'));
+  });
+  await t.test('a cached reply paints the card in the first render', async (t) => {
+    const first = await mountCard(t, { reply: () => ready([file('a.ts')]) });
+    assert.ok(first.q('.turn-changes-card'));
+    await first.render(first.value, { ...first.ref, checkpointId: 'other' });
+    await first.render();
+    assert.equal(first.q(pending), null, 'a remount on a cached reply is never pending');
+    assert.ok(first.q('.turn-changes-card'));
+  });
+  for (const [name, reply] of [
+    ['no change', () => ready([])],
+    ['a failed read', () => new Error('offline')],
+    ['a turn still recording', () => ({ ...ready([]), status: 'pending' })],
+  ]) {
+    await t.test(`${name}: the row is not left pending`, async (t) => {
+      const view = await mountCard(t, { reply });
+      assert.equal(view.q(pending), null);
+      assert.equal(view.q('.turn-changes-card'), null);
+    });
+  }
+  await t.test('a running turn is not read, so not pending', async (t) => {
+    const view = await mountCard(t, {
+      reply: () => new Promise(() => {}),
+      surface: { turnRunning: true },
+      turnChanges: { trailing: true },
+    });
+    assert.equal(view.q(pending), null);
+  });
+});
+
+test('a visualized file is its visualize card, not a diff row', async (t) => {
+  const absolute = `${ROOT}/design/mockups/app-skins/index.html`;
+  await t.test('every file visualized: no changes card', async (t) => {
+    const view = await mountCard(t, {
+      reply: () => ready([file('design/mockups/app-skins/index.html')]),
+      visualized: [absolute],
+    });
+    assert.equal(view.q('.turn-changes-card'), null);
+  });
+  await t.test('some visualized: the card lists only the rest, Undo still undoes the whole turn', async (t) => {
+    const view = await mountCard(t, {
+      reply: () =>
+        ready([file('design/mockups/app-skins/index.html', { additions: 9, deletions: 0 }), file('src/b.ts')]),
+      visualized: ['design/mockups/app-skins/index.html'],
+    });
+    const card = view.q('.turn-changes-card');
+    assert.equal(card.dataset.fileCount, '1');
+    assert.deepEqual(
+      view.qa('.turn-changes-base').map((node) => node.textContent),
+      ['b.ts']
+    );
+    assert.equal(view.q('.turn-changes-title strong').textContent, '1 file changed');
+    assert.match(view.q('.turn-changes-title .diff-stats').textContent, /\+3/);
+    await view.click(view.q('.turn-changes-action'));
+    await settle();
+    assert.deepEqual(view.calls.find((call) => call.capability === 'revertTurnChanges').args, ['cp', null, 7]);
+  });
+  await t.test('nothing visualized: the whole list, as before', async (t) => {
+    const view = await mountCard(t, { reply: () => ready([file('a.ts'), file('b.ts')]), visualized: [] });
+    assert.equal(view.q('.turn-changes-card').dataset.fileCount, '2');
+  });
+  await t.test('a same-named file in another folder is still listed (no suffix matching)', async (t) => {
+    const view = await mountCard(t, {
+      reply: () => ready([file('index.html'), file('site/index.html')]),
+      visualized: [`${ROOT}/index.html`],
+    });
+    assert.equal(view.q('.turn-changes-card').dataset.fileCount, '1');
+    assert.match(view.q('.turn-changes-card').textContent, /site\//);
+  });
+});
+
+test('a visualized target names the changed file by its full path, not its tail', () => {
+  const files = [file('index.html'), file('site/index.html'), file('src/a.ts')];
+  const names = (visualized, root = ROOT) => unvisualizedChanges(files, visualized, root).map((f) => f.path);
+  assert.deepEqual(names(['index.html']), ['site/index.html', 'src/a.ts']);
+  assert.deepEqual(names([`${ROOT}/index.html`]), ['site/index.html', 'src/a.ts']);
+  assert.deepEqual(names([`${ROOT}/site/index.html`]), ['index.html', 'src/a.ts']);
+  assert.deepEqual(names(['site/index.html']), ['index.html', 'src/a.ts']);
+  // A target outside the root is no changed file of the root.
+  assert.deepEqual(names(['C:/other/index.html']), ['index.html', 'site/index.html', 'src/a.ts']);
+  // Separators, `./`, `..` and drive-letter case are not identity.
+  assert.deepEqual(names(['.\\site\\..\\index.html']), ['site/index.html', 'src/a.ts']);
+  assert.deepEqual(names(['c:\\project\\APP\\Src\\a.ts']), ['index.html', 'site/index.html']);
+  // An outside file is recorded absolute.
+  assert.deepEqual(
+    unvisualizedChanges([file('D:/x/index.html'), file('index.html')], ['d:\\X\\INDEX.html'], ROOT).map((f) => f.path),
+    ['index.html']
+  );
+  assert.equal(allChangesVisualized(files, ['index.html', 'site/index.html', 'src/a.ts'], ROOT), true);
+  assert.equal(allChangesVisualized(files, ['index.html'], ROOT), false);
+});
+
+test('every file visualized: the visualize card carries the whole-turn Undo', async (t) => {
+  await t.test('all shown: Undo here, then Reapply', async (t) => {
+    const reply = (request) =>
+      request.capability === 'revertTurnChanges'
+        ? ready([file('site/a.html', { state: 'reverted' })], { revision: 8, canUndo: false, canReapply: true })
+        : ready([file('site/a.html')]);
+    const view = await mountCard(t, { reply, undo: true, visualized: ['site/a.html'] });
+    assert.equal(view.q('.turn-changes-card'), null);
+    assert.equal(view.q('.turn-changes-action').textContent, 'Undo');
+    await view.click(view.q('.turn-changes-action'));
+    await settle();
+    assert.deepEqual(view.calls.find((call) => call.capability === 'revertTurnChanges').args, ['cp', null, 7]);
+    assert.equal(view.q('.turn-changes-action').textContent, 'Reapply');
+  });
+  await t.test('a file the cards did not show keeps Undo on the changes card instead', async (t) => {
+    const view = await mountCard(t, {
+      reply: () => ready([file('site/a.html'), file('b.ts')]),
+      undo: true,
+      visualized: ['site/a.html'],
+    });
+    assert.equal(view.q('.turn-changes-action'), null);
+  });
 });
 
 test('pending retries with backoff and only then renders', async (t) => {

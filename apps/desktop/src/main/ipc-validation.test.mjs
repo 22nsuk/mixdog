@@ -12,6 +12,18 @@ import {
   requiredVisualizeTabCommand,
 } from './ipc-validation.ts';
 
+test('immediate resume validates its addressed session and turn at the desktop boundary', () => {
+  const request = { capability: 'retryFailedTurn', sessionId: 'sess_retry', args: ['sess_retry', 'turn:u1'] };
+  assert.deepEqual(requiredDesktopCapabilityRequest(request), request);
+  assert.throws(() => requiredDesktopCapabilityRequest({ ...request, args: [] }), TypeError);
+  assert.throws(() => requiredDesktopCapabilityRequest({ ...request, args: ['sess_retry', ''] }), TypeError);
+  assert.throws(() => requiredDesktopCapabilityRequest({ ...request, sessionId: 'sess_other' }), TypeError);
+  assert.throws(
+    () => requiredDesktopCapabilityRequest({ capability: 'retryFailedTurn', args: request.args }),
+    TypeError
+  );
+});
+
 test('an editor save without an encoding change passes the IPC and remote boundaries', () => {
   // IPC keeps `undefined`; the remote lane is JSON and sends `null`.
   assert.equal(requiredTextFileEncoding(undefined), undefined);
@@ -29,6 +41,18 @@ test('a model route selection carries the per-route autoEffort boolean like fast
   assert.deepEqual(requiredModelSelection({ ...base, autoEffort: false }), { ...base, autoEffort: false });
   assert.deepEqual(requiredModelSelection(base), base);
   assert.throws(() => requiredModelSelection({ ...base, autoEffort: 'off' }), /autoEffort must be a boolean/);
+});
+
+test('a selection carries the Lead fallback chain: leaf selections only', () => {
+  const base = { provider: 'openai', model: 'gpt-test', effort: 'high' };
+  const chain = { ...base, fallbacks: [{ provider: 'anthropic', model: 'claude-test' }] };
+  assert.deepEqual(requiredModelSelection(chain), chain);
+  assert.deepEqual(requiredModelSelection({ ...base, fallbacks: [] }), { ...base, fallbacks: [] });
+  assert.throws(() => requiredModelSelection({ ...base, fallbacks: 'x' }), /fallbacks must be an array/);
+  assert.throws(
+    () => requiredModelSelection({ ...base, fallbacks: [{ provider: 'a', model: 'b', fallbacks: [] }] }),
+    /leaf selections/
+  );
 });
 
 test('saveStarterGuideState passes only a well-formed guide state', () => {
@@ -78,6 +102,32 @@ test('the turn review bar reaches its diff with only a boolean refresh option', 
   }
 });
 
+test('session usage takes only a bounded list of session ids and the agents flag', () => {
+  const read = (args) => requiredDesktopCapabilityRequest({ capability: 'getSessionUsage', args, sessionId: 'lead-1' });
+  for (const args of [
+    [],
+    [{}],
+    [{ sessionIds: [] }],
+    [{ sessionIds: ['sess_a', 'agent-b'] }],
+    [{ agents: true }],
+    [{ sessionIds: ['sess_a'], agents: false }],
+  ]) {
+    assert.doesNotThrow(() => read(args), JSON.stringify(args));
+  }
+  for (const args of [
+    [null],
+    [{ agents: 'yes' }],
+    [{ agents: 1 }],
+    [{ sessionIds: 'sess_a' }],
+    [{ sessionIds: ['bad id'] }],
+    [{ sessionIds: Array.from({ length: 65 }, (_, i) => `s${i}`) }],
+    [{ sessionIds: [], days: 1 }],
+    [{}, {}],
+  ]) {
+    assert.throws(() => read(args), TypeError, JSON.stringify(args));
+  }
+});
+
 test('Local Provider and Code Tidy lifecycle requests pass the desktop IPC boundary', () => {
   assert.deepEqual(
     requiredDesktopCapabilityRequest({
@@ -109,6 +159,24 @@ test('Local Provider and Code Tidy lifecycle requests pass the desktop IPC bound
       args: ['tidy'],
     }
   );
+  assert.deepEqual(
+    requiredDesktopCapabilityRequest({
+      capability: 'installBuiltinFeature',
+      args: ['tidy', { engines: ['ruff'] }],
+    }).args,
+    ['tidy', { engines: ['ruff'] }]
+  );
+  for (const args of [
+    ['tidy', {}],
+    ['tidy', { engines: [] }],
+    ['tidy', { engines: ['../x'] }],
+    ['office', { engines: ['ruff'] }],
+  ]) {
+    assert.throws(
+      () => requiredDesktopCapabilityRequest({ capability: 'installBuiltinFeature', args }),
+      /engines:\[ids\] for tidy/
+    );
+  }
   assert.deepEqual(
     requiredDesktopCapabilityRequest({
       capability: 'setBuiltinToolEnabled',
@@ -147,8 +215,33 @@ test('desktop IPC still rejects unknown built-in lifecycle names', () => {
         capability: 'setBuiltinToolEnabled',
         args: ['thirdPartyRuntime', true],
       }),
-    /git, office, localProvider, tidy, autoEffort, or visualize/
+    /git, office, localProvider, tidy, autoEffort, visualize, or media/
   );
+});
+
+test('Media generation toggles but never installs, and its generator pin is a one-argument write', () => {
+  assert.deepEqual(requiredDesktopCapabilityRequest({ capability: 'setBuiltinToolEnabled', args: ['media', false] }), {
+    capability: 'setBuiltinToolEnabled',
+    args: ['media', false],
+  });
+  assert.throws(
+    () => requiredDesktopCapabilityRequest({ capability: 'installBuiltinFeature', args: ['media'] }),
+    /installBuiltinFeature requires/
+  );
+  assert.doesNotThrow(() =>
+    requiredDesktopCapabilityRequest({ capability: 'setMediaPin', args: [{ kind: 'image', lane: '' }] })
+  );
+});
+
+test('Model management saves one provider’s visibility and favorites as a checked list', () => {
+  const request = (args) => requiredDesktopCapabilityRequest({ capability: 'setModelPreferences', args });
+  assert.doesNotThrow(() => request(['openai', [{ model: 'gpt-5.5', hidden: true, favorite: false }]]));
+  assert.doesNotThrow(() => request(['openai', []]));
+  assert.throws(() => request(['openai']), /invalid number of arguments/);
+  assert.throws(() => request(['', []]), /provider id/);
+  assert.throws(() => request(['openai', [{ model: 'm', extra: 1 }]]), /unsupported field/);
+  assert.throws(() => request(['openai', [{ model: 'm', hidden: 'yes' }]]), /hidden is invalid/);
+  assert.throws(() => request(['openai', [{ model: '__proto__' }]]), /invalid/);
 });
 
 test('Visualize is a toggle-only built-in: it toggles but never installs', () => {

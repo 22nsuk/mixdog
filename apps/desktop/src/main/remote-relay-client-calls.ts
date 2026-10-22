@@ -1,9 +1,17 @@
 // What an attached phone's decrypted frame asks for, after the E2EE handshake:
 // transport-scoped registrations (lanes, visible sessions, view sync, resync)
 // answered here, and every other call queued into the host's remote methods.
-import { DESKTOP_CAPABILITIES } from '../shared/contract';
+import { DESKTOP_CAPABILITIES, DESKTOP_READ_CAPABILITIES } from '../shared/contract';
 import type { DesktopService } from './desktop-service-contract';
-import { VOICE_CALLS } from './remote-call-queue';
+import {
+  type LatestCall,
+  REVIEW_FILE_PATCH_CALLS,
+  SIDE_QUESTION_CALLS,
+  SIDE_QUESTION_CANCEL_CALL,
+  SLOW_CAPABILITY_READ_CALL,
+  SLOW_READ_CAPABILITIES,
+  VOICE_CALLS,
+} from './remote-call-queue';
 import { filterSessionIds, requiredSessionId } from './desktop-state';
 import { normalizeRemoteBrowserStreamOptions } from '../shared/remote-browser';
 import type { createBrowserRemoteStreams } from './remote-browser-streams';
@@ -21,6 +29,7 @@ import { isStateResyncFrame } from './state-delta';
 const SLOW_REMOTE_CALL_MS = 2_000;
 
 const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set(DESKTOP_CAPABILITIES);
+const READ_CAPABILITIES: ReadonlySet<string> = new Set(DESKTOP_READ_CAPABILITIES);
 
 // Names the capabilities behind a capability call, so the logs say which one
 // ran instead of only "invokeCapability". Only allow-listed names; never args.
@@ -32,6 +41,51 @@ function callCapabilities(method: string, params: unknown): string[] {
     const name = (request as { capability?: unknown } | null)?.capability;
     return typeof name === 'string' && KNOWN_CAPABILITIES.has(name) ? name : 'unknown';
   });
+}
+
+/** The lane key of a call: its method, or for a capability call the capability
+ *  name when that capability rides a slow-read, voice or side-question lane. */
+export function remoteCallQueueKey(method: string, statName: string): string {
+  if (statName.startsWith('invokeCapability:getTurnReviewDiff')) return 'invokeCapability:getTurnReviewDiff';
+  if (
+    statName === 'invokeCapability:getTurnChanges' ||
+    REVIEW_FILE_PATCH_CALLS.has(statName) ||
+    VOICE_CALLS.has(statName) ||
+    SIDE_QUESTION_CALLS.has(statName) ||
+    statName === SIDE_QUESTION_CANCEL_CALL
+  ) {
+    return statName;
+  }
+  // Read-only capabilities read like any other read: a quota/usage sweep on
+  // the slow-read lane, the rest overlapping in the general lane. As barriers
+  // they (and everything after them) waited for every in-flight read.
+  if (method === 'invokeCapability' || method === 'readCapabilities') {
+    const capabilities = statName.slice(method.length + 1).split('+');
+    if (capabilities.every((name) => READ_CAPABILITIES.has(name))) {
+      return capabilities.some((name) => SLOW_READ_CAPABILITIES.has(name))
+        ? SLOW_CAPABILITY_READ_CALL
+        : 'readCapabilities';
+    }
+  }
+  return method;
+}
+
+const SEARCH_SUPERSEDED = 'Search superseded by a newer query.';
+
+/** A file-name search's newest-wins scope: the same root and the same result
+ *  shape (limit, ignored files, folders), so one surface's keystrokes replace
+ *  each other while another surface's (or another root's) search stands. */
+function searchLatestCall(
+  call: { method?: unknown; params?: unknown } | null,
+  superseded: () => Promise<void>
+): LatestCall | undefined {
+  if (call?.method !== 'searchProjectFiles' || !Array.isArray(call.params)) return undefined;
+  const [root, , limit, includeIgnored, includeDirectories] = call.params;
+  if (typeof root !== 'string') return undefined;
+  return {
+    latest: JSON.stringify([root, limit ?? null, includeIgnored === true, includeDirectories === true]),
+    superseded,
+  };
 }
 
 /** The per-minute call summary key: the method, plus its capability names. */
@@ -242,39 +296,58 @@ export function createRelayClientCallDispatch(
     // and is read-only: it rides the slow-read lane instead of fencing
     // stat/read/submit calls behind it. Dictation rides its own voice lane.
     const statName = remoteCallStatName(String(call?.method ?? ''), call?.params);
-    let queueKey = String(call?.method ?? '');
-    if (statName.startsWith('invokeCapability:getTurnReviewDiff')) queueKey = 'invokeCapability:getTurnReviewDiff';
-    else if (statName === 'invokeCapability:getTurnChanges') queueKey = statName;
-    else if (VOICE_CALLS.has(statName)) queueKey = statName;
+    const queueKey = remoteCallQueueKey(String(call?.method ?? ''), statName);
     const methods = typeof deps.methods === 'function' ? deps.methods(clientId, client) : deps.methods;
-    const execution = client.callQueue.run(queueKey, async () => {
-      if (!deps.attached(clientId, client)) return;
-      const callStartedAt = Date.now();
-      const queueMs = callStartedAt - callQueuedAt;
-      const response = await executeRemoteFrame(methods, clearFrame);
-      const callMs = Date.now() - callStartedAt;
-      const method = typeof call?.method === 'string' && Object.hasOwn(methods, call.method) ? call.method : 'unknown';
-      if (callMs + queueMs >= SLOW_REMOTE_CALL_MS) {
-        const capabilities = callCapabilities(method, call?.params).join(',');
-        console.error(
-          `[mixdog-remote-slow-call] method=${method}` +
-            (capabilities ? ` capability=${capabilities}` : '') +
-            ` ms=${callMs} queueMs=${queueMs} queuedBehind=${client.pendingFrames}`
-        );
-      }
-      let responseBytes = 0;
-      if (response !== undefined && deps.attached(clientId, client)) {
-        await deps.sendEncryptedFrame(clientId, response, false, (bytes) => {
-          responseBytes += bytes;
-        });
-      }
-      if (deps.attached(clientId, client)) {
-        deps.recordCall(remoteCallStatName(method, call?.params), callMs, {
-          requestBytes: frameBytes,
-          responseBytes,
-        });
-      }
-    });
+    // A /btw call names its session: a queued side question that session's
+    // cancel (or newer side question) overtook is answered as canceled.
+    const sideSessionId = (Array.isArray(call?.params) ? (call.params[0] as { sessionId?: unknown } | null) : null)
+      ?.sessionId;
+    const sideCall =
+      typeof sideSessionId === 'string' && sideSessionId
+        ? {
+            sessionId: sideSessionId,
+            superseded: async () => {
+              if (typeof call?.id !== 'number' || !deps.attached(clientId, client)) return;
+              await deps.sendEncryptedFrame(clientId, { id: call.id, ok: false, error: 'Side question canceled.' });
+            },
+          }
+        : searchLatestCall(call, async () => {
+            if (typeof call?.id !== 'number' || !deps.attached(clientId, client)) return;
+            await deps.sendEncryptedFrame(clientId, { id: call.id, ok: false, error: SEARCH_SUPERSEDED });
+          });
+    const execution = client.callQueue.run(
+      queueKey,
+      async () => {
+        if (!deps.attached(clientId, client)) return;
+        const callStartedAt = Date.now();
+        const queueMs = callStartedAt - callQueuedAt;
+        const response = await executeRemoteFrame(methods, clearFrame);
+        const callMs = Date.now() - callStartedAt;
+        const method =
+          typeof call?.method === 'string' && Object.hasOwn(methods, call.method) ? call.method : 'unknown';
+        if (callMs + queueMs >= SLOW_REMOTE_CALL_MS) {
+          const capabilities = callCapabilities(method, call?.params).join(',');
+          console.error(
+            `[mixdog-remote-slow-call] method=${method}` +
+              (capabilities ? ` capability=${capabilities}` : '') +
+              ` ms=${callMs} queueMs=${queueMs} queuedBehind=${client.pendingFrames}`
+          );
+        }
+        let responseBytes = 0;
+        if (response !== undefined && deps.attached(clientId, client)) {
+          await deps.sendEncryptedFrame(clientId, response, false, (bytes) => {
+            responseBytes += bytes;
+          });
+        }
+        if (deps.attached(clientId, client)) {
+          deps.recordCall(remoteCallStatName(method, call?.params), callMs, {
+            requestBytes: frameBytes,
+            responseBytes,
+          });
+        }
+      },
+      sideCall
+    );
     // Observe early rejection while the decode queue is still settling.
     void execution.catch(() => undefined);
     return { execution };

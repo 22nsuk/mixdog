@@ -167,7 +167,11 @@ function officeTextForFile(file) {
     });
   if (file.ref) return memoized(officeTextMemo, `ref:${file.ref}\0${file.filename || ''}`, compute);
   if (file.part && inlineOfficeText.has(file.part)) return inlineOfficeText.get(file.part);
-  const key = createHash('sha256').update(file.filename || '').update('\0').update(file.data).digest('hex');
+  const key = createHash('sha256')
+    .update(file.filename || '')
+    .update('\0')
+    .update(file.data)
+    .digest('hex');
   const text = memoized(officeTextMemo, key, compute);
   if (file.part) inlineOfficeText.set(file.part, text);
   return text;
@@ -338,6 +342,24 @@ export function degradeMediaParts(parts) {
   return changed ? next : parts;
 }
 
+// The text of a document whose source is not base64 bytes: a text source is
+// its data, a content source its text blocks. A url / file-id source has no
+// bytes to read, so the request is rejected rather than silently dropped.
+function documentSourceText(part) {
+  const source = part.source;
+  let text = null;
+  if (part.type === 'document' && source?.type === 'text' && typeof source.data === 'string') text = source.data;
+  else if (part.type === 'document' && source?.type === 'content') {
+    text = contentToText(source.content, '');
+  }
+  if (text === null) {
+    const kind = part.type === 'document' ? `${source?.type || 'unknown'} source` : 'format';
+    throw new TypeError(`This provider accepts no document blocks and cannot read a document with a ${kind}.`);
+  }
+  const title = typeof part.title === 'string' && part.title ? part.title : '';
+  return title ? `--- ${title} ---\n${text}` : text;
+}
+
 function replacePdfParts(content, texts) {
   if (Array.isArray(content)) {
     let changed = false;
@@ -368,8 +390,12 @@ function replacePdfParts(content, texts) {
  * read error or a pdf.js environment failure propagates and nothing is cached.
  */
 export async function preparePdfTextForProvider(messages, provider) {
-  if (providerTakesNativePdf(provider) || !Array.isArray(messages)) return messages;
+  // A provider that declares `nativeDocuments === false` takes no document
+  // block of any kind: every document variant becomes text (or is rejected).
+  const noDocuments = provider?.nativeDocuments === false;
+  if ((providerTakesNativePdf(provider) && !noDocuments) || !Array.isArray(messages)) return messages;
   const found = [];
+  const texts = new Map();
   for (const message of messages) {
     for (const part of walkContentParts(message?.content)) {
       if (part.type !== 'file' && part.type !== 'document') continue;
@@ -381,14 +407,19 @@ export async function preparePdfTextForProvider(messages, provider) {
         continue;
       }
       if (file && fileKind(file) === 'pdf') found.push({ part, file });
+      else if (noDocuments && (file || part.type === 'document'))
+        texts.set(part, file ? textFormOfFilePart(part) : documentSourceText(part));
     }
   }
-  if (!found.length) return messages;
+  if (!found.length && !texts.size) return messages;
   const extracted = await Promise.all(found.map(({ file }) => pdfTextFor(file)));
-  const texts = new Map(found.map(({ part, file }, i) => [part, `--- ${fileLabel(file)} ---\n${extracted[i]}`]));
+  found.forEach(({ part, file }, i) => {
+    texts.set(part, `--- ${fileLabel(file)} ---\n${extracted[i]}`);
+  });
   return messages.map((message) => {
     // A message whose content is one bare part becomes a one-part array.
-    if (texts.has(message?.content)) return { ...message, content: [{ type: 'text', text: texts.get(message.content) }] };
+    if (texts.has(message?.content))
+      return { ...message, content: [{ type: 'text', text: texts.get(message.content) }] };
     const content = replacePdfParts(message?.content, texts);
     return content === message?.content ? message : { ...message, content };
   });
@@ -621,9 +652,17 @@ export function contentImageDescriptors(content) {
 // one-line description.
 // The page count (recorded by intake and by the read tool) rides on the part
 // itself, so an inline part and its stored reference carry the same one.
+// The text-layer character count (recorded with it) prices the text a native
+// reader extracts on top of each page image.
 function pdfDescriptor(sizeBytes, part) {
   const pageCount = Math.floor(Number(part?.pageCount));
-  return { mimeType: 'application/pdf', sizeBytes, ...(pageCount > 0 ? { pageCount } : {}) };
+  const textChars = Number(part?.textChars);
+  return {
+    mimeType: 'application/pdf',
+    sizeBytes,
+    ...(pageCount > 0 ? { pageCount } : {}),
+    ...(pageCount > 0 && Number.isFinite(textChars) && textChars >= 0 ? { textChars: Math.floor(textChars) } : {}),
+  };
 }
 
 export function contentFileDescriptors(content) {
@@ -658,7 +697,10 @@ export function contentMediaBytes(content, { nativePdf = true } = {}) {
     if (!part || typeof part !== 'object') continue;
     if (isAttachmentReference(part)) {
       if (part.type === 'image') bytes += Math.ceil((Number(part.sizeBytes) || 0) / 3) * 4;
-      else if (part.type === 'file' && countsAsMedia(String(part.mimeType || part.mediaType || 'application/pdf'), '')) {
+      else if (
+        part.type === 'file' &&
+        countsAsMedia(String(part.mimeType || part.mediaType || 'application/pdf'), '')
+      ) {
         bytes += Math.ceil((Number(part.sizeBytes) || 0) / 3) * 4;
       }
       continue;
@@ -882,6 +924,11 @@ function normalizeAnthropicPart(part) {
     } else {
       out = { type: 'text', text: fileFallbackText(file, kind) };
     }
+    // Citation settings and the model-only context belong to the document block.
+    if (out.type === 'document') {
+      if (part.citations) out.citations = part.citations;
+      if (part.context) out.context = part.context;
+    }
     if (part.cache_control) out.cache_control = part.cache_control;
     return out;
   }
@@ -935,13 +982,25 @@ function normalizeAnthropicPart(part) {
   if (part?.type === 'text' && isAttachmentReference(part)) {
     return { type: 'text', text: attachmentTextForPart(part) };
   }
+  // A media reference (attachment-reference.mjs) is a text part whose
+  // `attachmentReference` metadata stays in saved history. It is not a
+  // Messages API text-block field, and the API rejects the whole request for it.
+  if (part?.type === 'text' && part.attachmentReference !== undefined) {
+    const { attachmentReference: _internal, ...wirePart } = part;
+    return wirePart;
+  }
   return part;
 }
 
 // `nativePdf: false` marks a provider that takes a PDF as text: its PDFs were
 // converted by preparePdfTextForProvider, so a PDF part reaching these
 // normalizers is an error rather than a file block the provider cannot read.
-export function normalizeContentForOpenAIChat(content, { role = 'user', nativePdf = true } = {}) {
+//
+// `cacheControl: true` is a capability the caller grants to a gateway that
+// accepts Anthropic-style cache directives on text blocks (OpenRouter): text
+// parts keep their `cache_control`, and multipart system content stays an
+// array instead of being flattened. Off by default.
+export function normalizeContentForOpenAIChat(content, { role = 'user', nativePdf = true, cacheControl = false } = {}) {
   const parts = contentParts(content);
   if (!parts) return content;
   const out = [];
@@ -968,21 +1027,28 @@ export function normalizeContentForOpenAIChat(content, { role = 'user', nativePd
       }
       const fileUri = imageFileUriFromPart(part);
       if (fileUri) {
-        out.push({ type: 'image_url', image_url: { url: fileUri.fileUri } });
+        out.push({ type: 'image_url', image_url: { url: fileUri.fileUri, ...imageDetailField(part) } });
         continue;
       }
       const url = imageUrlFromPart(part);
       if (url) {
-        out.push({ type: 'image_url', image_url: { url } });
+        out.push({ type: 'image_url', image_url: { url, ...imageDetailField(part) } });
         continue;
       }
       const text = jsonFallbackFromPart(part, nativePdf);
-      if (text) out.push({ type: 'text', text });
+      if (text) {
+        const cache = cacheControl && part?.cache_control ? { cache_control: part.cache_control } : {};
+        out.push({ type: 'text', text, ...cache });
+      }
     } catch (error) {
       const unavailable = unavailableAttachmentText(part, error);
       if (unavailable === null) throw error;
       out.push({ type: 'text', text: unavailable });
     }
+  }
+  if (cacheControl && role === 'system') {
+    const blocks = out.filter((part) => part.type === 'text' && part.text);
+    if (blocks.length > 1 || blocks.some((part) => part.cache_control)) return blocks;
   }
   if (role !== 'user')
     return out
@@ -990,6 +1056,15 @@ export function normalizeContentForOpenAIChat(content, { role = 'user', nativePd
       .filter(Boolean)
       .join('\n');
   return out.length ? out : contentToText(content, '');
+}
+
+const RESPONSES_IMAGE_DETAILS = new Set(['low', 'high', 'auto', 'original']);
+
+// A caller-supplied image detail rides through; an unknown value is left out.
+function imageDetailField(part) {
+  const raw = part.detail ?? part.image_url?.detail ?? part.source?.detail;
+  const detail = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  return RESPONSES_IMAGE_DETAILS.has(detail) ? { detail } : {};
 }
 
 export function normalizeContentForOpenAIResponses(content, { role = 'user', nativePdf = true } = {}) {
@@ -1020,17 +1095,17 @@ export function normalizeContentForOpenAIResponses(content, { role = 'user', nat
       }
       const fileId = imageFileIdFromPart(part);
       if (fileId) {
-        out.push({ type: 'input_image', file_id: fileId });
+        out.push({ type: 'input_image', file_id: fileId, ...imageDetailField(part) });
         continue;
       }
       const fileUri = imageFileUriFromPart(part);
       if (fileUri) {
-        out.push({ type: 'input_image', image_url: fileUri.fileUri });
+        out.push({ type: 'input_image', image_url: fileUri.fileUri, ...imageDetailField(part) });
         continue;
       }
       const url = imageUrlFromPart(part);
       if (url) {
-        out.push({ type: 'input_image', image_url: url });
+        out.push({ type: 'input_image', image_url: url, ...imageDetailField(part) });
         continue;
       }
       const text = jsonFallbackFromPart(part, nativePdf);
@@ -1044,6 +1119,58 @@ export function normalizeContentForOpenAIResponses(content, { role = 'user', nat
   return out;
 }
 
+// Image types the Gemini API documents; an extension outside this map yields
+// no MIME type at all (FileData.mimeType is optional) instead of a guess.
+const GEMINI_IMAGE_EXTENSION_MIME = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+};
+
+function mimeFromImageUrl(url) {
+  let pathname = '';
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return undefined;
+  }
+  const ext = /\.([a-z0-9]+)$/i.exec(pathname)?.[1]?.toLowerCase();
+  return ext ? GEMINI_IMAGE_EXTENSION_MIME[ext] : undefined;
+}
+
+function trimmedMime(value) {
+  const mime = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return mime || undefined;
+}
+
+// Part-level metadata the Gemini API accepts beside inlineData/fileData.
+/** Supported Gemini part metadata (mediaResolution, videoMetadata) a caller put on `part`, camelCased. */
+export function geminiPartMetadata(part) {
+  const out = {};
+  if (!part || typeof part !== 'object') return out;
+  const mediaResolution = part.mediaResolution ?? part.media_resolution;
+  if (mediaResolution !== undefined && mediaResolution !== null) out.mediaResolution = mediaResolution;
+  const videoMetadata = part.videoMetadata ?? part.video_metadata;
+  if (videoMetadata !== undefined && videoMetadata !== null) out.videoMetadata = videoMetadata;
+  return out;
+}
+
+// FileData for an external URI: the MIME type comes from the part's own
+// declaration, else the URL's extension, else it is omitted.
+function geminiFileDataInfo(part, url) {
+  const fileData = part?.fileData || part?.file_data;
+  const declared = fileData
+    ? fileData.mimeType || fileData.mime_type || fileData.mediaType || fileData.media_type
+    : part?.mime_type || part?.mimeType || part?.media_type || part?.mediaType;
+  const fileUri = fileData?.fileUri || fileData?.file_uri || (part?.type === 'image' && part.uri) || url;
+  if (typeof fileUri !== 'string' || !fileUri) return null;
+  const mimeType = trimmedMime(declared) || trimmedMime(part?.image_url?.mime_type) || mimeFromImageUrl(fileUri);
+  return { fileUri, ...(mimeType ? { mimeType } : {}) };
+}
+
 export function normalizeContentForGeminiParts(content) {
   if (typeof content === 'string') return content ? [{ text: content }] : [];
   const parts = contentParts(content);
@@ -1054,21 +1181,21 @@ export function normalizeContentForGeminiParts(content) {
   const out = [];
   for (const part of parts) {
     try {
+      const meta = geminiPartMetadata(part);
       const file = fileInfo(part);
       if (file) {
         const kind = fileKind(file);
-        if (kind === 'pdf') out.push({ inlineData: { mimeType: 'application/pdf', data: file.data } });
+        if (kind === 'pdf') out.push({ inlineData: { mimeType: 'application/pdf', data: file.data }, ...meta });
         else out.push({ text: fileFallbackText(file, kind) });
         continue;
       }
       const inlineInfo = geminiInlineInfo(part);
       if (inlineInfo) {
-        out.push({ inlineData: { mimeType: inlineInfo.mimeType, data: inlineInfo.data } });
+        out.push({ inlineData: { mimeType: inlineInfo.mimeType, data: inlineInfo.data }, ...meta });
         continue;
       }
-      const fileUri = imageFileUriFromPart(part);
-      if (fileUri) {
-        out.push({ fileData: { mimeType: fileUri.mimeType, fileUri: fileUri.fileUri } });
+      if (imageFileUriFromPart(part)) {
+        out.push({ fileData: geminiFileDataInfo(part), ...meta });
         continue;
       }
       const fileId = imageFileIdFromPart(part);
@@ -1078,17 +1205,17 @@ export function normalizeContentForGeminiParts(content) {
       }
       const info = imageInfo(part);
       if (info) {
-        out.push({ inlineData: { mimeType: info.mimeType, data: info.data } });
+        out.push({ inlineData: { mimeType: info.mimeType, data: info.data }, ...meta });
         continue;
       }
       const url = imageUrlFromPart(part);
       const dataUrlInfo = imageInfoFromDataUrl(url);
       if (dataUrlInfo) {
-        out.push({ inlineData: { mimeType: dataUrlInfo.mimeType, data: dataUrlInfo.data } });
+        out.push({ inlineData: { mimeType: dataUrlInfo.mimeType, data: dataUrlInfo.data }, ...meta });
         continue;
       }
       if (url && !url.startsWith('data:')) {
-        out.push({ fileData: { mimeType: DEFAULT_IMAGE_MIME, fileUri: url } });
+        out.push({ fileData: geminiFileDataInfo(part, url), ...meta });
         continue;
       }
       const text = jsonFallbackFromPart(part);

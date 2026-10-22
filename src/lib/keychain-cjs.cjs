@@ -221,7 +221,10 @@ function dpApiFile(account) {
 function writeOwnerOnlyAtomicSync(file, text) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const temporary = path.join(dir, `.${path.basename(file)}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
+  const temporary = path.join(
+    dir,
+    `${path.basename(file)}.mixdog-tmp-${process.pid}-${randomBytes(4).toString('hex')}`
+  );
   let descriptor = null;
   try {
     descriptor = fs.openSync(temporary, 'wx', 0o600);
@@ -282,7 +285,8 @@ function darwinSet(account, value) {
 
 function darwinDelete(account) {
   const r = darwinRun(['delete-generic-password', '-a', account, '-s', SERVICE]);
-  if (r.status !== 0) throw new Error(`[keychain] security delete failed: ${r.stderr || r.stdout}`);
+  // Exit 44 is errSecItemNotFound: nothing stored, so nothing to delete.
+  if (r.status !== 0 && r.status !== 44) throw new Error(`[keychain] security delete failed: ${r.stderr || r.stdout}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +356,9 @@ function secretToolCheck(r) {
   }
   if (r.error) {
     keychainDebug('secret-tool failed to start', r.error.message);
-    throw new Error('[keychain] secret-tool could not be started — check that libsecret-tools is installed and a Secret Service is running');
+    throw new Error(
+      '[keychain] secret-tool could not be started — check that libsecret-tools is installed and a Secret Service is running'
+    );
   }
   return r;
 }
@@ -494,7 +500,10 @@ function onKeychainRecovered(listener) {
 // secret-tool cannot fix itself and is not retried.
 function _scheduleLinuxBackgroundRetry() {
   if (_linuxBgTimer || _keychainStatus.state === 'missing' || _gdbusMissing) return;
-  const delay = Math.min(LINUX_PREWARM_RETRY_MS * 2, LINUX_PREWARM_RETRY_MS + _linuxBgAttempt * (LINUX_PREWARM_RETRY_MS / 2));
+  const delay = Math.min(
+    LINUX_PREWARM_RETRY_MS * 2,
+    LINUX_PREWARM_RETRY_MS + _linuxBgAttempt * (LINUX_PREWARM_RETRY_MS / 2)
+  );
   _linuxBgAttempt++;
   _linuxBgTimer = setTimeout(async () => {
     _linuxBgTimer = null;
@@ -591,14 +600,10 @@ const LINUX_UNREACHABLE_MESSAGE =
   '[keychain] the keyring is not reachable — make sure it is running, then use Unlock keyring / Retry';
 function _noteKeychainFailure(error) {
   const message = String(error?.message || error);
-  const state =
-    error?.code === 'KEYRING_UNREACHABLE'
-      ? 'unreachable'
-      : /not installed/.test(message)
-        ? 'missing'
-        : /locked|timed out/.test(message)
-          ? 'locked'
-          : 'error';
+  let state = 'error';
+  if (error?.code === 'KEYRING_UNREACHABLE') state = 'unreachable';
+  else if (/not installed/.test(message)) state = 'missing';
+  else if (/locked|timed out/.test(message)) state = 'locked';
   _keychainStatus = { state, message };
 }
 
@@ -717,7 +722,8 @@ async function _prewarmLinuxOnce() {
     for (const account of accounts) {
       const value = await linuxGetAsync(account, remaining());
       if (value !== null) values.push([account, value]);
-    }    if (_cacheEpoch !== epoch) return;
+    }
+    if (_cacheEpoch !== epoch) return;
     // Replace, not merge: values the keyring now holds overwrite the cache and
     // cached accounts the keyring no longer has are dropped, so external CLI /
     // other-process add, replace and delete are picked up. A same-process
@@ -983,9 +989,11 @@ function win32Set(account, value) {
 }
 
 function win32Delete(account) {
-  const file = dpApiFile(account);
-  if (!fs.existsSync(file)) throw new Error(`[keychain] secret not found: ${account}`);
-  fs.unlinkSync(file);
+  try {
+    fs.unlinkSync(dpApiFile(account));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

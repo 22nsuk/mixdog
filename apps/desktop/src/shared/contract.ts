@@ -31,18 +31,30 @@ import type {
   DesktopCapabilityResult,
 } from './contract-capabilities';
 import type { DesktopSettingKey, DesktopSettings } from './contract-settings';
+import type {
+  DesktopPetAppLayout,
+  DesktopPetComposer,
+  DesktopPetConfig,
+  DesktopPetLayers,
+  DesktopPetOption,
+  DesktopPetState,
+  DesktopPetTheme,
+} from './desktop-pet';
 import type { ConversationImportJob } from './contract-import';
 import type { ActivityRailPinsState } from './activity-rail-pins';
 import type { ProviderModelsChange } from './provider-models';
 import type { SettingsChange } from './settings-changed';
 import type { HostDisplayPreferences } from './host-display-preferences';
 import type { TerminalSizeOwnerEvent } from './terminal-size-owner';
+import type { TerminalActivityEvent } from './terminal-activity';
+import type { DesktopTerminalRunRequest } from './terminal-command';
 import type {
   DesktopVisualizeEvent,
   DesktopVisualizeTabCommand,
   VisualizeCommandResult,
   VisualizePaneSource,
   VisualizePaneText,
+  VisualizeRemoteExport,
   VisualizeSessionState,
 } from './visualize';
 import type {
@@ -63,6 +75,8 @@ import type {
 import type {
   DesktopBrowserCredentialFillResult,
   DesktopBrowserCredentialSuggestion,
+  DesktopBrowserSignedInSite,
+  DesktopBrowserLoginStatus,
   DesktopBrowserGuestViewportChange,
   DesktopBrowserHistoryEntry,
   DesktopBrowserImportProgress,
@@ -75,6 +89,7 @@ import type {
   DesktopBrowserPageIdentity,
   DesktopBrowserPageResample,
   DesktopBrowserRemoteViewerChange,
+  DesktopBrowserFullscreenChange,
   DesktopBrowserTabControlResult,
   DesktopBrowserViewportConfig,
   DesktopRemoteBrowserControl,
@@ -90,6 +105,11 @@ import type {
   DesktopGitGlobalConfigKey,
   DesktopGitIgnoreScope,
   DesktopGitLogEntry,
+  DesktopGitRequestContext,
+  DesktopGitReview,
+  DesktopGitReviewDiffRequest,
+  DesktopGitReviewDiffs,
+  DesktopGitReviewSource,
   DesktopGitStashEntry,
   DesktopGitStatus,
   DesktopGitStatusOptions,
@@ -153,6 +173,14 @@ export * from './contract-ssh';
 export * from './contract-connection-link';
 
 export type { GithubRequest, GithubResult } from '../../../../src/runtime/github/contract.mjs';
+
+/** One entry of an agent's own memory pool: `id` and `indexRevision` address
+ *  it for a delete (the pool's list version; a stale one is refused). */
+export interface DesktopAgentMemoryEntry {
+  id: number;
+  indexRevision: string;
+  summary: string;
+}
 
 /** Small, last-writer-wins UI projection shared by Electron and paired web
  * clients. Pane geometry remains local; `selection` is the first visual pane. */
@@ -419,13 +447,37 @@ export interface DesktopApi {
    *  runtime (the task tool's cancel). `stopped` is true only when the job was
    *  actually cancelled; unknown, finished or failed cancels carry `error`. */
   stopShellJob?(sessionId: string, taskId: string): Promise<{ stopped: boolean; error?: string }>;
+  /** Explicit "Release anyway" for a shell job whose termination is
+   *  unconfirmed: drops its workspace hold in the owning runtime. The caller
+   *  confirms with the user first. */
+  releaseShellJob?(sessionId: string, taskId: string): Promise<{ released: boolean; error?: string }>;
   /** Whether quota-stopped sessions resume by themselves at reset (default true). */
   getQuotaAutoResume(): Promise<boolean>;
   /** The device name this window's own actions are stamped with (the host's
    *  name locally, the paired client's name on a remote surface). */
   viewerDevice?(): Promise<string>;
+  /** Remote surface only: the uncapped output of one tool row whose output the
+   *  host cut for the phone (`remoteOutputTruncated`); null when it is gone. */
+  readTranscriptItem?(
+    sessionId: string,
+    itemId: string
+  ): Promise<{ id: string; result?: unknown; rawResult?: unknown; uiDiff?: unknown; withheld?: true } | null>;
   setQuotaAutoResume(enabled: boolean): Promise<boolean>;
   setSessionArchived?(sessionId: string, archived: boolean): Promise<void>;
+  /** The agent contact's one home thread, resolved by the host from the agent
+   *  id and created on its first open; the same id on every device. */
+  openAgentHome?(agentId: string): Promise<{ sessionId: string }>;
+  /** "대화 새로 시작": the same home id, now empty; the conversation so far is
+   *  kept archived under `archivedSessionId` (null when it had no turns). */
+  resetAgentHome?(agentId: string): Promise<{ sessionId: string; archivedSessionId: string | null }>;
+  /** "이 에이전트가 기억하는 것": the agent's own memory pool, every entry. */
+  listAgentMemory?(agentId: string): Promise<DesktopAgentMemoryEntry[]>;
+  /** Delete one entry of the agent's own memory (a list's `id`/`indexRevision`). */
+  deleteAgentMemory?(agentId: string, entry: Pick<DesktopAgentMemoryEntry, 'id' | 'indexRevision'>): Promise<void>;
+  /** Group rooms: `create` ({ name, members }) → `{ sessionId, roomId }`,
+   *  `update` (roomId, patch), `continue` (roomId) runs another bounded
+   *  batch, `leave` (roomId) archives it, `remove` (roomId) deletes it. */
+  agentRoomAction?(action: string, args: unknown[]): Promise<unknown>;
   setSessionFavorite?(sessionId: string, favorite: boolean): Promise<void>;
   /** Move a session to a registered project path ('' = no project, the task
    *  workspace) by changing its working folder. Refused while its turn runs
@@ -530,9 +582,6 @@ export interface DesktopApi {
   closeConnectionWindow?(): Promise<void>;
   /** Shows Settings → Connection in this PC's window. */
   openConnectionSettings?(): Promise<void>;
-  /** "Keep allowing": this server window lets its server use this PC's
-   *  models again (a new grant). */
-  allowServerModelUse?(): Promise<void>;
   /** "Reopen server windows when the app starts" (this PC's window only). */
   getReopenServerWindows?(): Promise<boolean>;
   setReopenServerWindows?(enabled: boolean): Promise<boolean>;
@@ -593,6 +642,34 @@ export interface DesktopApi {
   ): Promise<DesktopWorkspaceTextReplaceResult>;
   getSnapshot(): Promise<SessionSnapshot>;
   subscribeState(listener: (snapshot: SessionSnapshot) => void): () => void;
+  /** Fire-and-forget: the sessions this window paints right now (one active
+   *  tab per pane). A completion in one of them is not notified while the
+   *  window is focused; every other session still notifies. */
+  reportScreenSessions?(sessionIds: string[]): void;
+  /** Desktop pet (this PC's app window only): the setting, its changes from
+   *  the pet's own menu, and the followed session's state for the pet. */
+  getDesktopPetConfig?(): Promise<DesktopPetConfig>;
+  setDesktopPetEnabled?(enabled: boolean): Promise<DesktopPetConfig>;
+  setDesktopPetOption?(name: DesktopPetOption, value: boolean): Promise<DesktopPetConfig>;
+  /** The bot's size in percent (DESKTOP_PET_SCALES). */
+  setDesktopPetScale?(scale: number): Promise<DesktopPetConfig>;
+  resetDesktopPetPosition?(): Promise<DesktopPetConfig>;
+  subscribeDesktopPetConfig?(listener: (config: DesktopPetConfig) => void): () => void;
+  /** The pet menu's Settings item asks this window for Settings → Bots. */
+  subscribeDesktopPetOpenSettings?(listener: () => void): () => void;
+  /** Where the composer-pinned bot stands: over the transcript's column,
+   *  and the width it takes at the composer's right end. */
+  subscribeDesktopPetAppLayout?(listener: (layout: DesktopPetAppLayout) => void): () => void;
+  publishDesktopPet?(state: DesktopPetState): void;
+  /** The focused pane's composer card and its island pill's centre line
+   *  (CSS px), or null when no card shows. */
+  publishDesktopPetComposer?(composer: DesktopPetComposer | null): void;
+  /** The app's chat look for the overlay. */
+  publishDesktopPetTheme?(theme: DesktopPetTheme): void;
+  /** The app's open floating layers: a backdrop modal hides the overlay, the rest cut it. */
+  publishDesktopPetLayers?(layers: DesktopPetLayers): void;
+  /** Whether the representative bot exists (the overlay needs it). */
+  publishDesktopPetAvailable?(available: boolean): void;
   /** Fire-and-forget renderer perf timing line (MIXDOG_DESKTOP_PERF=1 only). */
   perfLog?(line: string): void;
   /** Privacy-bounded renderer failure/performance evidence; user content is never sent. */
@@ -616,6 +693,11 @@ export interface DesktopApi {
   subscribeTermData?(listener: (event: { id: string; data: string }) => void): () => void;
   /** A phone claimed, released or lost a PTY's size; other views follow or re-fit. */
   subscribeTermSizeOwner?(listener: (event: TerminalSizeOwnerEvent) => void): () => void;
+  /** Every live terminal whose command activity is known (integrated shells). */
+  termActivity?(): Promise<TerminalActivityEvent[]>;
+  /** This view shows `id` focused (renewed while it stays so) or left it. */
+  termFocus?(id: string, focused: boolean): void;
+  subscribeTermActivity?(listener: (event: TerminalActivityEvent) => void): () => void;
   /** Shells detected on this machine for the terminal strip's picker. */
   termProfiles?(): Promise<Array<{ id: string; label: string; path: string; default?: boolean }>>;
   /** Dock Git panel: plain git CLI over the active project directory. */
@@ -664,6 +746,8 @@ export interface DesktopApi {
   gitLog?(cwd: string, query?: string, skip?: number, limit?: number): Promise<DesktopGitLogEntry[]>;
   gitShow?(cwd: string, hash: string): Promise<DesktopGitCommitDetails>;
   gitShowDiff?(cwd: string, hash: string, path: string): Promise<string>;
+  /** Island Git request: read-only snapshot of status, diffs, history and the branch's PR. */
+  gitRequestContext?(cwd: string, input: { paths: string[]; base: string }): Promise<DesktopGitRequestContext>;
   /** Diff tab editor mode: file content at `HEAD`/`:0`/commit (null if absent). */
   gitShowFile?(cwd: string, rev: string, path: string): Promise<string | null>;
   /**
@@ -689,19 +773,18 @@ export interface DesktopApi {
   gitCreateTag?(cwd: string, tag: string, hash: string): Promise<string>;
   gitDeleteTag?(cwd: string, tag: string): Promise<string>;
   /** Check out `hash` itself: a detached HEAD. */
-  /** Review pane: cumulative diff of the working tree vs merge-base(origin default branch, HEAD). */
-  gitReview?(cwd: string): Promise<{
-    base: string;
-    files: Array<{
-      path: string;
-      status: string;
-      additions: number;
-      deletions: number;
-      untracked: boolean;
-      uncommitted: boolean;
-    }>;
-  }>;
-  gitReviewDiff?(cwd: string, path: string, untracked?: boolean): Promise<string>;
+  /**
+   * Changes view: the working tree (incl. untracked) vs merge-base(default branch, HEAD)
+   * for `branch` (default), or vs `HEAD` for `uncommitted`. Paths are repo-root-relative.
+   */
+  gitReview?(cwd: string, source?: DesktopGitReviewSource): Promise<DesktopGitReview>;
+  gitReviewDiff?(cwd: string, path: string, untracked?: boolean, source?: DesktopGitReviewSource): Promise<string>;
+  /** Batch `gitReviewDiff` (at most 512 files): one git diff plus untracked reads. */
+  gitReviewDiffs?(
+    cwd: string,
+    files: DesktopGitReviewDiffRequest[],
+    source?: DesktopGitReviewSource
+  ): Promise<DesktopGitReviewDiffs>;
   /** Review file context menu: OS-level reveal/open for a project-relative file. */
   revealFile?(cwd: string, path: string, accessToken?: string): Promise<void>;
   openFilePath?(
@@ -719,6 +802,18 @@ export interface DesktopApi {
    *  bounded original for a paired phone; null when missing, unreadable or not
    *  an image. */
   readAttachmentThumbnail?(attachmentRef: string): Promise<string | null>;
+  /** An attachment a message of this session carries, by id (the content hash
+   *  recorded in the message metadata, or an older image's own reference),
+   *  read from the host's attachment store as a `data:` URL. Rejects for an id
+   *  the session's transcript does not name. Desktop windows only. */
+  readSessionAttachment?(
+    sessionId: string,
+    attachmentId: string
+  ): Promise<{ name: string; mimeType: string; size: number; dataUrl: string }>;
+  /** A paired device: opens that attachment through the remote file preview —
+   *  a staged file on the PC plus a one-file grant scoped to the session
+   *  (`accessToken`), like any previewable file row. */
+  openSessionAttachment?(sessionId: string, attachmentId: string): Promise<DesktopLocalPathEntry>;
   /** Any `data:` attachment → OS app, keeping the (safe) extension of `name`. */
   openAttachmentFile?(dataUrl: string, name: string): Promise<void>;
   /** Writes a `data:` attachment to the temp dir and returns a one-file access
@@ -741,6 +836,16 @@ export interface DesktopApi {
   submitToSession(sessionId: string, prompt: DesktopPromptContent, options?: DesktopSubmitOptions): Promise<boolean>;
   abortSession(sessionId: string, options?: DesktopAbortOptions): Promise<unknown>;
   resolveToolApprovalForSession(sessionId: string, id: string, decision: ToolApprovalDecision): Promise<boolean>;
+  /** Secret input card: hands the value to this PC's main process for the
+   *  request id; it is filled into the target field and never leaves this
+   *  PC. Desktop only (absent on paired remote clients). */
+  provideSecretInput?(requestId: string, value: string): Promise<boolean>;
+  /** Resolves true once the agent is stopped for takeover `id` (its commands
+   *  refused, in-flight work drained), false when it ends first. Desktop only. */
+  takeoverReady?(sessionId: string, id: string): Promise<boolean>;
+  /** Per-agent push mute (profile panel, contact menu): pushes only. */
+  getAgentNotificationMute(agentId: string): Promise<boolean>;
+  setAgentNotificationMute(agentId: string, muted: boolean): Promise<boolean>;
   /** Per-session live snapshot lane covering every pooled session runtime. */
   subscribeSessionState(listener: (update: DesktopSessionStateUpdate) => void): () => void;
   listProviderModels(options?: DesktopModelCatalogOptions): Promise<DesktopModelOption[]>;
@@ -773,6 +878,12 @@ export interface DesktopApi {
   /** Agent browser bridge (desktop host only): retain the owning session's
    *  Browser surface and optionally reveal its dock for a foreground call. */
   onBrowserOpenRequested?(listener: (request: DesktopBrowserOpenRequest) => void): () => void;
+  /** Agent `terminal` tool (desktop host only): reveal a session's terminal
+   *  dock, opening a tab and entering `command` when it has none. */
+  onTerminalRunRequested?(listener: (request: DesktopTerminalRunRequest) => void): () => void;
+  /** Agent `terminal` tool: true while the tool call still waits on this
+   *  request, which makes the renderer's entering of its command final. */
+  claimTerminalRun?(requestId: string): Promise<boolean>;
   /** Agent `visualize` tool (desktop host only): a session's side-panel tabs
    *  changed, a reveal was asked for, or a web URL goes to the browser panel. */
   onVisualizeChanged?(listener: (event: DesktopVisualizeEvent) => void): () => void;
@@ -787,6 +898,22 @@ export interface DesktopApi {
   /** Paired web app only: one visualize pane's content, fetched over the
    *  encrypted RPC lane (pane URLs name the host's loopback servers). */
   visualizePaneSource?(sessionId: string, tabId: string, index: number): Promise<VisualizePaneSource>;
+  /** Paired web app only: a PDF or Office pane rasterized to page images
+   *  (a phone cannot show a PDF in a frame). */
+  visualizePanePages?(
+    sessionId: string,
+    tabId: string,
+    index: number,
+    options: { pages: number[]; maxWidth?: number }
+  ): Promise<DesktopDocumentPreviewPages>;
+  /** Paired web app only: render displayed pane `pane` as PNG / PDF on the
+   *  host and answer with the download source this device redeems. */
+  visualizeExport?(
+    sessionId: string,
+    tabId: string,
+    format: 'png' | 'pdf',
+    pane: number
+  ): Promise<VisualizeRemoteExport>;
   /** Desktop only: run the feedback page script (Comment pins, `data-choice`
    *  picks) in a visualize tab's loaded HTML panes. */
   visualizeFeedbackAttach?(sessionId: string, tabId: string): Promise<void>;
@@ -795,6 +922,9 @@ export interface DesktopApi {
   /** Desktop only: spend one real user gesture main saw inside this pane on
    *  a `data-choice` pick; false when there is none. */
   visualizeConsumeGesture?(target: { sessionId: string; tabId: string; pane: number }): Promise<boolean>;
+  /** Desktop only: the visualize side panel's content size (CSS px), so the
+   *  agent's off-screen `inspect` / `check` lay pages out at it. */
+  visualizePanelSize?(size: { width: number; height: number }): Promise<void>;
   /** Runtime unload frees pixels but retains the session's dock selection. */
   onBrowserSessionReleased?(listener: (sessionId: string, reason?: 'unloaded' | 'gone') => void): () => void;
   /** Bind one persistent guest to its owning conversation session. */
@@ -834,8 +964,47 @@ export interface DesktopApi {
    *  A guest parked off-window produces no frames, so its capture hangs; the
    *  renderer keeps a remotely viewed guest inside the window while active. */
   onBrowserRemoteViewerChanged?(listener: (change: DesktopBrowserRemoteViewerChange) => void): () => void;
+  /** A session's shown page entered or left element fullscreen; the window is
+   *  fullscreen meanwhile and the pane fills it. */
+  onBrowserFullscreenChanged?(listener: (change: DesktopBrowserFullscreenChange) => void): () => void;
   /** Local Chrome profile import into the isolated Browser Use partition.
    *  Secrets stay in main/native processes; renderer receives metadata/counts. */
+  /** A Browser Use submit/post/upload awaiting this person's one-time answer
+   *  (shown as an in-app card), or `closed` once it is answered or expired. */
+  onBrowserApproval?(
+    listener: (
+      prompt:
+        | { id: string; closed: true }
+        /** The person chose "always allow" but it could not be saved: it ran once. */
+        | { id: string; saveFailed: true }
+        | {
+            id: string;
+            closed?: false;
+            action: string;
+            url: string;
+            sessionId: string;
+            /** The top-level chat the card docks in (a sub-agent's root chat). */
+            surfaceSessionId?: string;
+            /** The bot whose own chat asks (its face on the card); '' otherwise. */
+            agentId?: string;
+            /** The asking bot's or session's name; '' when it could not be resolved. */
+            requester: string;
+            target: string;
+            paths: string[];
+            /** Upload only: the page's origin, the origin of the frame document
+             *  that receives the files ('' = not confirmed), and each file
+             *  (`outside`: beyond the session's working directory and Downloads). */
+            origin?: string;
+            receiverOrigin?: string;
+            files?: Array<{ name: string; path: string; size: number; outside: boolean }>;
+            /** Set when a standing "always allow" may be recorded for this bot
+             *  and these kinds of step (`submit`, `post`, `upload`); null = it only asks once. */
+            remember: { kinds: Array<'submit' | 'post' | 'upload' | 'confirm'> } | null;
+          }
+    ) => void
+  ): () => void;
+  /** `reason`: a denial's note for the asking agent (what to do instead). */
+  browserApprovalDecide?(id: string, decision: 'once' | 'always' | 'deny', reason?: string): Promise<void>;
   browserProfileImportSources?(): Promise<DesktopBrowserImportSource[]>;
   browserProfileImportStart?(request: DesktopBrowserImportRequest): Promise<DesktopBrowserImportResult>;
   onBrowserProfileImportProgress?(listener: (progress: DesktopBrowserImportProgress) => void): () => void;
@@ -843,6 +1012,17 @@ export interface DesktopApi {
   /** Current session's Browser Use page only. Passwords never cross this API. */
   browserCredentialSuggestions?(sessionId: string): Promise<DesktopBrowserCredentialSuggestion[]>;
   browserCredentialFill?(sessionId: string, credentialId: string): Promise<DesktopBrowserCredentialFillResult>;
+  /** "로그인 유지 중인 사이트": site names and cookie counts, never values. */
+  browserSignedInSites?(): Promise<DesktopBrowserSignedInSite[]>;
+  /** 로그아웃: that site's cookies and page storage. */
+  browserSignOutSite?(site: string): Promise<number>;
+  /** 전체 지우기: every sign-in, all site storage and the data imported from Chrome. */
+  browserClearSignIns?(): Promise<void>;
+  /** A login takeover's sign-in window, bound to takeover `id` of `sessionId`
+   *  as this PC saw it: opens (or focuses) it once the agent is stopped and
+   *  resolves with how it ended. Desktop only; a phone shows the pending state. */
+  browserLoginOpen?(sessionId: string, id: string): Promise<DesktopBrowserLoginStatus>;
+  browserLoginStatus?(sessionId: string, id: string): Promise<DesktopBrowserLoginStatus>;
   /** What the in-app browser saw of `url` (or of its site), or null.
    *  `preview`: a page card asks, so a missing thumbnail is fetched from the
    *  page's own preview and announced through onBrowserPageIdentityChanged. */
@@ -885,6 +1065,9 @@ export interface DesktopApi {
   /** Scrim-composited WCO caption colors while a fullscreen modal is open;
    *  null restores the theme band. */
   setTitleBarDim(dim: { color: string; symbolColor: string } | null): Promise<void>;
+  /** Installed font families of THIS computer (Settings → Appearance); empty
+   *  when the OS listing fails. Desktop app only. */
+  listSystemFonts?(): Promise<string[]>;
   invokeCapability<T = unknown>(request: DesktopCapabilityRequest): Promise<DesktopCapabilityResult<T>>;
   readCapabilities(requests: DesktopCapabilityReadRequest[]): Promise<DesktopCapabilityReadResult[]>;
   /** Direct URL for one media asset/rendition, or '' when this host has no

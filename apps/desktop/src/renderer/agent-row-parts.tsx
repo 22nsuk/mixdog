@@ -1,15 +1,82 @@
 import { Bot } from 'lucide-react';
+import type React from 'react';
+import { useRef, useState } from 'react';
 import type { DesktopAgentPoolRow } from '../shared/contract';
 import { cachedAutoEffortCapable } from './auto-effort-store';
+import { beginPaneDrag, finishPaneDrag, type PaneDragSession } from './pane-drag-session';
 import { modelDisplayName, ModelRouteLabel, ProviderIcon, routeDaybreakBlue } from './provider-display';
 
-/** The brand of the model an agent runs on marks its row. */
-export function AgentProviderMark({ agent }: { agent: DesktopAgentPoolRow }) {
+/** The brand of the model an agent runs on marks its row; `size` enlarges it
+ *  for an avatar. */
+export function AgentProviderMark({
+  agent,
+  size = 16,
+}: {
+  agent: Pick<DesktopAgentPoolRow, 'provider'>;
+  size?: number;
+}) {
   return (
     <span className="sidebar-resource-icon" aria-hidden="true">
-      {agent.provider ? <ProviderIcon provider={String(agent.provider)} width={16} height={16} /> : <Bot size={16} />}
+      {agent.provider ? (
+        <ProviderIcon provider={String(agent.provider)} width={size} height={size} />
+      ) : (
+        <Bot size={size} />
+      )}
     </span>
   );
+}
+
+/** A row with a session is a pane source, exactly like a sidebar session row:
+ *  dropping it inside a pane opens the session as a tab and dropping it on a
+ *  pane edge splits a new pane there. A settled drag must not also fire the
+ *  row's open click, which `clickSuppressed` reports. */
+export function useSessionDragSource(sessionId: string, title: string, botId?: string) {
+  const [dragging, setDragging] = useState(false);
+  const suppressClick = useRef(false);
+  return {
+    clickSuppressed: () => suppressClick.current,
+    dragProps: {
+      draggable: Boolean(sessionId || botId),
+      'data-dragging': dragging ? 'true' : undefined,
+      onDragStart(event: React.DragEvent<HTMLElement>) {
+        if (!sessionId && !botId) {
+          event.preventDefault();
+          return;
+        }
+        // A bot row with no session yet is the same drag, reorder-only: its
+        // bot list takes it, the pane workspace ignores it.
+        const drag: PaneDragSession = {
+          kind: 'session',
+          key: sessionId ? `session:${sessionId}` : `bot:${botId}`,
+          title,
+          selection: { kind: 'session', id: sessionId, title },
+          ...(botId ? { botId } : {}),
+          ...(sessionId ? {} : { reorderOnly: true }),
+        };
+        // The gesture settles in the global drag session, so this cleanup still
+        // runs when the pool retires this row mid-drag.
+        beginPaneDrag(
+          event.nativeEvent,
+          drag,
+          // A control inside the row (the face toggle) drags the whole row.
+          event.currentTarget.closest<HTMLElement>('[data-drag-frame="row"]') ?? event.currentTarget,
+          () => {
+            setDragging(false);
+            suppressClick.current = true;
+            window.setTimeout(() => {
+              suppressClick.current = false;
+            }, 0);
+            delete document.body.dataset.tabDragging;
+          }
+        );
+        setDragging(true);
+        document.body.dataset.tabDragging = '1';
+      },
+      onDragEnd() {
+        finishPaneDrag();
+      },
+    },
+  };
 }
 
 /** An agent row's second line: model and effort. */

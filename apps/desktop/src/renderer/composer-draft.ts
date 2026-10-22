@@ -1,4 +1,5 @@
 import type { ComposerAttachment } from './composer-support';
+import { sha256Hex } from './sha256';
 
 let submissionSequence = 0;
 let recoverySequence = 0;
@@ -62,13 +63,136 @@ export function composerScopeOpensFreshDraft(nextScope: string): boolean {
  *  타이핑하던 글자 남아있게). Empty text drops the entry. */
 const composerDraftsByScope = new Map<string, string>();
 
+/** The stash outlives the page: a phone app sent to the background can be
+ *  reloaded (deploy adoption) or killed by the OS, and the half-typed prompt
+ *  must come back (user: 홈으로 나갔다 오면 적어놓은게 다 지워짐). The page
+ *  writes it when it leaves the screen; a fresh page reads it once. */
+const PERSISTED_DRAFTS_KEY = 'mixdog.composer-drafts';
+const PERSISTED_DRAFTS_LIMIT = 50;
+let persistedDraftsLoaded = false;
+
+function loadPersistedDrafts(): void {
+  if (persistedDraftsLoaded) return;
+  persistedDraftsLoaded = true;
+  try {
+    const stored: unknown = JSON.parse(globalThis.localStorage?.getItem(PERSISTED_DRAFTS_KEY) ?? '[]');
+    if (!Array.isArray(stored)) return;
+    for (const entry of stored) {
+      if (
+        Array.isArray(entry) &&
+        typeof entry[0] === 'string' &&
+        typeof entry[1] === 'string' &&
+        !composerDraftsByScope.has(entry[0])
+      ) {
+        composerDraftsByScope.set(entry[0], entry[1]);
+      }
+    }
+  } catch {
+    /* unreadable storage: start with the in-memory stash only */
+  }
+}
+
+/** Writes every parked draft to storage, newest last, bounded. */
+export function persistComposerDrafts(): void {
+  loadPersistedDrafts();
+  try {
+    globalThis.localStorage?.setItem(
+      PERSISTED_DRAFTS_KEY,
+      JSON.stringify([...composerDraftsByScope].slice(-PERSISTED_DRAFTS_LIMIT))
+    );
+  } catch {
+    /* storage full or blocked: the in-memory stash still serves tab switches */
+  }
+}
+
+/** Conversations deleted for good. A composer still showing one parks its
+ *  content AFTER the deletion signal (tabs close once the session is gone), so
+ *  the stashes below refuse these identities instead of re-adding them. Ids are
+ *  never reused. */
+const forgottenComposerScopes = new Set<string>();
+const FORGOTTEN_SCOPES_LIMIT = 500;
+
 export function stashComposerDraft(scope: string, text: string): void {
+  loadPersistedDrafts();
+  composerDraftsByScope.delete(scope);
+  if (forgottenComposerScopes.has(scope)) return;
   if (text.trim()) composerDraftsByScope.set(scope, text);
-  else composerDraftsByScope.delete(scope);
 }
 
 export function stashedComposerDraft(scope: string): string {
+  loadPersistedDrafts();
   return composerDraftsByScope.get(scope) ?? '';
+}
+
+/** Attachment chips per composer identity, parked beside the text when the
+ *  user leaves a tab before sending (user: 첨부만 해 둔 파일이 다른 세션
+ *  갔다 오면 사라짐). Chips keep their ids, so the tokens in the parked text
+ *  still name them. Memory only — image data is too large for storage — and
+ *  bounded, oldest tab dropped first. */
+const composerAttachmentsByScope = new Map<string, ComposerAttachment[]>();
+const PARKED_ATTACHMENT_SCOPES_LIMIT = 20;
+
+export function stashComposerAttachments(scope: string, attachments: readonly ComposerAttachment[]): void {
+  composerAttachmentsByScope.delete(scope);
+  if (!attachments.length || forgottenComposerScopes.has(scope)) return;
+  composerAttachmentsByScope.set(scope, [...attachments]);
+  if (composerAttachmentsByScope.size > PARKED_ATTACHMENT_SCOPES_LIMIT) {
+    composerAttachmentsByScope.delete(composerAttachmentsByScope.keys().next().value as string);
+  }
+}
+
+/** Hands the parked chips back once; the live composer owns them again. */
+export function takeStashedComposerAttachments(scope: string): ComposerAttachment[] {
+  const parked = composerAttachmentsByScope.get(scope) ?? [];
+  composerAttachmentsByScope.delete(scope);
+  return parked;
+}
+
+/** Room members tagged with `@` per composer identity, parked the same way
+ *  so returning to an agent room keeps who answers the unsent message. */
+const composerTagsByScope = new Map<string, string[]>();
+
+export function stashComposerTags(scope: string, memberIds: readonly string[]): void {
+  composerTagsByScope.delete(scope);
+  if (memberIds.length && !forgottenComposerScopes.has(scope)) composerTagsByScope.set(scope, [...memberIds]);
+}
+
+/** A conversation whose deletion the host CONFIRMED never comes back: drop
+ *  everything parked for it. Call it only from the delete action — a session
+ *  merely missing from a catalog push may reappear with its parked content. */
+export function forgetComposerScope(scope: string): void {
+  if (!scope) return;
+  loadPersistedDrafts();
+  composerDraftsByScope.delete(scope);
+  composerAttachmentsByScope.delete(scope);
+  composerTagsByScope.delete(scope);
+  forgottenComposerScopes.add(scope);
+  if (forgottenComposerScopes.size > FORGOTTEN_SCOPES_LIMIT) {
+    forgottenComposerScopes.delete(forgottenComposerScopes.values().next().value as string);
+  }
+}
+
+export function takeStashedComposerTags(scope: string): string[] {
+  const parked = composerTagsByScope.get(scope) ?? [];
+  composerTagsByScope.delete(scope);
+  return parked;
+}
+
+/** Mounted composers that hold text or attachments, by identity. With the
+ *  stashes above it answers whether a New Task tab is still untouched. */
+const composerScopesWithContent = new Set<string>();
+
+export function noteComposerContent(scope: string, hasContent: boolean): void {
+  if (hasContent) composerScopesWithContent.add(scope);
+  else composerScopesWithContent.delete(scope);
+}
+
+export function composerScopeHasContent(scope: string): boolean {
+  return (
+    composerScopesWithContent.has(scope) ||
+    Boolean(stashedComposerDraft(scope).trim()) ||
+    composerAttachmentsByScope.has(scope)
+  );
 }
 
 export function composerDraftAfterScopeChange({
@@ -90,6 +214,48 @@ export function composerDraftAfterScopeChange({
   if (freshDraft) return '';
   const candidate = typingLive ? liveDomDraft : currentDraft;
   return typingLive && candidate.trim() ? candidate : '';
+}
+
+// New Task drafts whose first submission minted a session, by draft scope.
+// The submit router records the pair when the host acknowledges the mint; the
+// composer reads it when its identity moves, so only the session THIS draft
+// became takes its chips along.
+const promotedDraftSessions = new Map<string, string>();
+const PROMOTED_DRAFT_LIMIT = 64;
+
+export function noteDraftPromotion(draftId: string, sessionId: string): void {
+  if (!sessionId) return;
+  const scope = `draft:${draftId || 'default'}`;
+  promotedDraftSessions.delete(scope);
+  promotedDraftSessions.set(scope, sessionId);
+  if (promotedDraftSessions.size > PROMOTED_DRAFT_LIMIT) {
+    promotedDraftSessions.delete(promotedDraftSessions.keys().next().value as string);
+  }
+}
+
+/** Whether `nextScope` is the session `previousScope`'s draft became. The
+ *  record is spent on the match, so a revisited draft cannot reuse it. */
+export function takeDraftPromotion(previousScope: string, nextScope: string): boolean {
+  if (promotedDraftSessions.get(previousScope) !== nextScope) return false;
+  promotedDraftSessions.delete(previousScope);
+  return true;
+}
+
+/** Whether the chips on screen stay with the composer across a scope change.
+ *  Like the in-flight text, chips parked by the target tab win and a fresh New
+ *  Task opens clean. Unlike the text, focus is no signal: a tab switch from a
+ *  focused composer must park them, so only the session a draft was promoted
+ *  into (`promotingDraft`, see takeDraftPromotion) takes its chips along. */
+export function composerAttachmentsCarryOver({
+  freshDraft,
+  promotingDraft,
+  parkedCount,
+}: {
+  freshDraft: boolean;
+  promotingDraft: boolean;
+  parkedCount: number;
+}): boolean {
+  return parkedCount === 0 && !freshDraft && promotingDraft;
 }
 
 // Submissions THIS device minted. Another device cancelling a turn hands the
@@ -117,8 +283,53 @@ export function draftWithRestoredPrompt(current: string, restored: string): stri
   return [restored, current].filter(Boolean).join('\n');
 }
 
-export function submissionRetryKey(text: string, attachments: readonly ComposerAttachment[]): string {
-  return JSON.stringify([text, attachments.map((attachment) => String(attachment.id))]);
+/** The chip with the SHA-256 of its data started: the same chip when its
+ *  digest is already for this data, so a digest is worked out once per chip
+ *  (copies made by renumbering or folding keep it). */
+export function withContentDigest(attachment: ComposerAttachment): ComposerAttachment {
+  if (attachment.contentDigest?.of === attachment.data) return attachment;
+  return { ...attachment, contentDigest: { of: attachment.data, sha256: sha256Hex(attachment.data) } };
+}
+
+function contentDigest(attachment: ComposerAttachment): Promise<string> {
+  return attachment.contentDigest?.of === attachment.data
+    ? attachment.contentDigest.sha256
+    : sha256Hex(attachment.data);
+}
+
+/**
+ * Identity of a send's content for "Send again": the same message resent
+ * keeps its submission id, so a send that failed ambiguously (it may have
+ * arrived) is never posted twice, and a changed one never takes the old id.
+ * Chip ids are not part of it — a restored chip may be renumbered — so each
+ * attachment token in the text stands as its place in the attachment list,
+ * and each attachment as what it holds: its SHA-256 and length (awaited when
+ * the chip's digest is still being worked out).
+ */
+export async function submissionRetryKey(
+  texts: readonly string[],
+  attachments: readonly ComposerAttachment[]
+): Promise<string> {
+  const digests = await Promise.all(attachments.map(contentDigest));
+  const places = new Map<string, number>();
+  attachments.forEach((attachment, place) => {
+    if (attachment.token && !places.has(attachment.token)) places.set(attachment.token, place);
+  });
+  const pattern = places.size
+    ? new RegExp([...places.keys()].map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g')
+    : null;
+  return JSON.stringify([
+    pattern ? texts.map((text) => text.replace(pattern, (token) => `\u0000${places.get(token)}\u0000`)) : texts,
+    attachments.map((attachment, place) => [
+      attachment.kind,
+      attachment.name,
+      attachment.mimeType,
+      attachment.source ?? '',
+      attachment.metadataText ?? '',
+      attachment.data.length,
+      digests[place],
+    ]),
+  ]);
 }
 
 export function insertComposerToken(

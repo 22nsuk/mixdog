@@ -11,9 +11,14 @@ import { earlyUiT } from './early-ui-i18n';
 import { isInstalledMobileWebAppSurface } from './mobile-surface';
 import { REMOTE_NATIVE_PUSH_GLOBAL, createNativePushHost, installNativePushBridge } from './native-push-bridge';
 import { installPushSubscriptionSync } from './push-notification-bridge';
-import { setRemoteConnectionState, shouldRunRemoteHeartbeat } from './remote-connection-state';
+import {
+  markRemoteApprovalReason,
+  setRemoteConnectionState,
+  shouldRunRemoteHeartbeat,
+} from './remote-connection-state';
+import { remoteBootApproval } from './remote-pairing-recovery';
 import { createRemoteApi } from './remote-shim-api';
-import { installRemoteCalls } from './remote-shim-calls';
+import { installRemoteCalls, prefetchBootReads } from './remote-shim-calls';
 import { installRemoteDispatch } from './remote-shim-dispatch';
 import { installRemoteLiveness } from './remote-shim-liveness';
 import { installRemotePairing } from './remote-shim-pairing';
@@ -42,21 +47,66 @@ import { installRemoteSync } from './remote-shim-sync';
   // Settings → Connection on a remote surface: expose where this session is
   // connected so the panel shows live status instead of desktop-only pairing.
   (w as unknown as { mixdogRemoteServer?: string }).mixdogRemoteServer = ctx.serverBase || location.origin;
-  // A browser tab always gets the install guide. A desktop-installed PWA is
-  // also guide-only: only an installed phone/tablet app may hold a credential
-  // and dial the relay.
-  if (!isInstalledMobileWebAppSurface() || !ctx.token) {
+  void begin(ctx);
+})();
+
+async function begin(ctx: ReturnType<typeof createRemoteShimContext>): Promise<void> {
+  // A surface that holds no credential yet (a browser tab before its first
+  // approval) asks the PC for approval directly; once approved it is marked and
+  // dials like an installed app.
+  const installed = isInstalledMobileWebAppSurface();
+  // The OS may have trimmed localStorage and kept IndexedDB.
+  if (installed && (!ctx.token || !ctx.e2eePairing)) await ctx.restoreDurablePairing();
+  let claimPending = false;
+  try {
+    claimPending = Boolean(localStorage.getItem(ctx.pairingKeys.claim));
+  } catch {
+    /* no storage: nothing pending */
+  }
+  const approval = remoteBootApproval({
+    installed,
+    token: ctx.token,
+    hasE2eePairing: Boolean(ctx.e2eePairing),
+    browserIdStored: ctx.browserIdStored,
+    claimPending,
+  });
+  if (approval !== 'dial') markRemoteApprovalReason(approval === 'lost' ? 'no-token' : approval);
+  if (approval === 'not-installed' || approval === 'no-token') {
     ctx.showPairingScreen('');
     return;
   }
-  if (!ctx.e2eePairing) {
+  if (approval === 'lost') {
+    ctx.showPairingScreen(
+      earlyUiT('This device’s saved sign-in was lost. Connect again to ask your PC.'),
+      false,
+      earlyUiT('Saved sign-in lost')
+    );
+    return;
+  }
+  if (approval === 'no-key') {
     ctx.resetApprovalAndAsk(earlyUiT('This connection is incomplete. Connect again.'));
     return;
   }
   setRemoteConnectionState('connecting');
   if (!ctx.backgroundSuspended && shouldRunRemoteHeartbeat(document.visibilityState)) {
-    void ctx.connect().catch(() => {
-      /* the retry loop keeps running */
-    });
+    void ctx
+      .connect()
+      .then(() =>
+        // The app's first screen waits on these; they now ride the view sync
+        // the connection is already running instead of following the app's
+        // chunk download and evaluation.
+        prefetchBootReads(ctx, [
+          ['getSnapshot', []],
+          ...(ctx.peerRemoteParity === true ? [['getUpdaterState', []] satisfies [string, unknown[]]] : []),
+          ['listProjects', []],
+          ['readSettings', []],
+          ['readHostDisplayPreferences', []],
+          ['readActivityRailPins', []],
+          ['viewerDevice', []],
+        ])
+      )
+      .catch(() => {
+        /* the retry loop keeps running */
+      });
   }
-})();
+}

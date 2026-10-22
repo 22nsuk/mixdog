@@ -13,7 +13,6 @@ export const AGENT_PROVIDER_ENV = Object.freeze({
   gemini: 'GEMINI_API_KEY',
   deepseek: 'DEEPSEEK_API_KEY',
   xai: 'XAI_API_KEY',
-  'opencode-go': 'OPENCODE_API_KEY',
   openrouter: 'OPENROUTER_API_KEY',
 });
 
@@ -74,6 +73,12 @@ export function getAgentApiKey(provider) {
 export function resolveProviderApiKey(provider, config) {
   if (config?.apiKeyEnv) return process.env[config.apiKeyEnv] || '';
   return config?.apiKey || getAgentApiKey(provider) || '';
+}
+
+/** Presence twin of resolveProviderApiKey, same precedence, no key value read. */
+export function hasProviderApiKey(provider, config) {
+  if (config?.apiKeyEnv) return Boolean(process.env[config.apiKeyEnv]);
+  return Boolean(config?.apiKey) || hasAgentApiKey(provider);
 }
 
 /** Auth-error reload: the stored/environment key is re-read first so a

@@ -38,6 +38,17 @@ function RunInTerminal({ code }: { code: string }) {
   );
 }
 
+/** Tables wrap inside the transcript column and never scroll sideways. */
+function MarkdownTable({ children }: { children?: ReactNode }) {
+  return (
+    <div className="markdown-table-frame">
+      <div className="markdown-table">
+        <table>{children}</table>
+      </div>
+    </div>
+  );
+}
+
 export type MarkdownCopyControl = ComponentType<{
   value: string;
   label: string;
@@ -64,15 +75,7 @@ function createMarkdownComponents(CopyControl: MarkdownCopyControl) {
   return {
     a: MarkdownLink,
     [LOCAL_IMAGE_TAG]: MarkdownLocalImage,
-    table({ children }: { children?: ReactNode }) {
-      return (
-        // biome-ignore lint/a11y/useSemanticElements: tag must stay a div; <section> would change the table scroller's structure.
-        // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard users need to focus this scroll region to scroll it.
-        <div className="markdown-table" role="region" aria-label={t('Scrollable table')} data-scrollable tabIndex={0}>
-          <table>{children}</table>
-        </div>
-      );
-    },
+    table: MarkdownTable,
     pre({ children }: { children?: ReactNode }) {
       const child = React.Children.count(children) === 1 ? React.Children.only(children) : null;
       if (!React.isValidElement(child)) return <pre data-scrollable>{children}</pre>;

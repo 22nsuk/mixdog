@@ -1,6 +1,8 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+import { writeJsonAtomicSync } from '../../../../src/runtime/shared/atomic-file.mjs';
 
 import {
   NOTIFICATION_VOLUME_DEFAULT,
@@ -65,9 +67,13 @@ export function desktopSettingsFromConfig(value: unknown): DesktopSettings {
     // A fresh install starts pinned; an explicit unpin is kept.
     usagePinned: desktop.usagePinned !== false,
     usageRailShortLong: desktop.usageRailShortLong === true,
+    usageAccountsExpanded: desktop.usageAccountsExpanded === true,
+    usageRailSlotsThree: desktop.usageRailSlotsThree === true,
+    usageRailSlotsAll: desktop.usageRailSlotsAll === true,
     computerControl: desktop.computerControl === true,
     computerObserveOnly: desktop.computerObserveOnly === true,
     browserControl: desktop.browserControl === true,
+    browserAutoSignIn: desktop.browserAutoSignIn !== false,
     // Grandfather: a control that is already on predates the install marker.
     computerInstalled: desktop.computerInstalled === true || desktop.computerControl === true,
     browserInstalled: desktop.browserInstalled === true || desktop.browserControl === true,
@@ -82,7 +88,11 @@ const DESKTOP_FLAG_KEYS: ReadonlySet<DesktopSettingKey> = new Set([
   'turnNotifications',
   'usagePinned',
   'usageRailShortLong',
+  'usageAccountsExpanded',
+  'usageRailSlotsThree',
+  'usageRailSlotsAll',
   'computerObserveOnly',
+  'browserAutoSignIn',
   'computerInstalled',
   'browserInstalled',
 ]);
@@ -95,9 +105,13 @@ export const DESKTOP_FLAG_DEFAULTS: Readonly<Partial<Record<DesktopSettingKey, b
   turnNotifications: true,
   usagePinned: true,
   usageRailShortLong: false,
+  usageAccountsExpanded: false,
+  usageRailSlotsThree: false,
+  usageRailSlotsAll: false,
   computerControl: false,
   computerObserveOnly: false,
   browserControl: false,
+  browserAutoSignIn: true,
 };
 
 /** Marker in the `desktop` section: the one-time defaults separation ran. */
@@ -106,6 +120,7 @@ const DEFAULTS_SEPARATION_VERSION = 1;
 /** Every activity-rail default list ever shipped (order matters). */
 const HISTORICAL_ACTIVITY_RAIL_PINS: readonly (readonly string[])[] = [
   ['sessions', 'agents', 'schedules', 'workflows', 'projects'],
+  ['sessions', 'agents', 'schedules', 'workflows', 'projects', 'extensions'],
   DEFAULT_ACTIVITY_RAIL_PINS,
 ];
 
@@ -145,7 +160,9 @@ function backupPreImage(dataDir: string, now: Date, preImage: unknown): void {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
       throw error;
     }
-    writeFileSync(join(dir, 'mixdog-config.json'), `${JSON.stringify(preImage, null, 2)}\n`, { flag: 'wx' });
+    // The directory is new, so nothing is replaced; the copy is flushed whole
+    // before it appears under its name.
+    writeJsonAtomicSync(join(dir, 'mixdog-config.json'), preImage);
     return;
   }
 }

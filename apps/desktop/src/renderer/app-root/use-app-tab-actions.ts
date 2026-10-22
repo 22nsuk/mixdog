@@ -15,7 +15,7 @@ import { loadStudioViewModule } from '../studio-loader';
 import { prefetchBrowserPane, prefetchDiffView, prefetchEditorPane, prefetchTerminalPane } from '../lazy-widgets';
 import { useAgentBrowserSurfaceRequests } from '../use-agent-browser-surface-requests';
 import { browserSurfaceRevealPlan } from '../session-browser-policy';
-import { onTerminalRevealRequested } from '../terminal-command-request';
+import { handleTerminalRunRequest, onTerminalRevealRequested } from '../terminal-command-request';
 import { onVisualizeRevealRequested } from '../visualize-store';
 import { useStableEvent } from '../use-stable-event';
 import { desktopFeatureEnabled } from '../desktop-feature-config';
@@ -23,7 +23,7 @@ import type { useAppSideDocks } from '../use-app-side-docks';
 import type { useSessionPaneSurfaces } from '../use-session-pane-surfaces';
 import { cleanDiffTarget, paneSize } from './workspace-targets';
 
-export interface UseAppTabActionsOptions {
+interface UseAppTabActionsOptions {
   paneWorkspace: ReturnType<typeof usePaneWorkspace>;
   setTabs: React.Dispatch<React.SetStateAction<WorkspaceTab[]>>;
   closeSidebarPanels: () => void;
@@ -39,7 +39,7 @@ export interface UseAppTabActionsOptions {
     preview?: boolean,
     mode?: 'preview' | 'pinned'
   ) => void;
-  openSession: (sessionId: string, force?: boolean, title?: string) => Promise<void>;
+  openSession: (sessionId: string, force?: boolean, title?: string, replaceKey?: string) => Promise<void>;
   activeProjectPath: string;
   /** Opens the project file search (quick open). */
   openQuickOpen: () => void;
@@ -120,7 +120,6 @@ export function useAppTabActions({
     surfaces: sessionPaneSurfaces,
     prefetch: prefetchBrowserPane,
     select: paneSideDocks.select,
-    temporarySelect: paneSideDocks.temporarySelect,
   });
 
   const openBrowserInMain = useStableEvent((request: BrowserMainRequest) => {
@@ -141,11 +140,15 @@ export function useAppTabActions({
     if (leafId) paneSideDocks.select(leafId, 'terminal');
   });
   useEffect(() => onTerminalRevealRequested(revealSessionTerminal), [revealSessionTerminal]);
+  // The agent's `terminal` run: main reveals the dock (and opens a tab when the
+  // session has none) through the same path as the Run button.
+  useEffect(() => window.mixdogDesktop?.onTerminalRunRequested?.(handleTerminalRunRequest), []);
 
-  // The agent's `visualize` open: the session's visualize view becomes its
-  // side panel. A pane showing the session reveals it now; otherwise it waits
-  // on the session and appears when the user returns to it — no other pane
-  // or session is touched. A panel the user closed never gets here (store).
+  // The agent's `visualize` open or update: the session's visualize view
+  // becomes its side panel. A pane showing the session reveals it now;
+  // otherwise it waits on the session and appears when the user returns to
+  // it — no other pane or session is touched. The store's open policy
+  // decides which opens get here (visualize-store).
   const revealSessionVisualize = useStableEvent((sessionId: string) => {
     sessionPaneSurfaces.setSessionSideSurface(sessionId, null);
     sessionPaneSurfaces.setSessionPanelView(sessionId, 'visualize');
@@ -225,11 +228,13 @@ export function useAppTabActions({
   const dockOpenLeadSession = useStableEvent((sessionId: string) => {
     void openSession(sessionId);
   });
-  const dockOpenAgentSession = useStableEvent((sessionId: string, title: string, _ownerSessionId: string) => {
-    const childSessionId = String(sessionId || '').trim();
-    if (!childSessionId) return;
-    void openSession(childSessionId, false, String(title || '').trim());
-  });
+  const dockOpenAgentSession = useStableEvent(
+    (sessionId: string, title: string, _ownerSessionId: string, replaceKey?: string) => {
+      const childSessionId = String(sessionId || '').trim();
+      if (!childSessionId) return;
+      void openSession(childSessionId, false, String(title || '').trim(), replaceKey ?? '');
+    }
+  );
 
   const chooseFileTab = async (leafId = paneWorkspace.focusedLeafId) => {
     void prefetchEditorPane().catch(() => {});

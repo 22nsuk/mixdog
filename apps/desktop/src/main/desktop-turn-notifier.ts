@@ -2,18 +2,27 @@ import type { Notification } from 'electron';
 import { createFinalAnswerWatcher } from './final-answer-watcher';
 import { shouldShowTurnNotification, type TurnCompletion } from './push-turn-events';
 import type { SessionFinalAnswer } from './session-final-answer';
+import { type SessionTitleLabels, sessionTitleLabel } from '../shared/session-title.mjs';
 
 type NativeNotification = Pick<Notification, 'on' | 'show' | 'close'>;
 
 interface DesktopTurnNotifierOptions {
   isEnabled(): boolean;
   isSupported(): boolean;
-  isForeground(): boolean;
-  readFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null>;
+  /** The focused, visible window is showing this very session. */
+  isSessionOnScreen(sessionId: string): boolean;
+  readFinalAnswer(sessionId: string, startedAt: number, signal?: AbortSignal): Promise<SessionFinalAnswer | null>;
   createNotification(content: { title: string; body: string }): NativeNotification;
   playSound?(): Promise<string>;
   openSession(sessionId: string): void;
   diagnostic(event: string, details: Record<string, unknown>): void;
+  /** A muted agent's sessions raise no notification (agent-notification-mute.ts). */
+  isSessionMuted?(sessionId: string): boolean;
+  /** This PC's words for an attachment-only session title (`[Image]` …);
+   *  English when absent. */
+  titleLabels?(): SessionTitleLabels;
+  /** A bot's display name for its home chat's notification title. */
+  agentName?(agentId: string): Promise<string>;
 }
 
 /** Completion detection and native delivery share one app-lifetime owner.
@@ -29,13 +38,20 @@ export function createDesktopTurnNotifier(options: DesktopTurnNotifierOptions) {
       report('suppressed', completion, { reason: 'unsupported' });
       return;
     }
-    if (!shouldShowTurnNotification(completion, options.isForeground())) {
-      report('suppressed', completion, { reason: 'foreground' });
+    if (!shouldShowTurnNotification(completion, options.isSessionOnScreen(completion.sessionId))) {
+      report('suppressed', completion, { reason: 'foreground-visible' });
+      return;
+    }
+    if (options.isSessionMuted?.(completion.sessionId)) {
+      report('suppressed', completion, { reason: 'agent-muted' });
       return;
     }
     let notification: NativeNotification | undefined;
     try {
-      notification = options.createNotification({ title: completion.title, body: completion.preview });
+      notification = options.createNotification({
+        title: sessionTitleLabel(completion.title, options.titleLabels?.()),
+        body: completion.preview,
+      });
       const current = notification;
       const release = () => {
         live.delete(current);
@@ -80,6 +96,7 @@ export function createDesktopTurnNotifier(options: DesktopTurnNotifierOptions) {
     isEnabled: options.isEnabled,
     readFinalAnswer: options.readFinalAnswer,
     onFinalAnswer: deliver,
+    ...(options.agentName ? { agentName: options.agentName } : {}),
     onDiagnostic: options.diagnostic,
     onError: (error) => options.diagnostic('read-failed', { error }),
   });

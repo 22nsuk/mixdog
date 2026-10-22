@@ -3,11 +3,11 @@ import { killShellJob, watchBackgroundShellJob } from '../shell-jobs.mjs';
 import { renderBackgroundPartialOutput } from '../shell-output.mjs';
 import { readShellTaskOutput } from '../lib/shell-task-output.mjs';
 import { normalizeOutputPath } from '../path-utils.mjs';
-import { cleanupArtifactOnTaskSettled, consumeTeeArtifact } from './transport-artifacts.mjs';
+import { cleanupArtifactAfter, cleanupArtifactOnTaskSettled, consumeTeeArtifact } from './transport-artifacts.mjs';
 import { _backgroundResultLines, _prependDestructiveWarning } from './result-format.mjs';
 
 const DEFAULT_BACKGROUND_MESSAGE =
-  'auto-backgrounded; still running — judge from the partial output whether waiting can finish in budget, or diagnose and pursue an alternative.';
+  'moved to background; still running. Its result is delivered automatically when it finishes.';
 
 // The label and owner context every task registered for a shell command
 // carries, whether promoted or tracking survivors.
@@ -19,6 +19,7 @@ export function shellTaskIdentity(command, options) {
       callerSessionId: options?.callerSessionId || options?.sessionId || null,
       routingSessionId: options?.routingSessionId || options?.sessionId || null,
       clientHostPid: options?.clientHostPid,
+      hop: options?.hop,
     },
   };
 }
@@ -61,6 +62,7 @@ export function renderBackgroundedResult({ result, command, cwd, options, starte
         callerSessionId: options?.callerSessionId || options?.sessionId,
         routingSessionId: options?.routingSessionId || options?.sessionId,
         clientHostPid: options?.clientHostPid,
+        hop: options?.hop,
       });
     } catch {
       /* best effort */
@@ -68,18 +70,25 @@ export function renderBackgroundedResult({ result, command, cwd, options, starte
   }
   // The promoted producer is still writing into the tee file, so it cannot be
   // consumed here — but it must not survive the command either. Consume (and
-  // delete) it when the task settles.
-  if (teePlan) cleanupArtifactOnTaskSettled(teePlan.teePath, result.jobId, consumeTeeArtifact);
+  // delete) it when the task settles — for a queued command, its run.
+  if (teePlan && result.jobId) cleanupArtifactOnTaskSettled(teePlan.teePath, result.jobId, consumeTeeArtifact);
+  else if (teePlan) cleanupArtifactAfter(teePlan.teePath, result.settled, consumeTeeArtifact);
   let taskBlock = null;
   if (task) taskBlock = renderBackgroundTask(task, { ownerTool: true });
   else if (result.jobId) taskBlock = `[task_id: ${result.jobId}]`;
+  // The output so far in the shared delivery shape, with the progress digest;
+  // the task cursor then starts after it, so nothing here is sent again.
   const partialOutput = task
-    ? readShellTaskOutput(task, {
-        stdout_path: result.stdoutPath,
-        stderr_path: result.stderrPath,
-        stdout_preview: stdout,
-        stderr_preview: stderr,
-      })
+    ? readShellTaskOutput(
+        task,
+        {
+          stdout_path: result.stdoutPath,
+          stderr_path: result.stderrPath,
+          stdout_preview: stdout,
+          stderr_preview: stderr,
+        },
+        { digest: true }
+      )
     : renderBackgroundPartialOutput(stdout, stderr);
   const lines = _backgroundResultLines({
     taskBlock,

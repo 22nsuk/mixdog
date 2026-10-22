@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import React, { act } from 'react';
 import { installTestDom } from './test-support/test-dom.mjs';
+const { overrideConfirmAction } = await import('./app-confirm.tsx');
 
 installTestDom(null, {
   html: '<!doctype html><html><body></body></html>',
@@ -37,6 +42,7 @@ window.mixdogDesktop = {
 };
 
 const { BranchChip } = await import('./BranchChip.tsx');
+const { clearBranchMenuCache } = await import('./branch-menu.tsx');
 const model = await import('./worktree-branch-model.ts');
 const { initUiLanguage, setUiLanguagePreference } = await import('./i18n.ts');
 const { SourceControlBranchPicker } = await import('./source-control-branch-picker.tsx');
@@ -77,11 +83,19 @@ const draftMenu = () =>
       { branch: 'mixdog/held', kind: 'session', sessionId: 'holder' },
     ],
   });
-const rect = (top = 600) =>({ x: 300, y: top, left: 300, right: 460, top, bottom: top + 28, width: 160, height: 28 });
+const rect = (top = 600) => ({ x: 300, y: top, left: 300, right: 460, top, bottom: top + 28, width: 160, height: 28 });
 
-async function mount(t, props = {}) {
+async function mount(t, props = {}, { keepCache = false, gate = null } = {}) {
   calls.length = 0;
-  handlers = {};
+  handlers = gate
+    ? {
+        getBranchMenu: async () => {
+          await gate.promise;
+          return menuReply;
+        },
+      }
+    : {};
+  if (!keepCache) clearBranchMenuCache();
   menuReply ??= menuFor();
   const host = document.createElement('main');
   document.body.append(host);
@@ -93,7 +107,6 @@ async function mount(t, props = {}) {
         sessionId: 's1',
         draftId: '',
         projectPath: '/p',
-        onOpenSession: (id) => opened.push(id),
         ...props,
       })
     )
@@ -119,9 +132,7 @@ const typeBranchName = async (input, value) => {
   });
 };
 const pressBranchKey = async (input, key, options = {}) => {
-  await act(async () =>
-    input.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, ...options }))
-  );
+  await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, ...options })));
 };
 
 for (const draft of [false, true]) {
@@ -166,16 +177,20 @@ for (const draft of [false, true]) {
     assert.deepEqual(calls, [], 'IME confirmation must not create a branch');
     if (draft) await act(async () => dialog.querySelector('[type="submit"]').click());
     else await pressBranchKey(input, 'Enter');
-    assert.deepEqual(calls.filter((call) => call.capability === capability), [
+    assert.deepEqual(
+      calls.filter((call) => call.capability === capability),
       draft
-        ? { capability, args: [{ projectPath: '/p', branch: 'feat/dialog', create: true }] }
-        : { capability, args: [{ branch: 'feat/dialog', create: true, expectedRevision: 3 }], sessionId: 's1' },
-    ]);
+        ? []
+        : [{ capability, args: [{ branch: 'feat/dialog', create: true, expectedRevision: 3 }], sessionId: 's1' }]
+    );
     assert.equal(document.querySelector('.branch-menu'), null);
     assert.equal(document.querySelector('.branch-name-dialog'), null);
     assert.equal(trigger.querySelector('.branch-chip-label').textContent, 'feat/dialog');
     assert.equal(document.activeElement, trigger);
-    if (draft) assert.equal(model.getWorktreeIntent(draftId), false);
+    if (draft) {
+      assert.equal(model.getWorktreeIntent(draftId), true);
+      assert.deepEqual(model.getBranchIntent(draftId), { branch: 'feat/dialog', create: true });
+    }
   });
 }
 
@@ -186,47 +201,57 @@ test('new branch can use the existing search text directly', async (t) => {
   const menu = await openMenu(trigger);
   await typeBranchName(menu.querySelector('input'), '  feat/from-search  ');
   await act(async () => menu.querySelector('[data-kind="create"]').click());
-  assert.deepEqual(calls.filter((call) => call.capability === 'selectBranch'), [
-    {
-      capability: 'selectBranch',
-      args: [{ branch: 'feat/from-search', create: true, expectedRevision: 3 }],
-      sessionId: 's1',
-    },
-  ]);
+  assert.deepEqual(
+    calls.filter((call) => call.capability === 'selectBranch'),
+    [
+      {
+        capability: 'selectBranch',
+        args: [{ branch: 'feat/from-search', create: true, expectedRevision: 3 }],
+        sessionId: 's1',
+      },
+    ]
+  );
 });
 
 for (const dismissal of ['Escape', 'Cancel', 'backdrop']) {
-test(`branch name dialog supports ${dismissal} without creating a branch`, async (t) => {
-  menuReply = menuFor();
-  const { trigger } = await mount(t);
-  let menu = await openMenu(trigger);
-  await act(async () => menu.querySelector('[data-kind="create"]').click());
-  const dialog = document.querySelector('.branch-name-dialog');
-  const input = dialog.querySelector('input');
-  assert.ok(input);
-  await typeBranchName(input, 'feat/cancelled');
-  if (dismissal === 'Escape') await pressBranchKey(input, 'Escape');
-  else if (dismissal === 'Cancel') await act(async () => dialog.querySelector('[type="button"]').click());
-  else {
-    await act(async () =>
-      dialog.parentElement.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }))
+  test(`branch name dialog supports ${dismissal} without creating a branch`, async (t) => {
+    menuReply = menuFor();
+    const { trigger } = await mount(t);
+    let menu = await openMenu(trigger);
+    await act(async () => menu.querySelector('[data-kind="create"]').click());
+    const dialog = document.querySelector('.branch-name-dialog');
+    const input = dialog.querySelector('input');
+    assert.ok(input);
+    await typeBranchName(input, 'feat/cancelled');
+    if (dismissal === 'Escape') await pressBranchKey(input, 'Escape');
+    else if (dismissal === 'Cancel') await act(async () => dialog.querySelector('[type="button"]').click());
+    else {
+      await act(async () => {
+        dialog.parentElement.dispatchEvent(new window.Event('pointerdown', { bubbles: true }));
+        dialog.parentElement.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+      });
+    }
+    assert.equal(document.querySelector('.branch-menu'), null);
+    assert.equal(document.querySelector('.branch-name-dialog'), null);
+    assert.equal(document.activeElement, trigger);
+    assert.equal(
+      calls.some((call) => call.capability === 'selectBranch'),
+      false
     );
-  }
-  assert.equal(document.querySelector('.branch-menu'), null);
-  assert.equal(document.querySelector('.branch-name-dialog'), null);
-  assert.equal(document.activeElement, trigger);
-  assert.equal(calls.some((call) => call.capability === 'selectBranch'), false);
-  menu = await openMenu(trigger);
-  assert.equal(menu.querySelector('input').getAttribute('aria-label'), 'Search branches');
-  assert.equal(menu.querySelector('input').value, '');
-});
+    menu = await openMenu(trigger);
+    assert.equal(menu.querySelector('input').getAttribute('aria-label'), 'Search branches');
+    assert.equal(menu.querySelector('input').value, '');
+  });
 }
 
 test('branch name dialog blocks duplicate requests and preserves failed names for retry', async (t) => {
   menuReply = menuFor();
   const { trigger } = await mount(t);
   let rejectCreation;
-  handlers.selectBranch = () => new Promise((_, reject) => { rejectCreation = reject; });
+  handlers.selectBranch = () =>
+    new Promise((_, reject) => {
+      rejectCreation = reject;
+    });
   const menu = await openMenu(trigger);
   await act(async () => menu.querySelector('[data-kind="create"]').click());
   const dialog = document.querySelector('.branch-name-dialog');
@@ -239,7 +264,7 @@ test('branch name dialog blocks duplicate requests and preserves failed names fo
   await pressBranchKey(input, 'Escape');
   await act(async () => {
     dialog.parentElement.dispatchEvent(new window.Event('pointerdown', { bubbles: true }));
-    dialog.parentElement.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+    dialog.parentElement.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   });
   assert.equal(document.querySelector('.branch-name-dialog'), dialog, 'busy creation cannot be dismissed');
   assert.equal(calls.filter((call) => call.capability === 'selectBranch').length, 1);
@@ -261,15 +286,10 @@ test('menu structure: search, worktree, branch section, separator, new branch', 
   assert.equal(trigger.querySelector('.branch-chip-label').textContent, 'main');
   assert.equal(trigger.querySelector('.branch-chip-fork'), null);
   const menu = await openMenu(trigger);
-  assert.deepEqual(
-    [...menu.children].map((child) => child.className.split(' ')[0] || child.tagName.toLowerCase()),
-    ['branch-menu-search', 'branch-menu-list', 'branch-menu-rule', 'branch-menu-item']
-  );
+  assert.equal(menu.querySelector('input[type="search"]').placeholder, 'Search branches');
+  assert.ok(menu.querySelector('input[type="search"]').closest('.schedules-search'));
   const list = menu.querySelector('.branch-menu-list');
-  assert.deepEqual(
-    [...list.children].map((child) => child.tagName.toLowerCase()),
-    ['button', 'h3', 'button', 'button', 'button', 'button']
-  );
+  assert.equal(list.querySelectorAll('.branch-row-more').length, 4, 'every branch exposes its own actions');
   const [worktree, ...rest] = items(list);
   assert.equal(worktree.querySelector('span').textContent, 'Worktree');
   assert.equal(worktree.querySelector('small').textContent, 'New branch · separate folder');
@@ -277,25 +297,99 @@ test('menu structure: search, worktree, branch section, separator, new branch', 
   assert.deepEqual(
     rest.map((row) => [row.querySelector('span').textContent, row.querySelector('small')?.textContent ?? '']),
     [
-      ['main', 'Current'],
-      ['feat/ssh-remote', 'In use'],
+      ['main', ''],
+      ['feat/ssh-remote', 'Worktree'],
       ['next-patch', ''],
-      ['ext-branch', 'External'],
+      ['ext-branch', 'Worktree'],
     ]
   );
+  assert.deepEqual(
+    [...list.querySelectorAll('.branch-menu-check')].map((check) => check.closest('[data-branch]')?.dataset.branch),
+    ['main'],
+    'the check marks the current branch while the worktree is not selected'
+  );
+  // Hover and focus move the check beside the "…"; it never hides or steps aside.
+  const css = readFileSync(new URL('./desktop/15-worktree-branch.css', import.meta.url), 'utf8');
+  assert.match(
+    css,
+    /:is\(:hover, :focus-within\) > \.branch-menu-item > :is\(small, \.branch-menu-check\) \{\s*margin-right: 28px;/
+  );
+  assert.doesNotMatch(css, /branch-menu-check[^{]*\{[^}]*(visibility: hidden|display: none)/);
+  for (const shell of list.querySelectorAll('.branch-row-shell')) {
+    assert.ok(shell.querySelector(':scope > .branch-row-more'), 'the … trigger sits inside the row');
+  }
   assert.equal(menu.lastElementChild.querySelector('span').textContent, 'New branch');
   // No merge / return entries live in this menu.
   assert.equal(menu.textContent.includes('Merge'), false);
 });
 
-test('menu opens above the chip, left-aligned with a 2px gap', async (t) => {
+test('menu opens above the chip, left-aligned with the shared 6px gap', async (t) => {
   menuReply = menuFor();
   const { trigger } = await mount(t);
   const menu = await openMenu(trigger);
   assert.equal(menu.style.top, '');
-  assert.equal(parseFloat(menu.style.bottom), 900 - rect().top + 2);
+  assert.equal(parseFloat(menu.style.bottom), 900 - rect().top + 6);
   assert.equal(parseFloat(menu.style.left), rect().left);
   assert.ok(parseFloat(menu.style.maxHeight) <= 320);
+});
+
+test('a remounted chip shows the cached menu at once; the fresh list updates the same rows in place', async (t) => {
+  setUiLanguagePreference('en');
+  await initUiLanguage();
+  menuReply = menuFor();
+  const first = await mount(t, { sessionId: 'cached-s' });
+  await settle();
+  assert.equal(first.trigger.querySelector('.branch-chip-label').textContent, 'main');
+  // The pane remounts (a route switch) while the re-read is outstanding.
+  const gate = Promise.withResolvers();
+  const second = await mount(t, { sessionId: 'cached-s' }, { keepCache: true, gate });
+  assert.ok(second.trigger, 'the chip is there before any read answers');
+  assert.equal(second.trigger.querySelector('.branch-chip-label').textContent, 'main');
+  const menu = await openMenu(second.trigger);
+  const names = () =>
+    items(menu)
+      .filter((item) => item.dataset.kind === 'branch')
+      .map((item) => item.dataset.branch);
+  assert.deepEqual(names(), ['main', 'feat/ssh-remote', 'next-patch', 'ext-branch']);
+  const row = menu.querySelector('[data-branch="next-patch"]');
+  row.focus();
+  menuReply = menuFor({
+    branches: [
+      branch('aaa-new'),
+      branch('main', true),
+      branch('feat/ssh-remote'),
+      branch('next-patch'),
+      branch('ext-branch'),
+    ],
+    occupancy: [...menuFor().occupancy, { branch: 'aaa-new', kind: 'free' }],
+  });
+  gate.resolve();
+  await settle();
+  assert.deepEqual(names(), ['main', 'aaa-new', 'feat/ssh-remote', 'next-patch', 'ext-branch']);
+  assert.equal(menu.querySelector('[data-branch="next-patch"]'), row, 'the row element is kept');
+  assert.equal(document.activeElement, row, 'focus stays on the row');
+});
+
+test('a chosen branch row spins at once and the chip shows the pending mark until the result arrives', async (t) => {
+  menuReply = menuFor();
+  const { trigger } = await mount(t);
+  const gate = Promise.withResolvers();
+  handlers.selectBranch = async () => {
+    await gate.promise;
+    throw new Error('WORKTREE_BUSY_JOBS: busy');
+  };
+  const menu = await openMenu(trigger);
+  const row = menu.querySelector('[data-branch="next-patch"]');
+  await act(async () => row.click());
+  assert.equal(row.dataset.pending, 'true');
+  assert.ok(row.querySelector('.progress-spinner-turn'));
+  assert.ok(trigger.querySelector('.progress-spinner-turn'), 'the chip shows a pending mark');
+  gate.resolve();
+  await settle();
+  await settle();
+  assert.equal(row.querySelector('.progress-spinner-turn'), null);
+  assert.equal(trigger.querySelector('.progress-spinner-turn'), null);
+  assert.ok(document.querySelector('.branch-menu-notice[role="alert"]'));
 });
 
 test('chip states: current branch, worktree intent in a draft, worktree-bound session', async (t) => {
@@ -318,8 +412,13 @@ test('chip states: current branch, worktree intent in a draft, worktree-bound se
   assert.equal(model.getWorktreeIntent('d1'), true);
   menu = await openMenu(draft.trigger);
   const selected = items(menu)[0];
-  assert.equal(selected.querySelector('small').textContent, 'New branch from main');
+  assert.equal(selected.querySelector('small').textContent, 'New branch · separate folder');
   assert.equal(selected.hasAttribute('data-selected'), true);
+  assert.ok(selected.querySelector('.branch-menu-check'), 'only the selected worktree row shows the check');
+  assert.equal(menu.querySelectorAll('.branch-menu-check').length, 1);
+  assert.equal(menu.querySelector('[data-branch="main"] small').textContent, 'Current');
+  assert.equal(menu.querySelector('[data-branch="main"] .branch-menu-check'), null, 'the check moved to the worktree');
+  assert.equal(menu.querySelector('[data-branch="main"]').hasAttribute('data-selected'), false);
   assert.equal(model.takeWorktreeIntent('d1'), true);
   assert.equal(model.getWorktreeIntent('d1'), false);
   await act(async () => draft.trigger.click());
@@ -340,24 +439,29 @@ test('chip states: current branch, worktree intent in a draft, worktree-bound se
   const boundMenu = await openMenu(bound.trigger);
   assert.deepEqual(
     items(boundMenu.querySelector('.branch-menu-list')).map((row) => row.querySelector('small')?.textContent ?? ''),
-    ['New branch · separate folder', '', 'Current']
+    ['New branch · separate folder', '', 'Project folder']
   );
 });
 
-test('occupancy: another session routes, an external worktree is disabled with its path', async (t) => {
+test('occupancy: shared and external worktrees move this session instead of opening another session', async (t) => {
   menuReply = menuFor();
   const { trigger, opened } = await mount(t);
+  handlers.selectBranch = (request) => ({
+    revision: 4,
+    workspace: workspace({ branch: request.args[0].branch, revision: 4 }),
+  });
   let menu = await openMenu(trigger);
   const [, , used, free, external] = items(menu);
-  assert.equal(used.getAttribute('data-tooltip'), 'Open the session that uses this branch');
-  assert.equal(external.getAttribute('aria-disabled'), 'true');
-  assert.equal(external.getAttribute('data-tooltip'), 'Checked out in an external worktree: /elsewhere/ext');
+  assert.equal(used.getAttribute('data-tooltip'), null);
+  assert.notEqual(external.getAttribute('aria-disabled'), 'true');
+  assert.equal(external.getAttribute('data-tooltip'), null);
   calls.length = 0;
   await act(async () => external.click());
-  assert.deepEqual(calls, []);
-  await act(async () => used.click());
-  assert.deepEqual(opened, ['other-session']);
-  assert.deepEqual(calls, []);
+  assert.equal(calls.filter((call) => call.capability === 'selectBranch').length, 1);
+  menu = await openMenu(trigger);
+  await act(async () => items(menu)[2].click());
+  assert.deepEqual(opened, []);
+  assert.equal(calls.filter((call) => call.capability === 'selectBranch').length, 2);
   assert.equal(document.querySelector('.branch-menu'), null);
   menu = await openMenu(trigger);
   calls.length = 0;
@@ -376,7 +480,7 @@ test('large repository confirms once and resends with confirmLarge', async (t) =
   menuReply = menuFor();
   const { trigger } = await mount(t);
   const prompts = [];
-  window.confirm = (text) => (prompts.push(text), true);
+  overrideConfirmAction((text) => (prompts.push(text), true));
   let attempts = 0;
   handlers.requestWorktree = (request) => {
     attempts += 1;
@@ -386,17 +490,21 @@ test('large repository confirms once and resends with confirmLarge', async (t) =
       error.details = { sizeBytes: 3 * 1024 ** 3 };
       throw error;
     }
-    // The runtime now holds the choice for the next send.
-    menuReply = menuFor({ pendingWorktree: { name: null } });
-    return { revision: 4, workspace: workspace({ revision: 4 }), pending: true };
+    // A session's worktree is created and entered now.
+    const bound = workspace({ worktreeId: 'w9', branch: 'mixdog/now', cwd: '/wt', revision: 4 });
+    menuReply = menuFor({ workspace: bound });
+    return { revision: 4, workspace: bound };
   };
   const menu = await openMenu(trigger);
   await act(async () => items(menu)[0].click());
   assert.equal(attempts, 2);
   assert.deepEqual(prompts, ['A worktree needs about 3.0 GB. Create it anyway?']);
   const sent = calls.filter((call) => call.capability === 'requestWorktree').map((call) => call.args[0]);
-  assert.deepEqual(sent, [{ expectedRevision: 3 }, { expectedRevision: 3, confirmLarge: true }]);
-  assert.equal(trigger.querySelector('.branch-chip-label').textContent, 'Worktree');
+  assert.deepEqual(sent, [
+    { expectedRevision: 3, provision: true },
+    { expectedRevision: 3, provision: true, confirmLarge: true },
+  ]);
+  assert.equal(trigger.querySelector('.branch-chip-label').textContent, 'mixdog/now');
   assert.equal(model.getWorktreeIntent('s1'), false, 'a session keeps no client-side choice');
   menuReply = menuFor();
 });
@@ -427,7 +535,6 @@ test('mid-session the chip follows the backend menu, never a stale client-side c
           draftId: '',
           projectPath: '/p',
           refreshKey,
-          onOpenSession() {},
         })
       )
     );
@@ -449,7 +556,7 @@ test('mid-session the chip follows the backend menu, never a stale client-side c
 test('a declined large-repository prompt sends nothing more', async (t) => {
   menuReply = menuFor();
   const { trigger } = await mount(t);
-  window.confirm = () => false;
+  overrideConfirmAction(() => false);
   let attempts = 0;
   handlers.requestWorktree = () => {
     attempts += 1;
@@ -461,6 +568,72 @@ test('a declined large-repository prompt sends nothing more', async (t) => {
   await act(async () => items(menu)[0].click());
   assert.equal(attempts, 1);
   assert.ok(document.querySelector('.branch-menu'));
+});
+
+test('uncommitted project files ask leave / carry / cancel and resend with carryChanges', async (t) => {
+  setUiLanguagePreference('en');
+  await initUiLanguage();
+  menuReply = menuFor();
+  const { trigger } = await mount(t);
+  handlers.requestWorktree = (request) => {
+    if (!request.args[0].carryChanges) {
+      throw new Error(
+        'Error invoking remote method: WORKTREE_DIRTY_CHOICE: dirty\n[worktree-details] {"count":3,"paths":["src/a.ts","b.md"]}'
+      );
+    }
+    if (request.args[0].carryChanges === 'carry') {
+      const error = new Error('busy');
+      error.code = 'WORKTREE_BUSY_JOBS';
+      throw error;
+    }
+    return { revision: 4, workspace: workspace({ revision: 4 }) };
+  };
+  const dialog = () => document.querySelector('.worktree-carry-dialog');
+  const choice = (id) => dialog().querySelector(`footer [data-choice="${id}"]`);
+  const sent = () => calls.filter((call) => call.capability === 'requestWorktree').map((call) => call.args[0]);
+  // The choice replaces the menu (nothing of it is drawn over the dialog);
+  // Cancel sends nothing more and leaves both closed.
+  let menu = await openMenu(trigger);
+  await act(async () => items(menu)[0].click());
+  assert.equal(document.querySelector('.branch-menu'), null, 'the menu closes before the dialog opens');
+  assert.equal(dialog().querySelector('h3').textContent, 'Uncommitted files in the project folder: 3');
+  assert.deepEqual(
+    [...dialog().querySelectorAll('footer button')].map((node) => node.textContent),
+    ['Cancel', 'Bring changes', 'Leave changes and move']
+  );
+  // A capped preview of the paths; the rest is marked.
+  assert.deepEqual(
+    [...dialog().querySelectorAll('.worktree-carry-paths li')].map((node) => node.textContent),
+    ['src/a.ts', 'b.md', '…']
+  );
+  assert.match(dialog().querySelector('[data-choice="leave"] span').textContent, /without these edits/);
+  assert.equal(document.activeElement, choice('leave'), 'leaving the changes is the default');
+  assert.ok(choice('leave').classList.contains('primary'));
+  await act(async () => choice('cancel').click());
+  assert.equal(dialog(), null);
+  assert.deepEqual(sent(), [{ expectedRevision: 3, provision: true }]);
+  assert.equal(document.querySelector('.branch-menu'), null);
+  // Carry: the menu comes back with the refusal as its notice.
+  calls.length = 0;
+  menu = await openMenu(trigger);
+  await act(async () => items(menu)[0].click());
+  await act(async () => choice('carry').click());
+  assert.deepEqual(sent(), [
+    { expectedRevision: 3, provision: true },
+    { expectedRevision: 3, provision: true, carryChanges: 'carry' },
+  ]);
+  assert.equal(
+    document.querySelector('.branch-menu [role="alert"]').textContent,
+    'Background tasks are still running. Wait for them or stop them, then try again.'
+  );
+  assert.equal(dialog(), null);
+  // Leave: the worktree is created and the menu stays closed.
+  calls.length = 0;
+  menu = document.querySelector('.branch-menu');
+  await act(async () => items(menu)[0].click());
+  await act(async () => choice('leave').click());
+  assert.deepEqual(sent().at(-1), { expectedRevision: 3, provision: true, carryChanges: 'leave' });
+  assert.equal(document.querySelector('.branch-menu'), null);
 });
 
 test('busy jobs and revision conflicts become a notice; a conflict re-reads the menu', async (t) => {
@@ -497,7 +670,9 @@ test('busy jobs and revision conflicts become a notice; a conflict re-reads the 
 test('a missing worktree shows the recovery chip and notice', async (t) => {
   setUiLanguagePreference('en');
   await initUiLanguage();
-  menuReply = menuFor({ workspace: workspace({ worktreeId: 'w1', branch: 'mixdog/x', transition: { state: 'recovery', txId: null } }) });
+  menuReply = menuFor({
+    workspace: workspace({ worktreeId: 'w1', branch: 'mixdog/x', transition: { state: 'recovery', txId: null } }),
+  });
   const { trigger } = await mount(t);
   assert.equal(trigger.querySelector('.branch-chip-label').textContent, 'Worktree missing');
   assert.equal(trigger.closest('.composer-branch-context').hasAttribute('data-recovery'), true);
@@ -506,6 +681,8 @@ test('a missing worktree shows the recovery chip and notice', async (t) => {
 test('a superseded missing-worktree fallback whose project menu fails leaves the newer menu alone', async (t) => {
   setUiLanguagePreference('en');
   await initUiLanguage();
+  // A mount adopts a menu another host read moments ago: start from no cache.
+  clearBranchMenuCache();
   calls.length = 0;
   let branchMenuCalls = 0;
   let failProjectMenu;
@@ -536,7 +713,6 @@ test('a superseded missing-worktree fallback whose project menu fails leaves the
           draftId: '',
           projectPath: '/p',
           refreshKey,
-          onOpenSession() {},
         })
       )
     );
@@ -558,6 +734,55 @@ test('a superseded missing-worktree fallback whose project menu fails leaves the
   assert.ok(items(menu).length > 1);
 });
 
+test('a missing worktree whose project menu also fails keeps the last good menu and retries', async (t) => {
+  setUiLanguagePreference('en');
+  await initUiLanguage();
+  // A mount adopts a menu another host read moments ago: start from no cache.
+  clearBranchMenuCache();
+  calls.length = 0;
+  let branchMenuCalls = 0;
+  handlers = {
+    getBranchMenu: () => {
+      branchMenuCalls += 1;
+      if (branchMenuCalls === 2) throw new Error('Error invoking remote method: WORKTREE_MISSING: gone');
+      return menuFor();
+    },
+    getProjectBranchMenu: () => {
+      throw new Error('project menu failed');
+    },
+  };
+  const host = document.createElement('main');
+  document.body.append(host);
+  const root = createRoot(host);
+  t.after(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+    handlers = {};
+  });
+  const render = (refreshKey) =>
+    act(async () =>
+      root.render(
+        React.createElement(BranchChip, {
+          sessionId: 's1',
+          draftId: '',
+          projectPath: '/p',
+          refreshKey,
+        })
+      )
+    );
+  await render('1');
+  const chip = () => host.querySelector('.composer-branch-context');
+  assert.equal(chip().querySelector('.branch-chip-label').textContent, 'main');
+  await render('2');
+  assert.equal(branchMenuCalls, 2);
+  assert.equal(chip().querySelector('.branch-chip-label').textContent, 'main');
+  assert.equal(chip().hasAttribute('data-recovery'), false);
+  // The failed fallback reports failure, so the backoff retry re-reads.
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 1000)));
+  assert.equal(branchMenuCalls, 3);
+  assert.equal(chip().querySelector('.branch-chip-label').textContent, 'main');
+});
+
 test('Korean copy', async (t) => {
   setUiLanguagePreference('ko');
   await initUiLanguage();
@@ -576,7 +801,7 @@ test('Korean copy', async (t) => {
     items(list)
       .slice(1)
       .map((row) => row.querySelector('small')?.textContent ?? ''),
-    ['현재', '사용 중', '', '외부']
+    ['', '워크트리', '', '워크트리']
   );
   assert.equal(menu.querySelector('input').placeholder, '브랜치 검색');
   assert.equal(menu.lastElementChild.textContent, '새 브랜치');
@@ -658,12 +883,19 @@ test('branchRows filters by search and ignores remote branches', () => {
   );
 });
 
-test('the runtime getBranchMenu response feeds the renderer model: rows, marks and search', async () => {
+test('the runtime getBranchMenu response feeds the renderer model: rows, marks and search', async (t) => {
   const { createWorkspaceTransitions } = await import('../../../../src/session-runtime/workspace/transitions.mjs');
-  const session = { id: 'lead-1', cwd: '/p', desktopSession: { classification: 'project', projectPath: '/p' } };
+  // The runtime reads the project folder's repository, so the menu is read
+  // for a real git repository with one commit on main.
+  const project = mkdtempSync(join(tmpdir(), 'branch-chip-menu-'));
+  const git = (...args) => execFileSync('git', ['-C', project, ...args]);
+  git('init', '-q', '-b', 'main');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+  t.after(() => rmSync(project, { recursive: true, force: true }));
+  const session = { id: 'lead-1', cwd: project, desktopSession: { classification: 'project', projectPath: project } };
   const api = createWorkspaceTransitions({
     getSession: () => session,
-    getCurrentCwd: () => '/p',
+    getCurrentCwd: () => project,
     getActiveTurnCount: () => 0,
     // The manager's listBranchOccupancy shape: local branch NAMES plus occupancy rows.
     manager: {
@@ -671,7 +903,7 @@ test('the runtime getBranchMenu response feeds the renderer model: rows, marks a
         return {
           branches: ['main', 'dev', 'feat/ssh-remote', 'ext-branch'],
           occupancy: [
-            { branch: 'main', kind: 'current', path: '/p' },
+            { branch: 'main', kind: 'current', path: project },
             { branch: 'dev', kind: 'free' },
             { branch: 'feat/ssh-remote', kind: 'session', sessionId: 'other-session', path: '/wt/ssh' },
             { branch: 'ext-branch', kind: 'external', path: '/elsewhere' },
@@ -698,16 +930,16 @@ test('the runtime getBranchMenu response feeds the renderer model: rows, marks a
   );
 });
 
-test('a draft picks branches through the guarded project checkout and shows its refusals', async (t) => {
+test('a draft defers its branch selection until first send without changing the shared checkout', async (t) => {
   setUiLanguagePreference('en');
   await initUiLanguage();
   projectMenuReply = draftMenu();
   const { trigger, opened } = await mount(t, { sessionId: '', draftId: 'd-guard' });
-  let menu = await openMenu(trigger);
+  const menu = await openMenu(trigger);
   const rows = items(menu.querySelector('.branch-menu-list'));
   assert.deepEqual(
     rows.slice(1).map((row) => row.querySelector('small')?.textContent ?? ''),
-    ['Current', '', 'In use'],
+    ['', '', 'Worktree'],
     'the real occupancy, not a guess from the branch list'
   );
   handlers.selectProjectBranch = () => {
@@ -716,21 +948,20 @@ test('a draft picks branches through the guarded project checkout and shows its 
   await act(async () => rows[2].click());
   assert.deepEqual(
     calls.filter((call) => call.capability === 'selectProjectBranch'),
-    [{ capability: 'selectProjectBranch', args: [{ projectPath: '/p', branch: 'dev' }] }]
+    []
   );
-  menu = document.querySelector('.branch-menu');
-  assert.equal(
-    menu.querySelector('[role="alert"]').textContent,
-    'The project folder has uncommitted changes. Commit or stash them before switching branches.'
-  );
-  handlers.selectProjectBranch = () => ({ branch: 'dev', changed: true });
-  await act(async () => items(menu.querySelector('.branch-menu-list'))[2].click());
-  await settle();
+  assert.deepEqual(model.getBranchIntent('d-guard'), { branch: 'dev', create: false });
   assert.equal(document.querySelector('.branch-menu'), null);
-  menu = await openMenu(trigger);
-  await act(async () => items(menu.querySelector('.branch-menu-list'))[3].click());
-  assert.deepEqual(opened, ['holder']);
-  assert.equal(calls.filter((call) => call.capability === 'selectProjectBranch').length, 2);
+  let submitted;
+  await act(async () => {
+    await model.sendDraftWithWorktreeIntent('d-guard', async (worktree) => {
+      submitted = worktree;
+      return { accepted: true, sessionId: 'new-session' };
+    });
+  });
+  assert.deepEqual(submitted, { branch: 'dev', create: false });
+  assert.deepEqual(opened, []);
+  assert.equal(model.getWorktreeIntent('d-guard'), false);
 });
 
 test('the New Task context bar orders project → workflow → branch', async (t) => {
@@ -757,7 +988,6 @@ test('the New Task context bar orders project → workflow → branch', async (t
           sessionId: '',
           draftId: 'd-order',
           projectPath: '/p',
-          onOpenSession() {},
         }),
       })
     )
@@ -848,7 +1078,10 @@ test('dock checkout and create go through the guarded project checkout with read
     ]
   );
   assert.deepEqual(errors, [
-    ['branch-checkout:dirty', 'The project folder has uncommitted changes. Commit or stash them before switching branches.'],
+    [
+      'branch-checkout:dirty',
+      'The project folder has uncommitted changes. Commit or stash them before switching branches.',
+    ],
     ['branch-checkout:busy', 'Background tasks are still running. Wait for them or stop them, then try again.'],
   ]);
   assert.equal(
@@ -879,8 +1112,7 @@ test('the dock merge goes through mergeProjectBranch with the confirmed target, 
       ),
     setError: () => {},
   };
-  const originalConfirm = window.confirm;
-  window.confirm = () => true;
+  overrideConfirmAction(() => true);
   try {
     const actions = branchActions(ctx, {
       branchQuery: '',
@@ -904,9 +1136,10 @@ test('the dock merge goes through mergeProjectBranch with the confirmed target, 
     actions.mergeIntoCurrent(branch('feature'));
     actions.mergeIntoCurrent(branch('moved'));
     actions.mergeIntoCurrent(branch('clash'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await Promise.all(runs);
   } finally {
-    window.confirm = originalConfirm;
+    overrideConfirmAction(null);
   }
   assert.deepEqual(
     calls.filter((call) => call.capability === 'mergeProjectBranch').map((call) => call.args[0]),
@@ -945,10 +1178,9 @@ test('opening a history commit as a branch is the guarded checkout with a start 
     setError: () => {},
   };
   const originalPrompt = window.prompt;
-  const originalConfirm = window.confirm;
   const names = ['from-history', 'dirty-try'];
   window.prompt = () => names.shift();
-  window.confirm = () => true;
+  overrideConfirmAction(() => true);
   const entry = { hash: 'a'.repeat(40), shortHash: 'aaaaaaa', subject: 'Base' };
   try {
     const actions = historyCommitActions(ctx, { commitMessage: '', clearCommitDraft() {} });
@@ -964,6 +1196,7 @@ test('opening a history commit as a branch is the guarded checkout with a start 
     actions.createBranchAtCommit(entry);
     actions.createBranchAtCommit(entry);
     actions.checkoutCommit(entry);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await Promise.all(runs);
     // A session working in the folder refuses the detached checkout readably.
     handlers.selectProjectBranch = () => {
@@ -971,10 +1204,11 @@ test('opening a history commit as a branch is the guarded checkout with a start 
     };
     runs.length = 0;
     actions.checkoutCommit(entry);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await Promise.all(runs);
   } finally {
     window.prompt = originalPrompt;
-    window.confirm = originalConfirm;
+    overrideConfirmAction(null);
   }
   assert.deepEqual(
     calls.filter((call) => call.capability === 'selectProjectBranch').map((call) => call.args[0]),
@@ -1022,6 +1256,56 @@ test('typed failures carry their details across IPC: disk sizes and the holder p
   assert.equal(
     model.worktreeFailureText(model.worktreeFailure(new Error('WORKTREE_REMOVAL_INCOMPLETE: partly'))),
     'The worktree could not be removed completely because a file is still in use. Close it and remove the worktree again.'
+  );
+});
+
+test('a refused carry names its own reason and never reads as the worktree-removal text', () => {
+  const removal = 'The worktree has uncommitted changes.';
+  const dirty = (details) =>
+    model.worktreeFailure(new Error(`WORKTREE_DIRTY: refused\n[worktree-details] ${JSON.stringify(details)}`));
+  const text = (details, options) => model.worktreeFailureText(dirty(details), options);
+  const cases = [
+    [{ reason: 'operation-in-progress', operation: 'merge' }, /^A merge is in progress in the project folder\./],
+    [{ reason: 'operation-in-progress', operation: 'rebase' }, /^A rebase is in progress/],
+    [{ reason: 'operation-in-progress', operation: 'cherry-pick' }, /^A cherry-pick is in progress/],
+    [{ reason: 'operation-in-progress', operation: 'revert' }, /^A revert is in progress/],
+    [{ reason: 'operation-in-progress', operation: 'bisect' }, /^A bisect is in progress/],
+    [{ reason: 'operation-in-progress', operation: 'unknown-op' }, /^A Git operation is in progress/],
+    [{ reason: 'assume-unchanged', paths: ['a.txt'] }, /^Files hidden from Git/],
+    [{ reason: 'skip-worktree', paths: ['a.txt'] }, /^Files hidden from Git/],
+    [{ reason: 'sparse-checkout' }, /^Files hidden from Git/],
+    [{ reason: 'intent-to-add', paths: ['a.txt'] }, /git add -N/],
+    [{ reason: 'unmerged-paths' }, /unresolved merge conflicts/],
+    [{ reason: 'dirty-submodules', paths: ['lib'] }, /^Submodules with changes/],
+    [{ reason: 'nested-repository', paths: ['vendor/x/'] }, /nested repositories/],
+    [{ reason: 'filtered-paths', paths: ['a.bin'] }, /Git LFS/],
+    [{ reason: 'too-large', files: 5200, maxFiles: 5000 }, /\(5200, limit 5000\)/],
+    [{ reason: 'too-large', maxBytes: 200 * 1048576 }, /over 200 MB/],
+    [{ reason: 'something-new' }, /^The changes couldn't be brought into the worktree\./],
+  ];
+  for (const [details, expected] of cases) {
+    const value = text(details, { carry: true });
+    assert.match(value, expected, JSON.stringify(details));
+    assert.notEqual(value, removal);
+    // The reason decides, even on a branch switch that brought the changes.
+    assert.match(text(details, { checkout: true }), expected);
+  }
+  // A carry failure keeps the runtime's recovery hint.
+  assert.equal(text({ reason: 'carry-failed', recoveryRef: 'refs/mixdog/carry/1' }), 'refused');
+  // No details across the hop: a carry still never reads as a removal.
+  assert.equal(
+    model.worktreeFailureText(model.worktreeFailure(new Error('WORKTREE_DIRTY: refused')), { carry: true }),
+    "The changes couldn't be brought into the worktree. Leave them in the project folder instead, or try again."
+  );
+  // The removal and project-folder readings are unchanged.
+  assert.equal(model.worktreeFailureText(model.worktreeFailure(new Error('WORKTREE_DIRTY: x'))), removal);
+  assert.match(text({ reason: 'project-dirty', count: 1 }), /^The project folder has uncommitted changes/);
+  // Busy shells of other sessions in the folder have their own text.
+  assert.match(
+    model.worktreeFailureText(
+      model.worktreeFailure(new Error('WORKTREE_BUSY_JOBS: busy\n[worktree-details] {"reason":"folder-shell-jobs"}'))
+    ),
+    /^Background commands still use an affected folder\./
   );
 });
 

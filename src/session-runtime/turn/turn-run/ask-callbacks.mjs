@@ -1,4 +1,5 @@
 import { isVisibleStreamProgress } from '../../../runtime/shared/stream-progress.mjs';
+import { toolCallDisplayIdentity } from '../../../runtime/shared/tool-primitives.mjs';
 
 // The askSession callback bridge: caller callbacks pass through, with the
 // transcript, first-visible timing, title release and warmup arming folded in.
@@ -6,10 +7,13 @@ export function createAskCallbacks({ transcript, notifyFnForSession, scheduleSea
   function plannedToolCalls(session0, options) {
     return async (iter, calls) => {
       for (const call of calls || []) {
+        // A bridged call reports the tool it runs; the transcript keeps the wire call.
+        const identity = toolCallDisplayIdentity(call?.name, call?.arguments);
         hooks.emit('tool:planned', {
           sessionId: session0.id,
-          name: call?.name || 'tool',
+          name: identity.name || 'tool',
           callId: call?.id || null,
+          ...(identity.via ? { via: identity.via } : {}),
         });
       }
       if (typeof options.onToolCall === 'function') {
@@ -57,11 +61,17 @@ export function createAskCallbacks({ transcript, notifyFnForSession, scheduleSea
 
   // The turn's change-record key rides the caller's transcript metadata (in
   // place: the stream stamps assistantAt on this same object), so the
-  // persisted user row and completion carry it across restore.
+  // persisted user row and completion carry it across restore. A merged
+  // batch also names every submission it delivers, so a queued-input restore
+  // can tell each one delivered.
   function stampCheckpoint(options) {
     const meta = options.transcriptMeta;
+    if (!meta || typeof meta !== 'object') return meta;
     const checkpointId = String(options.id || '').trim();
-    if (checkpointId && meta && typeof meta === 'object') meta.checkpointId = checkpointId;
+    if (checkpointId) meta.checkpointId = checkpointId;
+    if (Array.isArray(options.submissionIds) && options.submissionIds.length > 1) {
+      meta.submissionIds = options.submissionIds.map(String);
+    }
     return meta;
   }
 
@@ -70,7 +80,11 @@ export function createAskCallbacks({ transcript, notifyFnForSession, scheduleSea
       beforeToolExecution: () => turn.snapshot.promise || Promise.resolve(),
       transcriptMeta: stampCheckpoint(options),
       promptSource: options.promptSource,
+      // A routine turn's trusted selection text (its instructions only).
+      ...(typeof options.skillSelection === 'string' ? { skillSelection: options.skillSelection } : {}),
       retryFailedTurn: options.retryFailedTurn === true,
+      retryTurnId: options.retryTurnId,
+      retryAttemptId: options.retryAttemptId,
       onTextDelta: options.onTextDelta,
       onTextReset: options.onTextReset,
       onReasoningDelta: options.onReasoningDelta,
@@ -80,6 +94,7 @@ export function createAskCallbacks({ transcript, notifyFnForSession, scheduleSea
       },
       onUsageDelta: options.onUsageDelta,
       onAssistantToolCallObserved: options.onAssistantToolCallObserved,
+      onStreamItemStart: options.onStreamItemStart,
       onToolResult: (message) => options.onToolResult?.(message),
       onToolApproval: options.onToolApproval,
       onCompactEvent: options.onCompactEvent,

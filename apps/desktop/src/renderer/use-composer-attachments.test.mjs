@@ -251,6 +251,24 @@ test('Office files attach as chip-only file attachments with OOXML MIME types an
   assert.equal(harness.current.attachmentError, '');
 });
 
+test('legacy Office files attach as Office attachments with their legacy MIME types', async (t) => {
+  const harness = await mountComposer(t);
+  await harness.attach([
+    new File(['x'], 'old.doc', { type: '' }),
+    new File(['x'], 'sheet.xls', { type: 'application/vnd.ms-excel' }),
+    new File(['x'], 'deck.ppt', { type: 'application/octet-stream' }),
+  ]);
+  assert.deepEqual(
+    harness.current.attachments.map(({ name, kind, mimeType, token }) => ({ name, kind, mimeType, token })),
+    [
+      { name: 'old.doc', kind: 'office', mimeType: 'application/msword', token: '[File #1: old.doc]' },
+      { name: 'sheet.xls', kind: 'office', mimeType: 'application/vnd.ms-excel', token: '[File #2: sheet.xls]' },
+      { name: 'deck.ppt', kind: 'office', mimeType: 'application/vnd.ms-powerpoint', token: '[File #3: deck.ppt]' },
+    ]
+  );
+  assert.equal(harness.current.attachmentError, '');
+});
+
 test('an empty or octet-stream File.type is inferred from the extension and the filename is kept', async (t) => {
   const harness = await mountComposer(t);
   await harness.attach([
@@ -316,9 +334,7 @@ test('Office size cap, legacy formats, empty files and fake PDFs get clear rejec
       /huge\.docx: Office files must be under 20 MB/,
       true,
     ],
-    [new File(['x'], 'old.doc'), /old\.doc: legacy Office files can't be attached\. Save it as \.docx/, false],
-    [new File(['x'], 'sheet.xls'), /sheet\.xls: legacy Office files can't be attached\. Save it as \.xlsx/, false],
-    [new File(['x'], 'deck.ppt'), /deck\.ppt: legacy Office files can't be attached\. Save it as \.pptx/, false],
+    [new File([], 'empty.xls'), /empty\.xls: the file is empty\./, false],
     [new File([], 'empty.txt', { type: 'text/plain' }), /empty\.txt: the file is empty\./, false],
     [new File([], 'empty.docx'), /empty\.docx: the file is empty\./, false],
     [new File(['<html>'], 'fake.pdf', { type: 'application/pdf' }), /fake\.pdf: this file is not a valid PDF\./, true],
@@ -471,5 +487,125 @@ test('cancelled ingestion does not insert fallback paths into a transitioning dr
   await harness.attach([new File(['png'], 'cancelled.png', { type: 'image/png' })]);
   assert.equal(harness.current.draft, 'unchanged');
   assert.equal(harness.current.attachments.length, 0);
-  assert.equal(harness.current.attachmentError, '');
+  // The user is told the file was not attached instead of it vanishing.
+  assert.match(harness.current.attachmentError, /cancelled\.png: not attached/);
+});
+
+/** A file whose read stalls until `release()`, standing in for a slow disk,
+ *  a large image downscale or a busy main process. */
+function delayedFile(content, name, type) {
+  const file = new File([content], name, { type });
+  const read = file.arrayBuffer.bind(file);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  file.arrayBuffer = async () => {
+    await gate;
+    return read();
+  };
+  return { file, release };
+}
+
+test('a slow first paste and a fast second paste both land with distinct ids', async (t) => {
+  const harness = await mountComposer(t);
+  const slow = delayedFile('slow', 'slow.png', 'image/png');
+  let first;
+  await act(async () => {
+    first = harness.current.attachFiles([slow.file]);
+    await setImmediate();
+  });
+  assert.equal(harness.current.pendingLoads.current, 1);
+  await harness.attach([new File(['fast'], 'fast.txt', { type: 'text/plain' })]);
+  assert.equal(harness.current.pendingLoads.current, 1);
+  await act(async () => {
+    slow.release();
+    await first;
+  });
+  assert.equal(harness.current.pendingLoads.current, 0);
+  assert.deepEqual(
+    harness.current.attachments.map(({ name }) => name),
+    ['fast.txt', 'slow.png']
+  );
+  assert.equal(new Set(harness.current.attachments.map(({ id }) => id)).size, 2);
+});
+
+test('a load finishing after the composer switched conversations is reported, not inserted', async (t) => {
+  const harness = await mountComposer(t);
+  const slow = delayedFile('slow', 'slow.png', 'image/png');
+  let load;
+  await act(async () => {
+    load = harness.current.attachFiles([slow.file]);
+    await setImmediate();
+  });
+  await act(async () => harness.current.resetAttachments());
+  assert.equal(harness.current.pendingLoads.current, 0);
+  // A load that belongs to the new conversation is not disturbed by the stale one.
+  const next = delayedFile('next', 'next.png', 'image/png');
+  let nextLoad;
+  await act(async () => {
+    nextLoad = harness.current.attachFiles([next.file]);
+    await setImmediate();
+  });
+  await act(async () => {
+    slow.release();
+    await load;
+  });
+  assert.equal(harness.current.pendingLoads.current, 1);
+  assert.equal(harness.current.attachments.length, 0);
+  assert.match(harness.current.attachmentError, /slow\.png: not attached/);
+  await act(async () => {
+    next.release();
+    await nextLoad;
+  });
+  assert.equal(harness.current.pendingLoads.current, 0);
+  assert.deepEqual(
+    harness.current.attachments.map(({ name }) => name),
+    ['next.png']
+  );
+});
+
+test('a slow IPC read of dropped paths is reported when the conversation switched meanwhile', async (t) => {
+  const paths = ['C:/slow/photo.png'];
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const harness = await mountComposer(t, {
+    api: localApi(paths, async () => {
+      await gate;
+      return { name: 'photo.png', mimeType: 'image/png', data: Buffer.from('png').toString('base64') };
+    }),
+  });
+  let drop;
+  await act(async () => {
+    drop = harness.current.attachLocalPaths(paths);
+    await setImmediate();
+  });
+  assert.equal(harness.current.pendingLoads.current, 1);
+  await act(async () => harness.current.resetAttachments());
+  await act(async () => {
+    release();
+    await drop;
+  });
+  assert.equal(harness.current.attachments.length, 0);
+  assert.match(harness.current.attachmentError, /photo\.png: not attached/);
+  assert.equal(harness.current.pendingLoads.current, 0);
+});
+
+test('a transition during a slow read reports the dropped file', async (t) => {
+  const harness = await mountComposer(t);
+  const slow = delayedFile('slow', 'slow.png', 'image/png');
+  let load;
+  await act(async () => {
+    load = harness.current.attachFiles([slow.file]);
+    await setImmediate();
+  });
+  harness.current.transitioningRef.current = true;
+  await act(async () => {
+    slow.release();
+    await load;
+  });
+  assert.equal(harness.current.attachments.length, 0);
+  assert.match(harness.current.attachmentError, /slow\.png: not attached/);
 });

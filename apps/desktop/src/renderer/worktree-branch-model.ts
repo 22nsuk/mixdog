@@ -10,8 +10,11 @@ import type {
   DesktopSessionWorkspace,
   DesktopWorktreeCapability,
   DesktopWorktreeErrorCode,
+  DesktopWorktreeRefusalReason,
 } from '../shared/contract';
 import { DESKTOP_WORKTREE_ERROR_CODES } from '../shared/contract';
+import { anchoredPanelGeometry, anchoredPanelStyle, paneBounds, rectFrom } from './anchored-panel';
+import { confirmAction } from './app-confirm';
 import { t } from './i18n';
 
 export interface WorktreeFailure {
@@ -74,12 +77,126 @@ export function largeRepoPrompt(failure: WorktreeFailure): string {
     : t('A worktree needs a lot of disk space. Create it anyway?');
 }
 
+/** Why the project folder's uncommitted changes could not be brought into the
+ *  worktree (carry.mjs assertCarryable and the carry itself). */
+function carryRefusalText(failure: WorktreeFailure): string {
+  const details = failure.details;
+  switch (details.reason) {
+    case 'operation-in-progress':
+      switch (details.operation) {
+        case 'merge':
+          return t(
+            'A merge is in progress in the project folder. Finish or abort it, or leave the changes in the project folder.'
+          );
+        case 'rebase':
+          return t(
+            'A rebase is in progress in the project folder. Finish or abort it, or leave the changes in the project folder.'
+          );
+        case 'cherry-pick':
+          return t(
+            'A cherry-pick is in progress in the project folder. Finish or abort it, or leave the changes in the project folder.'
+          );
+        case 'revert':
+          return t(
+            'A revert is in progress in the project folder. Finish or abort it, or leave the changes in the project folder.'
+          );
+        case 'bisect':
+          return t(
+            'A bisect is in progress in the project folder. Finish or abort it, or leave the changes in the project folder.'
+          );
+        default:
+          return t(
+            'A Git operation is in progress in the project folder. Finish or abort it, or leave the changes in the project folder.'
+          );
+      }
+    case 'unmerged-paths':
+      return t(
+        'The project folder has unresolved merge conflicts. Resolve them, or leave the changes in the project folder.'
+      );
+    case 'dirty-submodules':
+      return t(
+        "Submodules with changes can't be brought along. Commit or reset them, or leave the changes in the project folder."
+      );
+    case 'nested-repository':
+      return t(
+        "Untracked nested repositories can't be brought along. Leave the changes in the project folder instead."
+      );
+    case 'too-large': {
+      const files = Number(details.files);
+      const maxFiles = Number(details.maxFiles);
+      if (files > 0 && maxFiles > 0) {
+        return t(
+          'Too many untracked files to bring along ({{files}}, limit {{limit}}). Add generated output to .gitignore, or leave the changes in the project folder.',
+          { files, limit: maxFiles }
+        );
+      }
+      const size = formatByteSize(Number(details.maxBytes));
+      return size
+        ? t(
+            'The untracked files are too large to bring along (over {{size}}). Add large files to .gitignore, or leave the changes in the project folder.',
+            { size }
+          )
+        : t('The untracked files are too large to bring along. Leave the changes in the project folder instead.');
+    }
+    case 'sparse-checkout':
+    case 'skip-worktree':
+    case 'assume-unchanged':
+      return t(
+        "Files hidden from Git (sparse checkout, skip-worktree or assume-unchanged) can't be brought along. Leave the changes in the project folder instead."
+      );
+    case 'intent-to-add':
+      return t(
+        "Files added with intent to add (git add -N) can't be brought along. Stage or unstage them, or leave the changes in the project folder."
+      );
+    case 'filtered-paths':
+      return t(
+        "Files that use a Git filter (such as Git LFS) can't be brought along exactly. Leave the changes in the project folder instead."
+      );
+    case 'head-moved':
+    case 'carry-failed':
+    case 'carry-restore-refused':
+    case 'carry-restore-failed':
+      // The runtime's text names the recovery ref that holds the changes.
+      return runtimeText(failure) || carryRefusedText();
+    default:
+      return carryRefusedText();
+  }
+}
+
+function carryRefusedText(): string {
+  return t(
+    "The changes couldn't be brought into the worktree. Leave them in the project folder instead, or try again."
+  );
+}
+
+/** The shared meaning of a refusal reason: each English source string is the
+ *  runtime's own text for that reason (WORKTREE_REFUSAL_REASONS), so the
+ *  desktop, remote and TUI say the same. Null for any other reason. */
+export function worktreeRefusalText(reason: unknown): string | null {
+  switch (reason as DesktopWorktreeRefusalReason) {
+    case 'workspace-retained':
+      return t('Sessions still retain this folder. Close or remove those sessions before cleaning it up.');
+    case 'workspace-lease':
+      return t('A runtime still holds this folder. Stop its work and release the workspace first.');
+    case 'folder-in-use':
+      return t('Sessions or workers still use an affected folder. Finish or move them before continuing.');
+    case 'folder-shell-jobs':
+      return t('Background commands still use an affected folder. Wait for them or stop them first.');
+    case 'workspace-admission-unreadable':
+      return t('Workspace activity cannot be verified. Nothing was changed.');
+    default:
+      return null;
+  }
+}
+
 /** User-facing text for a typed failure; untyped failures keep their message.
  *  `checkout`: the failure answers a branch switch in the project folder, so
- *  WORKTREE_DIRTY means the project folder (it carries no details over IPC). */
+ *  WORKTREE_DIRTY means the project folder (it carries no details over IPC).
+ *  `carry`: the request brought the uncommitted changes along, so a
+ *  WORKTREE_DIRTY without a known reason is a refused carry. */
 export function worktreeFailureText(
   failure: WorktreeFailure,
-  { checkout = false }: { checkout?: boolean } = {}
+  { checkout = false, carry = false }: { checkout?: boolean; carry?: boolean } = {}
 ): string {
   switch (failure.code) {
     case 'WORKTREE_DISK_INSUFFICIENT': {
@@ -93,9 +210,14 @@ export function worktreeFailureText(
         : t('Not enough free disk space to create the worktree.');
     }
     case 'WORKTREE_FILE_RECOVERY':
-      return t('Retained file recovery records block worktree removal, including force. Inspect and explicitly delete them first.');
+      return t(
+        'Retained file recovery records block worktree removal, including force. Inspect and explicitly delete them first.'
+      );
     case 'WORKTREE_BUSY_JOBS':
-      return t('Background tasks are still running. Wait for them or stop them, then try again.');
+      return (
+        worktreeRefusalText(failure.details.reason) ??
+        t('Background tasks are still running. Wait for them or stop them, then try again.')
+      );
     case 'WORKTREE_BRANCH_OCCUPIED': {
       const path = typeof failure.details.path === 'string' ? failure.details.path : '';
       return path
@@ -116,10 +238,16 @@ export function worktreeFailureText(
       return t('Worktrees are not available yet.');
     case 'WORKTREE_UNSUPPORTED_REPO':
       return t('This folder does not support worktrees.');
-    case 'WORKTREE_DIRTY':
-      return checkout || failure.details.reason === 'project-dirty'
-        ? t('The project folder has uncommitted changes. Commit or stash them before switching branches.')
-        : t('The worktree has uncommitted changes.');
+    case 'WORKTREE_DIRTY': {
+      const reason = failure.details.reason;
+      if (reason && reason !== 'project-dirty') return carryRefusalText(failure);
+      if (carry && !reason) return carryRefusedText();
+      if (checkout || reason === 'project-dirty') {
+        return t('The project folder has uncommitted changes. Commit or stash them before switching branches.');
+      }
+      // Only a worktree removal is refused without a reason.
+      return t('The worktree has uncommitted changes.');
+    }
     case 'WORKTREE_PARTIAL_TRANSITION':
       // The runtime's text names the branch the project folder is actually on.
       return runtimeText(failure);
@@ -158,7 +286,9 @@ function runtimeText(failure: WorktreeFailure): string {
   return (index >= 0 ? failure.message.slice(index + marker.length) : failure.message).trim();
 }
 
-export type BranchMark = 'current' | 'inUse' | 'external' | '';
+/** `project`: the project folder's checked-out branch, marked while the
+ *  session works in its worktree. */
+export type BranchMark = 'current' | 'inUse' | 'external' | 'project' | '';
 
 export interface BranchRow {
   name: string;
@@ -184,6 +314,7 @@ export function branchRows(menu: DesktopBranchMenu, ownSessionId: string, query:
     const held = occupancy.get(branch.name);
     const row: BranchRow = { name: branch.name, mark: '', retained: false, disabled: false };
     if (branch.name === menu.workspace.branch) row.mark = 'current';
+    else if (held?.kind === 'current' && menu.workspace.worktreeId) row.mark = 'project';
     else if (held?.kind === 'session' && held.sessionId && held.sessionId !== ownSessionId) {
       row.mark = 'inUse';
       row.sessionId = held.sessionId;
@@ -191,10 +322,12 @@ export function branchRows(menu: DesktopBranchMenu, ownSessionId: string, query:
     else if (held?.kind === 'external') {
       row.mark = 'external';
       row.path = held.path;
-      row.disabled = true;
     }
     rows.push(row);
   }
+  // The session's own branch leads; the rest keep their order.
+  const current = rows.findIndex((row) => row.mark === 'current');
+  if (current > 0) rows.unshift(...rows.splice(current, 1));
   return rows;
 }
 
@@ -213,6 +346,7 @@ export function branchChipState(workspace: DesktopSessionWorkspace | null, inten
 // Lazy: the worktree is created at the first send, so a New Task only
 // remembers the choice. The send path reads it with takeWorktreeIntent.
 const intents = new Map<string, boolean>();
+const branchIntents = new Map<string, { branch: string; create: boolean }>();
 const listeners = new Set<() => void>();
 
 function emitIntent() {
@@ -220,10 +354,21 @@ function emitIntent() {
 }
 
 export function setWorktreeIntent(key: string, intent: boolean) {
+  if (!intent) branchIntents.delete(key);
   if ((intents.get(key) ?? false) === intent) return;
   if (intent) intents.set(key, true);
   else intents.delete(key);
   emitIntent();
+}
+
+export function setBranchIntent(key: string, branch: string, create: boolean) {
+  branchIntents.set(key, { branch, create });
+  setWorktreeIntent(key, true);
+  emitIntent();
+}
+
+export function getBranchIntent(key: string) {
+  return branchIntents.get(key);
 }
 
 export function getWorktreeIntent(key: string): boolean {
@@ -245,7 +390,7 @@ export function takeWorktreeIntent(key: string): boolean {
 export async function submitDraftWithWorktree<T>(
   send: (worktree: DesktopNewTaskWorktree | undefined) => Promise<T>,
   worktree: boolean,
-  confirm: (message: string) => boolean = (message) => window.confirm(message)
+  confirm: (message: string) => boolean | Promise<boolean> = (message) => confirmAction(message)
 ): Promise<T | null> {
   if (!worktree) return send(undefined);
   try {
@@ -254,7 +399,7 @@ export async function submitDraftWithWorktree<T>(
     } catch (reason) {
       const failure = worktreeFailure(reason);
       if (failure.code !== 'WORKTREE_LARGE_REPO_CONFIRM') throw reason;
-      if (!confirm(largeRepoPrompt(failure))) return null;
+      if (!(await confirm(largeRepoPrompt(failure)))) return null;
       return await send({ confirmLarge: true });
     }
   } catch (reason) {
@@ -273,14 +418,22 @@ export async function sendDraftWithWorktreeIntent<T extends { accepted?: unknown
   send: (worktree: DesktopNewTaskWorktree | undefined) => Promise<T>,
   confirm?: (message: string) => boolean
 ): Promise<T | null> {
+  const selected = branchIntents.get(key);
   const worktree = takeWorktreeIntent(key);
   let started = false;
   try {
-    const result = await submitDraftWithWorktree(send, worktree, confirm);
+    const result = await submitDraftWithWorktree(
+      (options) => send(selected ? { ...options, ...selected } : options),
+      worktree,
+      confirm
+    );
     started = result?.accepted === true && Boolean(result.sessionId);
     return result;
   } finally {
-    if (worktree && !started) setWorktreeIntent(key, true);
+    if (worktree && !started) {
+      if (selected) setBranchIntent(key, selected.branch, selected.create);
+      else setWorktreeIntent(key, true);
+    }
   }
 }
 
@@ -298,43 +451,27 @@ export function useWorktreeIntent(key: string): boolean {
 // ── Placement ────────────────────────────────────────────────────────────
 const BRANCH_MENU_WIDTH = 280;
 const BRANCH_MENU_MAX_HEIGHT = 320;
-const MENU_GAP = 2;
-const EDGE = 8;
 
-/** Same rule as OpenSelect's composer context pills: left-aligned to the chip,
- *  opened ABOVE it with a 2px gap, falling below only when above cannot fit. */
-export function branchMenuPosition(
-  anchor: HTMLElement
-): { left: number; maxHeight: number } & ({ bottom: number; top?: undefined } | { top: number; bottom?: undefined }) {
-  const rect = anchor.getBoundingClientRect();
-  const viewport = window.visualViewport;
-  const visible = {
-    left: viewport?.offsetLeft ?? 0,
-    top: viewport?.offsetTop ?? 0,
-    right: (viewport?.offsetLeft ?? 0) + (viewport?.width ?? window.innerWidth),
-    bottom: (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight),
-  };
-  const sheet = anchor.closest<HTMLElement>('.pane-leaf, .workspace, .session-sidebar')?.getBoundingClientRect();
-  const bounds =
-    sheet && sheet.width > 0 && sheet.height > 0
-      ? {
-          left: Math.max(sheet.left, visible.left),
-          top: Math.max(sheet.top, visible.top),
-          right: Math.min(sheet.right, visible.right),
-          bottom: Math.min(sheet.bottom, visible.bottom),
-        }
-      : visible;
-  const width = Math.min(BRANCH_MENU_WIDTH, Math.max(0, bounds.right - bounds.left - EDGE * 2));
-  const left = Math.max(bounds.left + EDGE, Math.min(bounds.right - width - EDGE, rect.left));
-  const spaceAbove = rect.top - bounds.top - EDGE;
-  const spaceBelow = bounds.bottom - rect.bottom - EDGE;
-  const above = spaceAbove >= BRANCH_MENU_MAX_HEIGHT || spaceAbove > spaceBelow;
-  const maxHeight = Math.max(0, Math.min(BRANCH_MENU_MAX_HEIGHT, (above ? spaceAbove : spaceBelow) - MENU_GAP));
-  if (above) {
-    const layoutHeight = document.documentElement.clientHeight || window.innerHeight;
-    return { left, maxHeight, bottom: Math.max(EDGE, layoutHeight - rect.top + MENU_GAP) };
-  }
-  return { left, maxHeight, top: Math.min(bounds.bottom - EDGE, rect.bottom + MENU_GAP) };
+/** The chip sits in the composer at the bottom of the screen, so its menu
+ *  opens ABOVE it (anchored-panel.ts, like the composer context pills):
+ *  left edges aligned, 6px off, falling below only when above cannot hold the
+ *  menu and below is roomier. */
+export function branchMenuPosition(anchor: HTMLElement): {
+  left?: number;
+  top?: number;
+  bottom?: number;
+  maxHeight: number;
+} {
+  const trigger = rectFrom(anchor);
+  const geometry = anchoredPanelGeometry({
+    trigger,
+    bounds: paneBounds(anchor),
+    preferredWidth: BRANCH_MENU_WIDTH,
+    naturalHeight: BRANCH_MENU_MAX_HEIGHT,
+    placement: 'above',
+  });
+  const { transformOrigin: _origin, ...style } = anchoredPanelStyle(geometry, trigger);
+  return { ...style, maxHeight: Math.min(BRANCH_MENU_MAX_HEIGHT, style.maxHeight) };
 }
 
 export type WorktreeInvoker = <T>(

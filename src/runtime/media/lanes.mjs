@@ -8,6 +8,7 @@
  * an unauthenticated lane fails closed.
  */
 import { hasAgentApiKey } from '../shared/provider-api-key.mjs';
+import { ACCOUNT_PROVIDERS } from '../shared/provider-accounts.mjs';
 // Credential probes are file-level checks: the catalog must not drag the whole
 // provider graph in just to render lane availability.
 import {
@@ -15,6 +16,7 @@ import {
   hasGrokOAuthCredentials,
   hasOpenAIOAuthCredentials,
 } from '../agent/orchestrator/providers/oauth-credential-probes.mjs';
+import { hasImageApiCredentials, imageApiLane } from './auth.mjs';
 import { loadMediaModels, projectMediaModels } from './catalog.mjs';
 import { catalogDiagnostic } from './catalog-errors.mjs';
 import { MEDIA_KINDS } from './tool-defs.mjs';
@@ -64,6 +66,7 @@ const LANES = Object.freeze([
     image: Object.freeze({
       controls: Object.freeze({
         maxReferences: 5,
+        background: Object.freeze(['auto', 'transparent', 'opaque']),
       }),
     }),
   }),
@@ -96,9 +99,30 @@ const LANES = Object.freeze([
       controls: GEMINI_IMAGE_CONTROLS,
     }),
   }),
+  // Gateway lanes on the normalized Image API: every model advertises its own
+  // parameters in the catalog, so the lane declares no controls of its own.
+  Object.freeze({
+    id: 'openrouter',
+    label: 'OpenRouter',
+    auth: Object.freeze({ type: 'api-key', provider: 'openrouter' }),
+    image: Object.freeze({ controls: Object.freeze({}) }),
+  }),
+  Object.freeze({
+    id: 'nano-gpt',
+    label: 'NanoGPT',
+    auth: Object.freeze({ type: 'api-key', provider: 'nano-gpt' }),
+    image: Object.freeze({ controls: Object.freeze({}) }),
+  }),
 ]);
 
 const LANE_BY_ID = new Map(LANES.map((lane) => [lane.id, lane]));
+
+/** The provider whose connected accounts a lane can generate through, or ''
+ *  for a lane that authenticates with a single API key. */
+export function mediaLaneAccountProvider(laneId) {
+  const provider = LANE_BY_ID.get(String(laneId || '').trim())?.auth.provider;
+  return ACCOUNT_PROVIDERS.includes(provider) ? provider : '';
+}
 
 const OAUTH_PROBES = Object.freeze({
   'grok-oauth': hasGrokOAuthCredentials,
@@ -108,6 +132,7 @@ const OAUTH_PROBES = Object.freeze({
 
 function laneAuthenticated(lane) {
   try {
+    if (imageApiLane(lane.id)) return hasImageApiCredentials(lane.id);
     if (lane.auth.type === 'api-key') return hasAgentApiKey(lane.auth.provider);
     return OAUTH_PROBES[lane.auth.provider]?.() === true;
   } catch {
@@ -134,8 +159,23 @@ function laneKindView(lane, kind, models) {
   };
 }
 
+const PENDING = Symbol('catalog-pending');
+
+/** The catalog rows, or PENDING when they did not arrive within `budgetMs`
+ *  (0 = wait). The request keeps running; the loader's singleflight lets the
+ *  next listing join it instead of starting over. */
+async function withinBudget(loading, budgetMs) {
+  if (!(budgetMs > 0)) return loading;
+  loading.catch(() => {});
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(resolve, budgetMs, PENDING);
+  });
+  return Promise.race([loading, expired]).finally(() => clearTimeout(timer));
+}
+
 export function createMediaLaneCatalog({ loadModels = loadMediaModels, authenticated = laneAuthenticated } = {}) {
-  async function laneView(lane) {
+  async function laneView(lane, budgetMs = 0) {
     const signedIn = authenticated(lane);
     const view = {
       id: lane.id,
@@ -143,13 +183,24 @@ export function createMediaLaneCatalog({ loadModels = loadMediaModels, authentic
       authType: lane.auth.type,
       authProvider: lane.auth.provider,
       authenticated: signedIn,
+      // What the lane can generate once signed in; `kinds` lists only what its
+      // live catalog offers right now.
+      supportedKinds: MEDIA_KINDS.filter((kind) => lane[kind]),
       kinds: [],
       image: null,
       video: null,
     };
     if (!signedIn) return view;
     try {
-      const rows = await loadModels(lane.id);
+      const rows = await withinBudget(
+        Promise.resolve().then(() => loadModels(lane.id)),
+        budgetMs
+      );
+      if (rows === PENDING) {
+        // Still loading, not empty: the caller shows that and asks again.
+        view.catalogPending = true;
+        return view;
+      }
       const models = projectMediaModels(lane.id, rows);
       if (rows.catalogWarning) view.catalogWarning = rows.catalogWarning;
       for (const kind of MEDIA_KINDS) {
@@ -175,9 +226,11 @@ export function createMediaLaneCatalog({ loadModels = loadMediaModels, authentic
   }
 
   return {
-    /** Live catalog shared by Studio and the model-facing media tool. */
-    async listMediaLanes() {
-      return (await Promise.all(LANES.map(laneView))).filter(Boolean);
+    /** Live catalog shared by Studio and the model-facing media tool.
+     *  `budgetMs` bounds the wait per lane: a lane whose catalog is slower
+     *  answers `catalogPending` instead of holding every other lane. */
+    async listMediaLanes({ budgetMs = 0 } = {}) {
+      return (await Promise.all(LANES.map((lane) => laneView(lane, budgetMs)))).filter(Boolean);
     },
     async resolveMediaRequest({ lane: laneId, kind, model } = {}) {
       const kindName = String(kind || '').trim();

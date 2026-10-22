@@ -5,8 +5,13 @@
  * work (preview URLs, frames, capture, file watching) comes in as `deps`, so
  * request handling, containment and routing stay testable without a window.
  */
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type {
   DesktopVisualizeEvent,
+  DesktopVisualizeTabCommand,
   VisualizeHostEvent,
   VisualizeHostState,
   VisualizeInlineContent,
@@ -26,17 +31,22 @@ import { createProblemTracker } from './problem-tracker';
 import { createReadActions } from './read-actions';
 import { createReloads } from './reloads';
 import { createPublish, createSessionViews } from './session-views';
-import { type FileTarget, type SessionState, type VisualizeResult, view } from './tab-state';
+import { currentAnnotations, type FileTarget, type SessionState, type VisualizeResult, view } from './tab-state';
 import { createTabVersions } from './tab-versions';
 import { createTabs } from './tabs';
-import { parseVisualizeRequest, type VisualizeAnnotateOp } from './targets';
+import { parseVisualizeRequest } from './targets';
+import { type VisualizeAnnotation, visualizePaneMarks } from '../../shared/visualize-annotations';
 import { createThumbnails } from './thumbnails';
+import { createTurnHolds } from './turn-hold';
 import { createVersionRestore } from './version-restore';
 import { createVersionSelection } from './version-select';
 import { createVisualizeVersionStore, type VisualizeVersionLimits } from './versions';
 
 export type { RequesterFrame } from './lease-guard';
 export type { VisualizeResult, VisualizeTabSummary } from './tab-state';
+
+/** How far the user can see a displayed tab (see `VisualizeServiceDeps.onScreen`). */
+export type VisualizeScreenState = 'visible' | 'background' | 'covered' | 'hidden';
 
 export interface VisualizeServiceDeps {
   /** False while no desktop window can show the panel. */
@@ -54,12 +64,14 @@ export interface VisualizeServiceDeps {
   browserAvailable(): boolean;
   /** Watch one file; returns the disposer. */
   watch(path: string, onChange: () => void): () => void;
-  /** Run the overlay operation in every HTML pane of the displayed tab. */
+  /** Show exactly `marks` (the tab's whole list, by displayed pane) in the
+   *  displayed tab's HTML panes of the desktop window. Null when only a paired
+   *  device shows the tab: it draws the marks from the tab state itself. */
   annotate(
     sessionId: string,
     tab: VisualizeTabView,
-    op: VisualizeAnnotateOp
-  ): Promise<Array<{ pane: string; result: VisualizeOverlayResult }>>;
+    marks: VisualizeAnnotation[]
+  ): Promise<Array<{ pane: string; result: VisualizeOverlayResult }> | null>;
   /** Screen reading: run the inspection in every HTML pane of the displayed
    *  tab (laid out at `viewport` for the duration when given). The answers are
    *  the pages' own and untrusted; the service types and bounds them. */
@@ -68,11 +80,26 @@ export interface VisualizeServiceDeps {
     tab: VisualizeTabView,
     options: { viewport?: { width: number; height: number }; selector?: string }
   ): Promise<Array<{ pane: string; result: unknown }>>;
+  /** Screen reading without the panel (an agent turn leaves it alone): one
+   *  HTML pane loaded in a hidden window at `viewport` (a default size when
+   *  absent), its inspection and the problems it showed while loading. */
+  inspectOffscreen?(
+    pane: VisualizePaneView,
+    allowNetwork: boolean,
+    options: { viewport?: { width: number; height: number }; selector?: string; roots: readonly string[] }
+  ): Promise<{ result: unknown; problems: string[] }>;
   /** PNG bytes of the displayed tab body. */
   capture(sessionId: string, tab: VisualizeTabView): Promise<Buffer>;
   /** Resolves once the displayed tab's HTML panes are on screen (so their
    *  problems are being captured); throws when they cannot be. */
   ensureShown?(sessionId: string, tab: VisualizeTabView): Promise<void>;
+  /** Whether the user can see the displayed tab right now: `visible` (the
+   *  desktop window is in front with the tab's panel uncovered, or a paired
+   *  remote device is viewing it), `background` (drawn uncovered, but another
+   *  app has the focus), `covered` (drawn, but an overlay in the window hides
+   *  it) or `hidden` (window minimized or hidden, panel closed, session not
+   *  shown). Absent = assumed visible. */
+  onScreen?(sessionId: string, tab: VisualizeTabView): Promise<VisualizeScreenState>;
   /** Keep version history in this folder (the app's data folder, never a
    *  project); absent = no history. */
   versions?: { directory: string } & VisualizeVersionLimits;
@@ -85,6 +112,16 @@ export interface VisualizeServiceDeps {
     sessionId: string,
     tab: VisualizeTabView,
     targets: FileTarget[],
+    signal: AbortSignal
+  ): Promise<Buffer | null>;
+  /** The same picture drawn without the panel (a turn's end, when the panel
+   *  still shows what it showed before): `files` is the file behind each
+   *  displayed pane. Null (or a rejection) when it cannot be drawn or must
+   *  not be (a page showing a password field); stops once `signal` aborts. */
+  thumbnailOffscreen?(
+    sessionId: string,
+    tab: VisualizeTabView,
+    files: readonly string[],
     signal: AbortSignal
   ): Promise<Buffer | null>;
   /** The session's working directory, for reopening a closed tab from its
@@ -112,13 +149,124 @@ export interface VisualizeServiceDeps {
    *  the runtime client waits longer, so a timeout is reported, not raced. */
   exportDeadlineMs?: number;
   /** The bytes of an export of displayed pane `pane`: the whole page for an
-   *  HTML pane, else what the panel shows. */
-  exportBytes?(sessionId: string, tab: VisualizeTabView, format: 'png' | 'pdf', pane: number): Promise<Buffer>;
+   *  HTML pane, else what the panel shows. With `offscreenFiles` (the file
+   *  behind each displayed pane, empty for inline content) it draws without
+   *  the panel wherever it can, so the panel may be hidden. */
+  exportBytes?(
+    sessionId: string,
+    tab: VisualizeTabView,
+    format: 'png' | 'pdf',
+    pane: number,
+    offscreenFiles?: readonly string[],
+    /** A document had more pages than one PNG stacks (first `included` of `total`). */
+    onPagesCut?: (included: number, total: number) => void
+  ): Promise<Buffer>;
   delay?(ms: number): Promise<void>;
   reloadDebounceMs?: number;
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+type LateGroups = Pick<
+  VisualizeServiceContext,
+  'publish' | 'thumbnails' | 'problems' | 'leases' | 'panes' | 'tabVersions' | 'reloads' | 'tabs' | 'opens' | 'exports'
+>;
+
+/** The shared context of the service's groups; `late` yields the groups
+ *  created after it, read only when a handler runs. */
+function createServiceContext(
+  deps: VisualizeServiceDeps,
+  sessions: Map<string, SessionState>,
+  sessionOf: (sessionId: string) => SessionState,
+  versions: VisualizeServiceContext['versions'],
+  late: () => LateGroups
+): VisualizeServiceContext {
+  /** Start order of opens and file reloads (`TabState.loadedStamp`). */
+  let loadStamp = 0;
+  return {
+    deps,
+    sessions,
+    sessionOf,
+    delay: deps.delay ?? sleep,
+    versions,
+    sessionCwds: new Map(),
+    pendingReloads: new Set(),
+    holds: new Map(),
+    panelSize: { current: null },
+    nextLoadStamp: () => {
+      loadStamp += 1;
+      return loadStamp;
+    },
+    views: createSessionViews(sessions, sessionOf),
+    get publish() {
+      return late().publish;
+    },
+    get thumbnails() {
+      return late().thumbnails;
+    },
+    get problems() {
+      return late().problems;
+    },
+    get leases() {
+      return late().leases;
+    },
+    get panes() {
+      return late().panes;
+    },
+    get tabVersions() {
+      return late().tabVersions;
+    },
+    get reloads() {
+      return late().reloads;
+    },
+    get tabs() {
+      return late().tabs;
+    },
+    get opens() {
+      return late().opens;
+    },
+    get exports() {
+      return late().exports;
+    },
+  };
+}
+
+/** A failed export removes its temp folder here; a finished one is the download's to remove. */
+async function exportTabForDevice(
+  sessions: ReadonlyMap<string, SessionState>,
+  exports: ReturnType<typeof createExportActions>,
+  command: DesktopVisualizeTabCommand
+): Promise<{ path: string; pages?: { included: number; total: number } }> {
+  if (command.action !== 'export' || command.format === 'project') throw new TypeError('export format is invalid.');
+  const tab = sessions
+    .get(command.sessionId)
+    ?.tabs.find((candidate) => candidate.id === command.tabId && !candidate.url);
+  if (!tab) throw new Error('This visualize tab is closed.');
+  let folder: string | undefined;
+  let pages: { included: number; total: number } | undefined;
+  try {
+    const result = await exports.exportTab(
+      command.sessionId,
+      tab,
+      command.format,
+      command.pane ?? 0,
+      async ({ name }) => {
+        folder = await mkdtemp(join(tmpdir(), 'mixdog-visualize-export-'));
+        return join(folder, name);
+      },
+      {
+        onPagesCut: (included, total) => {
+          pages = { included, total };
+        },
+      }
+    );
+    if (!result.path) throw new Error('The export did not produce a file.');
+    return { path: result.path, ...(pages ? { pages } : {}) };
+  } catch (error) {
+    if (folder) await rm(folder, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
 
 export function createVisualizeService(deps: VisualizeServiceDeps) {
   const sessions = new Map<string, SessionState>();
@@ -139,55 +287,20 @@ export function createVisualizeService(deps: VisualizeServiceDeps) {
     return state;
   };
 
-  /** Start order of opens and file reloads (`TabState.loadedStamp`). */
-  let loadStamp = 0;
-
   // The groups below are created in dependency order; one that is created
-  // later is reached through these getters only when a handler runs.
-  const ctx: VisualizeServiceContext = {
-    deps,
-    sessions,
-    sessionOf,
-    delay: deps.delay ?? sleep,
-    versions,
-    sessionCwds: new Map(),
-    pendingReloads: new Set(),
-    nextLoadStamp: () => {
-      loadStamp += 1;
-      return loadStamp;
-    },
-    views: createSessionViews(sessions, sessionOf),
-    get publish() {
-      return publish;
-    },
-    get thumbnails() {
-      return thumbnails;
-    },
-    get problems() {
-      return problems;
-    },
-    get leases() {
-      return leases;
-    },
-    get panes() {
-      return panes;
-    },
-    get tabVersions() {
-      return tabVersions;
-    },
-    get reloads() {
-      return reloads;
-    },
-    get tabs() {
-      return tabs;
-    },
-    get opens() {
-      return opens;
-    },
-    get exports() {
-      return exports;
-    },
-  };
+  // later is reached through the context's getters only when a handler runs.
+  const ctx = createServiceContext(deps, sessions, sessionOf, versions, () => ({
+    publish,
+    thumbnails,
+    problems,
+    leases,
+    panes,
+    tabVersions,
+    reloads,
+    tabs,
+    opens,
+    exports,
+  }));
 
   const thumbnails = createThumbnails(ctx);
   const publish = createPublish(ctx);
@@ -204,10 +317,18 @@ export function createVisualizeService(deps: VisualizeServiceDeps) {
   const reads = createReadActions(ctx);
   const exports = createExportActions(ctx);
   const commands = createPanelCommands(ctx);
+  const turns = createTurnHolds(ctx);
 
   return {
+    /** See `createTurnHolds`: the session roster tells when agent turns run. */
+    observeTurns: turns.observeTurns,
+    setTurnActive: turns.setTurnActive,
     /** The source text of a displayed pane (the source view). */
     paneText: reads.paneText,
+    /** The side panel's content size the renderer last measured (CSS px). */
+    setPanelSize(size: { width: number; height: number }): void {
+      ctx.panelSize.current = { width: size.width, height: size.height };
+    },
     /** Bridge entry point: one validated request → result or thrown error. */
     async execute(raw: unknown): Promise<VisualizeResult> {
       const request = parseVisualizeRequest(raw);
@@ -236,8 +357,21 @@ export function createVisualizeService(deps: VisualizeServiceDeps) {
     guardNavigation: leases.guardNavigation,
     guardRequest: leases.guardRequest,
     reportLoadFailure: problems.reportLoadFailure,
-    /** See `createReloads`. */
-    settled: reloads.settled,
+    /** Whether `url` is a page of a displayed pane. */
+    isPaneFrame(url: string): boolean {
+      return problems.paneOfUrl([url]) !== null;
+    },
+    /** The marks a desktop pane frame at `url` shows (from the tab state):
+     *  a page that loaded again within its revision gets them redrawn. */
+    marksForFrame(url: string): Array<{ selector: string; label: string }> {
+      const found = problems.paneOfUrl([url]);
+      return found ? visualizePaneMarks(currentAnnotations(found.tab), found.index) : [];
+    },
+    /** See `createReloads`; also waits for the version files still being written. */
+    async settled(): Promise<void> {
+      await reloads.settled();
+      await versions?.settled();
+    },
     /** Every session's tabs, for a renderer that (re)loads. */
     snapshot(): VisualizeSessionState[] {
       return [...sessions.keys()]
@@ -257,6 +391,13 @@ export function createVisualizeService(deps: VisualizeServiceDeps) {
     },
     /** See `createPanelCommands`. */
     command: commands.command,
+    /** A paired device's PNG/PDF export (`remote-visualize.ts`): rendered like
+     *  the Export menu's, into a fresh temp folder instead of a save dialog.
+     *  The daemon hands the file to the device as a download and removes it.
+     *  Drawn without the desktop panel wherever a pane can be, so the panel
+     *  may be hidden. A failed export removes its temp folder here; a
+     *  finished one is the download's to remove. */
+    exportForDevice: (command: DesktopVisualizeTabCommand) => exportTabForDevice(sessions, exports, command),
     dispose(): void {
       for (const state of sessions.values()) for (const tab of state.tabs) tabs.dispose(tab);
       sessions.clear();

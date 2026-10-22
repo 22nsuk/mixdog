@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer';
 import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,8 +7,15 @@ import { tokenizeDirectArgv } from './shell-direct-exe.mjs';
 import { GIT_DIFF_EXIT_SIGNAL_FLAGS } from './bash-tool/benign-exit.mjs';
 import { withBuiltinPathLocks } from './path-locks.mjs';
 import { withAdvisoryLocks } from './advisory-lock.mjs';
-import { gitRepoLockKey, withGitRepoReadLock, withGitRepoWriteLock } from './git-repo-rw-lock.mjs';
+import { gitRepoLockKey, withGitWorktreeWriteLock } from './git-repo-rw-lock.mjs';
 import { invalidateBuiltinResultCache } from './cache-layers.mjs';
+import { tryAdmitWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
+import { WORKTREE_SNAPSHOT_KIND } from '../../../../shared/worktrees/contract.mjs';
+import { isWithin } from '../../../../shared/worktrees/paths.mjs';
+import { readRegistrySync } from '../../../../shared/worktrees/registry.mjs';
+import { runAbortable } from '../../../../shared/abort-race.mjs';
+import { sleep } from '../../../../shared/sleep.mjs';
+import { capMarker } from '../../../../shared/tool-output-marker.mjs';
 import { drainCodeGraphCache } from '../code-graph-state.mjs';
 import { ensureNativeSpawnServer, tryNativeSpawn } from '../lib/native-spawn-client.mjs';
 import {
@@ -23,10 +31,23 @@ import {
   diffSnapshotMatches,
   getDiffSnapshot,
 } from './git-partial-stage.mjs';
+import {
+  executeRawWorktree,
+  executeWorktreeAction,
+  WORKTREE_INPUT_FIELDS,
+  WORKTREE_TOOL_ACTIONS,
+} from './git-worktree-tool.mjs';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_CAPTURE_BYTES = 128 * 1024 * 1024;
-const GIT_OUTPUT_LIMIT_MAX = 200;
+// Sized from 3 days of real calls (2.9k diff/show/log/status results): diff and
+// show p50 ~125 lines / 6K chars, p90 ~460-510 lines / 21-23K chars, p95 ~700
+// lines / 30-36K chars. 500 lines / 40K chars fits ~91% of them (was ~65% at
+// 50 lines / 12K) and 1000 covers the p97 tail; 1981 of 2010 calls that set
+// output_limit asked for the old max of 200.
+const GIT_OUTPUT_LIMIT_MAX = 1000;
+const GIT_OUTPUT_LINES_DEFAULT = 500;
+const GIT_LOG_LINES_DEFAULT = 100;
 // Matches the other batch tools' 10-entry fan-out; a 6-command survey used to
 // be refused outright, costing the model a round trip.
 const GIT_COMMAND_ARRAY_LIMIT = 10;
@@ -74,14 +95,15 @@ export const GIT_TOOL_DEF = {
     compressible: true,
   },
   description:
-    'Run Git here, never through shell. An array (max 10) runs in order and stops on failure; batch read-only commands in one. diff for known changes, status to discover them; history only when needed. git diff or git diff -- <paths> includes untracked files. Set include_stage_ids:true to select changes, then action:stage with diff_id/change_ids. Staging rejects stale or cross-Project diffs and returns selected locations.',
+    'Run Git here, never through shell. An array (max 10) runs in order and stops on failure; batch read-only commands in one. diff for known changes, status to discover them; history only when needed. git diff or git diff -- <paths> includes untracked files. Set include_stage_ids:true to select changes, then action:stage with diff_id/change_ids. Staging rejects stale or cross-Project diffs and returns per-file staged counts. Worktrees are managed only: action:worktree (Lead only) moves a session into/out of its managed worktree, merges, removes, lists, prunes; git worktree add/remove/list/prune map to managed operations (add -b keeps the session in place; add --detach makes a read-only snapshot worktree, removed when its turn ends; list --porcelain stays raw git; move/lock/unlock/repair are refused). Merge or remove only when the user asks; carry and large-size answers come from the user; force only on explicit request.',
   inputSchema: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        enum: ['command', 'stage'],
-        description: 'Default command. stage uses diff_id/change_ids instead of command.',
+        enum: ['command', 'stage', 'worktree'],
+        description:
+          'Default command. stage uses diff_id/change_ids instead of command. worktree uses worktree_action and its fields.',
       },
       command: {
         anyOf: [
@@ -95,7 +117,8 @@ export const GIT_TOOL_DEF = {
         type: 'integer',
         minimum: 1,
         maximum: GIT_OUTPUT_LIMIT_MAX,
-        description: 'Body line cap; staging IDs are not capped. Default 50; git log defaults to 10.',
+        description:
+          'Body line cap, max 1000; staging IDs are not capped. Default 500; git log defaults to 100. A cut ends with [output capped …] naming how to continue.',
       },
       include_stage_ids: {
         type: 'boolean',
@@ -107,6 +130,29 @@ export const GIT_TOOL_DEF = {
         anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 }],
         description: 'stage: exact change ID or IDs to stage, including new files.',
       },
+      worktree_action: {
+        type: 'string',
+        enum: [...WORKTREE_TOOL_ACTIONS],
+        description:
+          'enter: create or re-enter the managed worktree (branch: that branch, create: new); return: back to the project folder, worktree kept; merge: into its merge target; remove; list; prune.',
+      },
+      session_id: {
+        type: 'string',
+        description: 'enter/return/merge/remove: another session (it must be idle); default the caller.',
+      },
+      name: { type: 'string', description: 'enter: the new worktree name (branch <prefix><name>).' },
+      branch: { type: 'string', description: 'enter: use the worktree of this branch instead.' },
+      create: { type: 'boolean', description: 'enter with branch: create that branch.' },
+      carry: {
+        type: 'string',
+        enum: ['leave', 'carry'],
+        description: 'enter: the user answer to WORKTREE_DIRTY_CHOICE (uncommitted project-folder changes).',
+      },
+      confirm_large: {
+        type: 'boolean',
+        description: 'enter or git worktree add: the user accepted the WORKTREE_LARGE_REPO_CONFIRM size.',
+      },
+      force: { type: 'boolean', description: 'remove: discard dirty/unmerged work; only on explicit user request.' },
     },
     additionalProperties: false,
   },
@@ -125,6 +171,9 @@ function ok(data = {}) {
   });
 }
 
+const NOT_UTF8_STAGE_NOTE =
+  'staging ids unavailable: this diff has bytes that are not UTF-8 (a file in another encoding), and staging its text would replace them; stage those files whole with git add -- <paths>';
+
 function fail(message) {
   return `error: ${message}`;
 }
@@ -142,45 +191,155 @@ function outputLines(value) {
   return String(value || '').match(/[^\n]*\n|[^\n]+$/g) || [];
 }
 
-function capOutput(text, limit) {
+// A line cap alone lets a few very long lines (minified files, lockfiles)
+// through, so each command also gets a character budget, and a command array
+// shares one. A cut always states what was omitted and how to page.
+const COMMAND_CHAR_BUDGET = 40_000;
+const ARRAY_CHAR_BUDGET = 60_000;
+const MIN_COMMAND_CHARS = 1_000;
+const LARGE_DIFF_LINES = GIT_OUTPUT_LINES_DEFAULT;
+const LARGE_DIFF_HINT =
+  'hint: large diff - run with --stat first for per-file sizes, add -U1 for less context, and page by file with -- <path>';
+
+// Line-ending warnings are noise the model cannot act on; the content is unchanged.
+const CRLF_WARNING_RE = /^warning: in the working copy of .* (?:CRLF|LF) will be replaced[^\n]*(?:\n|$)/gm;
+// `index abc..def` carries abbreviated object ids the model never uses; mode
+// changes keep their own `old mode`/`new mode`/`new file mode` lines.
+const DIFF_INDEX_LINE_RE = /^index [0-9a-f,]+\.\.[0-9a-f]+(?: [0-7]+)?\r?(?:\n|$)/gm;
+const PATCH_OPERATIONS = new Set(['diff', 'diff-files', 'diff-index', 'diff-tree', 'show', 'log']);
+
+function visibleStderr(value) {
+  return String(value || '').replace(CRLF_WARNING_RE, '');
+}
+
+function presentStdout(plan, value) {
+  const stdout = String(value || '');
+  if (plan.operation === 'merge-tree') return stdout.replace(/^Auto-merging .*(?:\r?\n|$)/gm, '');
+  if (PATCH_OPERATIONS.has(plan.operation) && /^diff --git /m.test(stdout)) {
+    return stdout.replace(DIFF_INDEX_LINE_RE, '');
+  }
+  return stdout;
+}
+
+function normalizeCap(limit) {
+  return typeof limit === 'object' ? limit : { lines: limit, chars: COMMAND_CHAR_BUDGET };
+}
+
+function capOutput(text, cap) {
   const lines = outputLines(text);
-  if (lines.length <= limit) return text;
-  return appendText(
-    lines.slice(0, limit).join(''),
-    `... [${lines.length - limit} more lines omitted; raise output_limit or narrow the command]`
-  );
+  const lineCut = lines.length > cap.lines;
+  const kept = lineCut ? lines.slice(0, cap.lines).join('') : text;
+  if (kept.length <= cap.chars) {
+    return {
+      text: lineCut
+        ? appendText(
+            kept,
+            capMarker({
+              limit: `${cap.lines} lines`,
+              shown: `${lines.length - cap.lines} more lines omitted`,
+              narrow: `raise output_limit (max ${GIT_OUTPUT_LIMIT_MAX}) or narrow the command (-- <path>, -n/--skip)`,
+            })
+          )
+        : text,
+      truncated: lineCut,
+      totalLines: lines.length,
+    };
+  }
+  const newline = kept.lastIndexOf('\n', cap.chars - 1);
+  const cut = newline > 0 ? newline + 1 : cap.chars;
+  const shown = outputLines(kept.slice(0, cut)).length;
+  return {
+    text: appendText(
+      kept.slice(0, cut),
+      capMarker({
+        limit: `${cap.chars} chars`,
+        shown: `${lines.length - shown} more lines (${text.length - cut} chars) omitted`,
+        narrow: 'narrow the command (-- <path>, -n/--skip) to page',
+      })
+    ),
+    truncated: true,
+    totalLines: lines.length,
+  };
 }
 
 function commandResult(plan, result, limit) {
-  const output = capOutput(appendText(String(result.stdout || ''), String(result.stderr || '')), limit);
+  const stdout = presentStdout(plan, result.stdout);
+  const capped = capOutput(appendText(stdout, visibleStderr(result.stderr)), normalizeCap(limit));
+  let output = capped.text;
+  if ((capped.truncated || capped.totalLines > LARGE_DIFF_LINES) && /^diff --git /m.test(stdout)) {
+    output = appendText(output, LARGE_DIFF_HINT);
+  }
   if (succeeded(result)) return { text: output, failed: false };
   const processError = result.error || result.timedOut || result.aborted || result.overflow || result.exitCode == null;
-  // An exit signal is still a non-zero exit, so a command array stops on it;
-  // the outcome line only keeps the card from reporting a failure.
-  const exitHeader = exitSignal(plan, result)
-    ? `exit ${result.exitCode}\n[outcome: no-match]`
-    : `exit ${result.exitCode}`;
+  if (processError) return { text: appendText(fail(gitFailureReason(plan, result)), output), failed: true };
+  const outcome = exitSignal(plan, result);
+  if (outcome === 'conflicts') {
+    // A conflicted merge-tree is its answer, not a failed command: the array continues.
+    return {
+      text: appendText(
+        `exit ${result.exitCode}\n[outcome: conflicts]\nmerge has conflicts (see the CONFLICT lines); this is a result, not a command failure`,
+        output
+      ),
+      failed: false,
+    };
+  }
+  // A no-match signal is still a non-zero exit, so a command array stops on
+  // it; the outcome line only keeps the card from reporting a failure.
   return {
-    text: appendText(processError ? fail(gitFailureReason(plan, result)) : exitHeader, output),
+    text: appendText(outcome ? `exit ${result.exitCode}\n[outcome: ${outcome}]` : `exit ${result.exitCode}`, output),
     failed: true,
   };
+}
+
+// Paths come from git unquoted; only a name that would break the one-line
+// listing (control characters, quotes) is JSON-quoted.
+function listedPath(path) {
+  return [...path].some((char) => char.charCodeAt(0) < 0x20 || char === '"') ? JSON.stringify(path) : path;
 }
 
 function stageableDiffResult(plan, result, snapshot, limit) {
   if (!snapshot.diffId) return commandResult(plan, result, limit);
   const rendered = commandResult(plan, result, limit);
-  rendered.text = appendText(rendered.text, `diff_id: ${snapshot.diffId}`);
-  let previousPath;
+  // The hunk headers are already in the body; one line per file names the id range.
+  const files = [];
   for (const change of snapshot.changes) {
-    if (change.path !== previousPath) {
-      rendered.text = appendText(rendered.text, `file: ${JSON.stringify(change.path)}`);
-      previousPath = change.path;
-    }
-    const location =
-      change.kind || `@@ -${change.old_start},${change.deletions} +${change.new_start},${change.additions} @@`;
-    rendered.text = appendText(rendered.text, `change:${change.id} ${location}`);
+    const last = files.at(-1);
+    if (last?.path === change.path && !change.kind && !last.kind) last.end = change.id;
+    else files.push({ path: change.path, start: change.id, end: change.id, kind: change.kind });
   }
+  const listing = files.map(
+    ({ path, start, end, kind }) =>
+      `${listedPath(path)}: ${start === end ? start : `${start}-${end}`}${kind ? ' [whole file]' : ''}`
+  );
+  rendered.text = appendText(
+    rendered.text,
+    [
+      `diff_id: ${snapshot.diffId} (ids number the +/- runs in diff order; [whole file] ids stage the entire file)`,
+      ...listing,
+    ].join('\n')
+  );
   return rendered;
+}
+
+// Per-file staged counts; the paths and ranges the model already holds are not repeated per change.
+function stagedSummary(changes) {
+  const files = new Map();
+  for (const { path, additions = 0, deletions = 0 } of changes) {
+    const entry = files.get(path) || { count: 0, additions: 0, deletions: 0 };
+    entry.count += 1;
+    entry.additions += additions;
+    entry.deletions += deletions;
+    files.set(path, entry);
+  }
+  return {
+    changes: changes.length,
+    additions: [...files.values()].reduce((sum, entry) => sum + entry.additions, 0),
+    deletions: [...files.values()].reduce((sum, entry) => sum + entry.deletions, 0),
+    files: [...files].map(
+      ([path, entry]) =>
+        `${path}: ${entry.count} ${entry.count === 1 ? 'change' : 'changes'} +${entry.additions} -${entry.deletions}`
+    ),
+  };
 }
 
 // A provider sometimes delivers the whole command as one quoted scalar
@@ -253,7 +412,7 @@ function parseCommand(rawCommand, workDir) {
   return { command: String(command), cwd, globalArgs, operation, args };
 }
 
-async function runProcess(program, argv, { cwd, signal, maxBytes = MAX_CAPTURE_BYTES } = {}) {
+async function runProcess(program, argv, { cwd, signal, maxBytes = MAX_CAPTURE_BYTES, optionalLocks = true } = {}) {
   let child;
   try {
     await ensureNativeSpawnServer();
@@ -269,8 +428,17 @@ async function runProcess(program, argv, { cwd, signal, maxBytes = MAX_CAPTURE_B
           GIT_EDITOR: 'true',
           GIT_SEQUENCE_EDITOR: 'true',
           LC_ALL: 'C',
+          // Reads run beside writes without a lock (git-repo-rw-lock.mjs).
+          // With optional locks off `git status` never takes index.lock to
+          // write back a refreshed index, so it cannot fail a concurrent
+          // write on that lock. (`git diff` ignores the setting and may still
+          // refresh the index briefly; the write retry absorbs that.)
+          ...(optionalLocks ? {} : { GIT_OPTIONAL_LOCKS: '0' }),
         },
         outputLimit: maxBytes,
+        // Bytes as git wrote them, decoded once by the caller: a multibyte
+        // character split across two pipe reads must not become U+FFFD.
+        rawOutput: true,
       },
     });
     if (!native?.child)
@@ -351,14 +519,16 @@ function succeeded(result) {
 
 // `git grep` exits 1 for no match and `git diff --exit-code/--quiet/--check`
 // exits 1 to report a difference; the shell tool marks the same exits as
-// signals, so the git tool does too.
+// signals, so the git tool does too. `git merge-tree` exits 1 with its report
+// on stdout when the merge has conflicts. Returns the outcome name or null.
 function exitSignal(plan, result) {
-  if (result.exitCode !== 1 || String(result.stderr || '').trim()) return false;
-  if (plan.operation === 'grep') return true;
-  if (plan.operation !== 'diff') return false;
+  if (result.exitCode !== 1 || visibleStderr(result.stderr).trim()) return null;
+  if (plan.operation === 'grep') return 'no-match';
+  if (plan.operation === 'merge-tree') return String(result.stdout || '').trim() ? 'conflicts' : null;
+  if (plan.operation !== 'diff') return null;
   const separator = plan.args.indexOf('--');
   const options = separator === -1 ? plan.args : plan.args.slice(0, separator);
-  return options.some((arg) => GIT_DIFF_EXIT_SIGNAL_FLAGS.has(arg));
+  return options.some((arg) => GIT_DIFF_EXIT_SIGNAL_FLAGS.has(arg)) ? 'no-match' : null;
 }
 
 // ENOENT from the spawn itself is a capability fact, not a git error: the
@@ -373,12 +543,48 @@ function gitFailureReason(plan, result) {
   return `git ${plan.operation} exited ${result.exitCode}`;
 }
 
-function commandFailure(plan, result, limit = 50) {
+function commandFailure(plan, result, limit = GIT_OUTPUT_LINES_DEFAULT) {
   return commandResult(plan, result, limit).text;
 }
 
 function runGit(plan, argv, options = {}) {
-  return runProcess('git', [...plan.globalArgs, ...argv], { cwd: plan.cwd, signal: options.signal });
+  return runProcess('git', [...plan.globalArgs, ...argv], {
+    cwd: plan.cwd,
+    signal: options.signal,
+    optionalLocks: !options.readOnly,
+  });
+}
+
+// Another process (an editor, a terminal, an IDE) holding one of git's lock
+// files makes git refuse a write: index.lock, a ref or packed-refs lock,
+// config.lock. Commands take that lock before changing anything, so a brief
+// retry with backoff turns the collision into a short wait; a command that had
+// already done part of its work reports its own state on the retry.
+const GIT_LOCK_CONTENTION_RE =
+  /Unable to create '[^'\n]*\.lock': File exists|could not lock config file [^\n]*: File exists/;
+const GIT_LOCK_RETRY_DELAYS_MS = [100, 200, 400, 800, 1600];
+
+async function runGitWrite(plan, argv, { signal } = {}) {
+  let retryMs = 0;
+  for (let retries = 0; ; retries += 1) {
+    const result = Object.assign(await runGit(plan, argv, { signal }), { retries, retryMs });
+    const delay = GIT_LOCK_RETRY_DELAYS_MS[retries];
+    if (succeeded(result) || delay === undefined || !GIT_LOCK_CONTENTION_RE.test(String(result.stderr))) return result;
+    await runAbortable(signal, () => sleep(delay)).catch(() => {});
+    if (signal?.aborted) return result;
+    retryMs += delay;
+  }
+}
+
+const LOCK_WAIT_REPORT_MS = 1000;
+
+// Waiting is reported once it exceeds a second, so a slow answer is never
+// mistaken for slow git work.
+function lockWaitNote(waitedMs, result = null) {
+  const total = waitedMs + (result?.retryMs || 0);
+  if (total <= LOCK_WAIT_REPORT_MS) return '';
+  const retried = result?.retries ? ` (git lock file busy; retried ${result.retries}x)` : '';
+  return `note: waited ${(total / 1000).toFixed(1)}s for concurrent git writes${retried}`;
 }
 
 function prepare(plan) {
@@ -396,16 +602,20 @@ function prepare(plan) {
   return { argv: [operation, ...args] };
 }
 
+// A stage applies the text of this diff, so a patch with bytes that are not
+// UTF-8 (a legacy-encoded file) would be applied with U+FFFD in their place.
+// `notUtf8` marks such a diff: it is shown, but never staged by id.
 async function runStageableDiff(plan, argv, repo, signal) {
-  const result = await runGit(plan, argv, { signal });
+  const result = await runGit(plan, argv, { signal, readOnly: true });
   if (!succeeded(result)) return result;
+  result.notUtf8 = !isUtf8(result.stdout);
   result.stdout = String(result.stdout);
   result.stderr = String(result.stderr);
   const paths = plan.args.slice(1);
   const untracked = await runGit(
     plan,
     ['ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', ...paths],
-    { signal }
+    { signal, readOnly: true }
   );
   if (!succeeded(untracked)) return untracked;
   for (const path of String(untracked.stdout).split('\0').filter(Boolean)) {
@@ -424,10 +634,11 @@ async function runStageableDiff(plan, argv, repo, signal) {
         '/dev/null',
         path,
       ],
-      { signal }
+      { signal, readOnly: true }
     );
     // --no-index uses exit 1 for a successfully produced patch.
     if (!succeeded({ ...added, exitCode: added.exitCode === 1 ? 0 : added.exitCode })) return added;
+    if (!isUtf8(added.stdout)) result.notUtf8 = true;
     result.stdout = appendText(result.stdout, String(added.stdout));
     result.stderr = appendText(result.stderr, String(added.stderr));
   }
@@ -485,8 +696,8 @@ function rememberRepoRoot(key, hit) {
 
 // `lockKey` is the repository's canonical common git dir: the main checkout
 // and its linked worktrees share one object store and ref namespace, so their
-// git calls serialize on one repository lock (managed worktree mutations take
-// the same key).
+// writes share one repository lock state, scoped per worktree (managed
+// worktree mutations take the same key for the whole repository).
 async function resolveRepo(plan, signal) {
   const key = repoRootCacheKey(plan);
   const hit = cachedRepoRoot(key, plan);
@@ -515,6 +726,8 @@ async function resolveRepo(plan, signal) {
   return { root: null, lockKey: null, probe: result };
 }
 
+const CONFIG_SUBCOMMANDS = new Set(['get', 'set', 'unset', 'list', 'rename-section', 'remove-section', 'edit']);
+
 function localizeConfigPlan(plan) {
   if (plan.operation !== 'config') return plan;
   const external = plan.args.find(
@@ -525,6 +738,11 @@ function localizeConfigPlan(plan) {
   );
   if (external) throw new Error(`git config ${external} is outside the local repository scope`);
   if (plan.args.some((value) => value === '--local' || value === '--worktree')) return plan;
+  // `git config get|set|list …` takes its scope option after the subcommand
+  // (`--local get k` reads `get` as a key name); the legacy form takes it first.
+  if (CONFIG_SUBCOMMANDS.has(plan.args[0])) {
+    return { ...plan, args: [plan.args[0], '--local', ...plan.args.slice(1)] };
+  }
   return { ...plan, args: ['--local', ...plan.args] };
 }
 
@@ -556,7 +774,7 @@ const CREATION_VALUE_FLAGS = new Set([
   '--initial-branch',
 ]);
 
-function optionFreePositionals(args) {
+function optionFreePositionals(args, valueFlags = CREATION_VALUE_FLAGS) {
   const out = [];
   for (let index = 0; index < args.length; index++) {
     const value = args[index];
@@ -564,7 +782,7 @@ function optionFreePositionals(args) {
       out.push(...args.slice(index + 1));
       break;
     }
-    if (CREATION_VALUE_FLAGS.has(value)) {
+    if (valueFlags.has(value)) {
       index++;
       continue;
     }
@@ -586,10 +804,66 @@ function creationTarget(plan) {
   return resolve(plan.cwd, leaf);
 }
 
+// Pruning or repacking deletes unreachable objects, including ones a write in
+// any worktree has just created and not yet referenced (git gc documents
+// --prune=now as unsafe beside a concurrent writer), so these hold the whole
+// repository.
+const REPO_WIDE_OPERATIONS = new Set(['gc', 'maintenance', 'prune', 'prune-packed', 'repack']);
+
+// The worktrees a mutating plan touches; null holds the whole repository. A
+// write changes its cwd's worktree, so writes on different worktrees never
+// wait for each other. (`git worktree` never runs as a git write here: it
+// maps to managed operations, which take the repository lock themselves.)
+function writeScopes(plan, root) {
+  if (REPO_WIDE_OPERATIONS.has(plan.operation)) return null;
+  return [root];
+}
+
 // A mutating git call holds the in-process and cross-process locks on its
-// path, and drops the result caches it may have invalidated.
-function withGitMutationLocks(path, callback) {
-  return withBuiltinPathLocks([path], () => withAdvisoryLocks([path], callback));
+// paths, and drops the result caches it may have invalidated.
+function withGitMutationLocks(paths, callback) {
+  return withBuiltinPathLocks(paths, () => withAdvisoryLocks(paths, callback));
+}
+
+// A write holds Mixdog's repository lock on the worktrees it touches (the
+// whole repository when `scopes` is null), then the path and cross-process
+// locks on the same paths; `callback` learns how long acquiring them took.
+function withGitWriteLocks(lockKey, scopes, root, signal, callback) {
+  const started = Date.now();
+  return withGitWorktreeWriteLock(
+    lockKey,
+    scopes,
+    () => withGitMutationLocks(scopes || [root], () => callback(Date.now() - started)),
+    { signal }
+  );
+}
+
+// The managed snapshot worktree `repo` lies in, else null. A registry that
+// cannot be read names none: commands elsewhere run as before.
+function snapshotContaining(repo) {
+  let entries;
+  try {
+    entries = readRegistrySync().entries;
+  } catch {
+    return null;
+  }
+  return (
+    Object.values(entries).find(
+      (record) => record?.kind === WORKTREE_SNAPSHOT_KIND && typeof record.path === 'string' && isWithin(record.path, repo)
+    ) ?? null
+  );
+}
+
+// A command run in a snapshot worktree is one of its consumers: the workspace
+// lease it holds (activity-gate, the same as a background shell's) keeps the
+// snapshot from being removed in any process until it ends, and a snapshot
+// whose removal is under way refuses it. Returns the release.
+function admitSnapshotCommand(repo, sessionId) {
+  const snapshot = snapshotContaining(repo);
+  if (!snapshot) return () => {};
+  const leave = tryAdmitWorkspaceActivity(sessionId || 'git-tool', repo, { kind: 'command' });
+  if (!leave) throw new Error(`the snapshot worktree ${snapshot.path} is being removed; nothing ran`);
+  return leave;
 }
 
 function invalidateAfterGitMutation() {
@@ -603,14 +877,6 @@ function outputLimit(value, fallback) {
 
 function abortSignalOf(options) {
   return options?.signal || options?.abortSignal || null;
-}
-
-async function executeCreation(plan, target, limit, signal) {
-  return withGitMutationLocks(target, async () => {
-    const result = await runGit(plan, [plan.operation, ...plan.args], { signal });
-    invalidateAfterGitMutation();
-    return commandResult(plan, result, limit);
-  });
 }
 
 function stageRequest(value) {
@@ -655,60 +921,75 @@ async function executeGitStage(input, workDir, options = {}) {
       hint: 'Run git diff with include_stage_ids:true in the current Project and use its diff_id/change_ids.',
     });
   }
-  const limit = outputLimit(input?.output_limit, 50);
+  const limit = outputLimit(input?.output_limit, GIT_OUTPUT_LINES_DEFAULT);
   const signal = abortSignalOf(options);
   const repo = snapshot.repo;
   const { lockKey } = await resolveRepo({ ...snapshot.plan, cwd: repo }, signal);
-  return withGitRepoWriteLock(
-    lockKey || repo,
-    () =>
-      withGitMutationLocks(repo, async () => {
-        const current = await runStageableDiff(snapshot.plan, snapshot.argv, repo, signal);
-        if (!succeeded(current)) return commandFailure(snapshot.plan, current, limit);
-        const raw = current.stdout;
-        if (!diffSnapshotMatches(snapshot, raw)) {
-          return ok({
-            staged: false,
-            reason: 'stale_diff',
-            hint: 'The working diff changed. Run git diff with include_stage_ids:true again and select current change_ids.',
-          });
-        }
-        const built = buildSelectedStagePatch(raw, request.changeIds);
-        if (built.missing.length || !built.patch) {
-          return fail(
-            `git stage change_ids are not present in the diff: ${built.missing.join(', ') || '(none selected)'}`
-          );
-        }
-        return withStagePatchFile(built.patch, async (patchPath) => {
-          const applyArgs = ['apply', '--cached', '--unidiff-zero', patchPath];
-          const applyPlan = { ...snapshot.plan, cwd: repo, operation: 'apply', args: applyArgs.slice(1) };
-          const check = await runGit(applyPlan, ['apply', '--cached', '--check', '--unidiff-zero', patchPath], {
-            signal,
-          });
-          if (!succeeded(check)) return commandFailure(applyPlan, check, limit);
-          const applied = await runGit(applyPlan, applyArgs, { signal });
-          if (!succeeded(applied)) return commandFailure(applyPlan, applied, limit);
-          deleteDiffSnapshot(request.diffId);
-          invalidateAfterGitMutation();
-          return ok({
-            staged: true,
-            changes: built.changes.map(({ id, preview, ...change }) => change),
-          });
-        });
-      }),
-    { signal }
-  );
+  // The diff check and the index apply form one transaction on this
+  // worktree's index, so the stage holds its worktree for both.
+  return withGitWriteLocks(lockKey || repo, [repo], repo, signal, async (waitedMs) => {
+    const noted = (text, result) => appendText(text, lockWaitNote(waitedMs, result));
+    const answer = (data, result) => {
+      const note = lockWaitNote(waitedMs, result);
+      return ok(note ? { ...data, note } : data);
+    };
+    const current = await runStageableDiff(snapshot.plan, snapshot.argv, repo, signal);
+    if (!succeeded(current)) return noted(commandFailure(snapshot.plan, current, limit));
+    if (current.notUtf8) return noted(fail(NOT_UTF8_STAGE_NOTE));
+    const raw = current.stdout;
+    if (!diffSnapshotMatches(snapshot, raw)) {
+      return answer({
+        staged: false,
+        reason: 'stale_diff',
+        hint: 'The working diff changed. Run git diff with include_stage_ids:true again and select current change_ids.',
+      });
+    }
+    const built = buildSelectedStagePatch(raw, request.changeIds);
+    if (built.missing.length || !built.patch) {
+      return noted(
+        fail(`git stage change_ids are not present in the diff: ${built.missing.join(', ') || '(none selected)'}`)
+      );
+    }
+    return withStagePatchFile(built.patch, async (patchPath) => {
+      const applyArgs = ['apply', '--cached', '--unidiff-zero', patchPath];
+      const applyPlan = { ...snapshot.plan, cwd: repo, operation: 'apply', args: applyArgs.slice(1) };
+      const check = await runGit(applyPlan, ['apply', '--cached', '--check', '--unidiff-zero', patchPath], {
+        signal,
+      });
+      if (!succeeded(check)) return noted(commandFailure(applyPlan, check, limit));
+      const applied = await runGitWrite(applyPlan, applyArgs, { signal });
+      if (!succeeded(applied)) return noted(commandFailure(applyPlan, applied, limit), applied);
+      deleteDiffSnapshot(request.diffId);
+      invalidateAfterGitMutation();
+      return answer({ staged: true, ...stagedSummary(built.changes) }, applied);
+    });
+  });
 }
 
 async function executeSingleGitTool(input, workDir, options = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return rejected('git requires an arguments object');
   const hasCommand = typeof input.command === 'string' && Boolean(input.command.trim());
-  if (!hasCommand) return rejected('git requires command');
+  if (!hasCommand) {
+    return rejected(
+      input.include_stage_ids === true
+        ? 'git requires command; staging IDs come from command:"git diff" (or "git diff -- <paths>") with include_stage_ids:true'
+        : 'git requires command: a full command starting with git, e.g. command:"git status"'
+    );
+  }
   let plan;
   try {
     plan = localizeConfigPlan(parseCommand(input.command, workDir));
   } catch (error) {
     return rejected(error.message);
+  }
+  // No unmanaged worktree is ever made here: worktree commands run as their
+  // managed operations (git-worktree-tool.mjs); only `list --porcelain` stays git.
+  if (plan.operation === 'worktree') {
+    const mapped = await executeRawWorktree(plan, input, options);
+    if (mapped) {
+      if (!isReadOnly(plan)) invalidateAfterGitMutation();
+      return mapped;
+    }
   }
   if (
     plan.operation === 'archive' &&
@@ -716,12 +997,21 @@ async function executeSingleGitTool(input, workDir, options = {}) {
   ) {
     return rejected('git archive requires -o/--output; binary stdout is not returned');
   }
-  const limitDefault = plan.operation === 'log' ? 10 : 50;
-  const limit = outputLimit(input.output_limit, limitDefault);
+  const limitDefault = plan.operation === 'log' ? GIT_LOG_LINES_DEFAULT : GIT_OUTPUT_LINES_DEFAULT;
+  const limit = {
+    lines: outputLimit(input.output_limit, limitDefault),
+    chars: options.charBudget ?? COMMAND_CHAR_BUDGET,
+  };
   const signal = abortSignalOf(options);
   if (plan.operation === 'init' || plan.operation === 'clone') {
     const target = creationTarget(plan);
-    return withGitRepoWriteLock(target, () => executeCreation(plan, target, limit, signal), { signal });
+    return withGitWriteLocks(target, null, target, signal, async (waitedMs) => {
+      const result = await runGit(plan, [plan.operation, ...plan.args], { signal });
+      invalidateAfterGitMutation();
+      const rendered = commandResult(plan, result, limit);
+      rendered.text = appendText(rendered.text, lockWaitNote(waitedMs));
+      return rendered;
+    });
   }
   if (REPO_FREE_OPERATIONS.has(plan.operation)) {
     const result = await runGit(plan, [plan.operation, ...plan.args], { signal });
@@ -736,42 +1026,60 @@ async function executeSingleGitTool(input, workDir, options = {}) {
     const missing = probe ?? (await runGit(plan, ['rev-parse', '--show-toplevel'], { signal }));
     return commandResult(plan, missing, limit);
   }
+  // A command in a snapshot worktree uses it like a worker would: it holds a
+  // workspace lease there while it runs, so the snapshot is never removed
+  // under it, and a snapshot being removed refuses it.
+  let leaveSnapshot;
+  try {
+    leaveSnapshot = admitSnapshotCommand(repo, options.sessionId);
+  } catch (error) {
+    return rejected(error.message);
+  }
+  try {
+    return await runInRepository(input, plan, { repo, lockKey, limit, signal, workDir });
+  } finally {
+    leaveSnapshot();
+  }
+}
+
+async function runInRepository(input, plan, { repo, lockKey, limit, signal, workDir }) {
   const prepared = prepare(plan);
   const stageableRequest = plan.operation === 'diff' && (plan.args.length === 0 || plan.args[0] === '--');
   if (stageableRequest) prepared.argv.splice(1, 0, '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/');
+  // A read takes no lock, so it never waits behind another read, a long
+  // `git log -S`, or a write (git-repo-rw-lock.mjs explains why that is safe).
   if (isReadOnly(plan)) {
-    return withGitRepoReadLock(
-      lockKey,
-      async () => {
-        const result = stageableRequest
-          ? await runStageableDiff(plan, prepared.argv, repo, signal)
-          : await runGit(plan, prepared.argv, { signal });
-        if (!succeeded(result)) return commandResult(plan, result, limit);
-        if (stageableRequest && input.include_stage_ids === true) {
-          const snapshot = createDiffSnapshot({
-            repo,
-            scope: resolve(workDir || process.cwd()),
-            plan,
-            argv: prepared.argv,
-            raw: result.stdout,
-          });
-          return stageableDiffResult(plan, result, snapshot, limit);
-        }
-        return commandResult(plan, result, limit);
-      },
-      { signal }
-    );
+    const result = stageableRequest
+      ? await runStageableDiff(plan, prepared.argv, repo, signal)
+      : await runGit(plan, prepared.argv, { signal, readOnly: true });
+    if (!succeeded(result)) return commandResult(plan, result, limit);
+    if (stageableRequest && input.include_stage_ids === true) {
+      if (result.notUtf8) {
+        const rendered = commandResult(plan, result, limit);
+        rendered.text = appendText(rendered.text, NOT_UTF8_STAGE_NOTE);
+        return rendered;
+      }
+      const snapshot = createDiffSnapshot({
+        repo,
+        scope: resolve(workDir || process.cwd()),
+        plan,
+        argv: prepared.argv,
+        raw: result.stdout,
+      });
+      return stageableDiffResult(plan, result, snapshot, limit);
+    }
+    return commandResult(plan, result, limit);
   }
-  return withGitRepoWriteLock(
-    lockKey,
-    () =>
-      withGitMutationLocks(repo, async () => {
-        const result = await runGit(plan, prepared.argv, { signal });
-        invalidateAfterGitMutation();
-        return commandResult(plan, result, limit);
-      }),
-    { signal }
-  );
+  return withGitWriteLocks(lockKey, writeScopes(plan, repo), repo, signal, async (waitedMs) => {
+    // A managed removal holds the same folder lock while it deletes: once it
+    // is ours, a folder that is gone was removed, and nothing runs there.
+    if (!existsSync(repo)) return rejected(`the worktree folder ${repo} was removed meanwhile; nothing ran`);
+    const result = await runGitWrite(plan, prepared.argv, { signal });
+    invalidateAfterGitMutation();
+    const rendered = commandResult(plan, result, limit);
+    rendered.text = appendText(rendered.text, lockWaitNote(waitedMs, result));
+    return rendered;
+  });
 }
 
 // `git a && git b` written as one string means exactly what the command array
@@ -853,13 +1161,23 @@ export async function executeGitTool(rawInput, workDir, options = {}) {
   if (rawInput.change_ids !== undefined) input.change_ids = parseStringifiedArray(rawInput.change_ids);
   if (rawInput.command === undefined) delete input.command;
   const action = input.action ?? 'command';
+  if (action === 'worktree') {
+    const text = await executeWorktreeAction(input, workDir, options);
+    if (input.worktree_action !== 'list') invalidateAfterGitMutation();
+    return text;
+  }
+  const worktreeField = WORKTREE_INPUT_FIELDS.find((field) => input[field] !== undefined);
+  if (worktreeField) return fail(`git ${worktreeField} requires action:worktree`);
+  if (input.confirm_large !== undefined && action !== 'command') {
+    return fail('git confirm_large applies to action:worktree or a git worktree add command');
+  }
   if (action === 'stage') {
     if (input.command !== undefined || input.include_stage_ids !== undefined) {
       return fail('git action:stage accepts diff_id/change_ids, not command/include_stage_ids');
     }
     return executeGitStage(input, workDir, options);
   }
-  if (action !== 'command') return fail('git action must be command or stage');
+  if (action !== 'command') return fail('git action must be command, stage or worktree');
   if (input.diff_id !== undefined || input.change_ids !== undefined) {
     return fail('git diff_id/change_ids require action:stage');
   }
@@ -870,13 +1188,14 @@ export async function executeGitTool(rawInput, workDir, options = {}) {
     return fail(`git command array requires 1 to ${GIT_COMMAND_ARRAY_LIMIT} commands`);
   }
 
+  const operations = [];
   for (let index = 0; index < commands.length; index += 1) {
     const command = commands[index];
     if (typeof command !== 'string' || !command.trim()) {
       return fail(`git command ${index + 1} must be a non-empty string`);
     }
     try {
-      localizeConfigPlan(parseCommand(command, workDir));
+      operations.push(localizeConfigPlan(parseCommand(command, workDir)).operation);
     } catch (error) {
       return fail(`git command ${index + 1}: ${error.message}`);
     }
@@ -885,14 +1204,24 @@ export async function executeGitTool(rawInput, workDir, options = {}) {
   // Ordered execution with fail-fast: a mutation sequence (`reflog expire`
   // then `gc`) must not run its later steps on a state the earlier step did
   // not produce. Every command is parsed above before any runs, so a typo in
-  // command 3 never leaves commands 1-2 half applied. Each command still
-  // acquires its own repository lock inside executeSingleGitTool.
+  // command 3 never leaves commands 1-2 half applied. Each write still
+  // acquires its own worktree lock inside executeSingleGitTool.
+  // Headers name the position and subcommand only: echoing the argument list
+  // (a 22-path `add`) cost more than the result it labelled.
   const results = [];
-  for (const command of commands) {
-    const result = await executeSingleGitTool({ ...input, command }, workDir, options);
-    results.push(`## ${command}\n${result.text}`);
+  let used = 0;
+  for (let index = 0; index < commands.length; index += 1) {
+    const label = `${index + 1}: git ${operations[index]}`;
+    const charBudget = Math.min(COMMAND_CHAR_BUDGET, Math.max(MIN_COMMAND_CHARS, ARRAY_CHAR_BUDGET - used));
+    const result = await executeSingleGitTool({ ...input, command: commands[index] }, workDir, {
+      ...options,
+      charBudget,
+    });
+    const section = `## ${label}\n${result.text}`;
+    used += section.length;
+    results.push(section);
     if (result.failed) {
-      return appendText(results.join('\n'), `error: command failed: ${command}`);
+      return appendText(results.join('\n'), `error: command failed: ${label}`);
     }
   }
   return results.join('\n');
@@ -906,4 +1235,5 @@ export const _gitCommandInternals = {
   parseCommand,
   prepare,
   resolveRepo,
+  writeScopes,
 };

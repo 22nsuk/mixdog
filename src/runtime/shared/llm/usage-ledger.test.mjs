@@ -1,7 +1,7 @@
 import './usage-test-support.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
@@ -276,12 +276,237 @@ test('live provider accounting works with diagnostics disabled and retains cance
   );
 });
 
-test('corrupt historical data is an import failure, not a successful empty history', async (t) => {
+test('a corrupt legacy gateway file is skipped with a warning, not an import failure, and retried after repair', async (t) => {
   const ledger = store(t);
   const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-corrupt-'));
-  writeFileSync(join(dir, 'gateway-usage.local.json'), '{broken');
-  await assert.rejects(importUsageHistory(ledger, dir, { now, readTrace: async () => [] }), SyntaxError);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const warnings = [];
+  t.mock.method(process.stderr, 'write', (chunk) => {
+    warnings.push(String(chunk));
+    return true;
+  });
+  const file = join(dir, 'gateway-usage.local.json');
+  for (const damaged of ['{broken', '\0'.repeat(32), '']) {
+    writeFileSync(file, damaged);
+    await importUsageHistory(ledger, dir, { now, readTrace: async () => [] });
+    assert.equal(ledger.get('importedThrough'), null, 'left unset so a repair is retried');
+  }
+  assert.equal(readFileSync(file, 'utf8'), '', 'the original is never rewritten');
+  assert.ok(warnings.some((line) => line.includes('gateway-usage.local.json')));
+  writeFileSync(file, JSON.stringify({ events: [] }));
+  await importUsageHistory(ledger, dir, { now, readTrace: async () => [] });
+  assert.equal(ledger.get('importedThrough'), String(now));
+});
+
+function legacyRollup(turns) {
+  return JSON.stringify({
+    days: {
+      '2026-09-12': {
+        models: {
+          'other/legacy': {
+            provider: 'other',
+            model: 'legacy',
+            turns,
+            input: 20,
+            output: 2,
+            cacheRead: 0,
+            cacheWrite: 0,
+            costUsd: 3,
+          },
+        },
+      },
+    },
+  });
+}
+
+function legacyStatsApi(t, dir, readTrace = async () => []) {
+  const ledger = store(t);
+  const warnings = [];
+  t.mock.method(process.stderr, 'write', (chunk) => {
+    warnings.push(String(chunk));
+    return true;
+  });
+  const api = createUsageStatsApi({
+    ledger: () => ledger,
+    importHistory: (opened) => importUsageHistory(opened, dir, { now, readTrace }),
+  });
+  return { ledger, warnings, api };
+}
+
+async function assertUnreadableLegacyRollup(t, contents) {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-legacy-bad-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'usage-rollup.local.json'), contents);
+  const { ledger, warnings, api } = legacyStatsApi(t, dir);
+  const stats = await api.getUsageStats({ days: null });
+  assert.equal(stats.coverage.ledger, true);
+  assert.equal(stats.totals.turns, 0);
   assert.equal(ledger.get('importedThrough'), null);
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM legacy_days').get().n, 0);
+  assert.equal(
+    warnings.some((line) => line.includes('warning') && line.includes('usage-rollup.local.json')),
+    true
+  );
+  return { ledger, dir, api };
+}
+
+test('a corrupt legacy rollup keeps other usage available and retries after repair without double counting', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-legacy-repair-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const legacyPath = join(dir, 'usage-rollup.local.json');
+  writeFileSync(legacyPath, '{broken');
+  const trace = {
+    kind: 'usage_raw',
+    ts: now - 2000,
+    model: 'claude-opus-4-8',
+    session_id: 'trace',
+    input_tokens: 1000,
+    output_tokens: 200,
+    payload: { provider: 'anthropic-oauth', response_id: 'trace' },
+  };
+  mkdirSync(join(dir, 'history'));
+  const tracePath = join(dir, 'history', 'agent-trace.jsonl');
+  const traceOriginal = `${JSON.stringify(trace)}\n`;
+  writeFileSync(tracePath, traceOriginal);
+  const gateway = {
+    ts: now - 1000,
+    provider: 'openai',
+    model: 'gpt-4.1',
+    sessionId: 'gateway',
+    responseId: 'gateway',
+    inputTokens: 40,
+    outputTokens: 4,
+  };
+  const gatewayPath = join(dir, 'gateway-usage.local.jsonl');
+  const gatewayOriginal = `${[gateway, gateway].map((event) => JSON.stringify(event)).join('\n')}\n`;
+  writeFileSync(gatewayPath, gatewayOriginal);
+  // The database and diagnostic file can contain the same historical send.
+  const { ledger, warnings, api } = legacyStatsApi(t, dir, async () => [trace]);
+  ledger.set('liveSince', now);
+  ledger.record([row({ sessionId: 'live', responseId: 'live' })]);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const stats = await api.getUsageStats({ days: null });
+    assert.equal(stats.coverage.ledger, true);
+    assert.equal(stats.totals.turns, 3);
+    assert.equal(stats.totals.tokens, 7744);
+    assert.equal(ledger.get('importedThrough'), null);
+    assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM events').get().n, 3);
+    assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM legacy_days').get().n, 0);
+  }
+  assert.equal(
+    warnings.some((line) => line.includes('warning') && line.includes(legacyPath)),
+    true
+  );
+  assert.equal(readFileSync(legacyPath, 'utf8'), '{broken');
+  writeFileSync(legacyPath, legacyRollup(2));
+  const repaired = await api.getUsageStats({ days: null });
+  assert.equal(repaired.totals.turns, 5);
+  assert.equal(repaired.totals.tokens, 7766);
+  assert.equal(ledger.get('importedThrough'), String(now));
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM events').get().n, 3);
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM legacy_days').get().n, 1);
+  assert.equal((await api.getUsageStats({ days: null })).totals.turns, 5);
+  assert.equal(readFileSync(tracePath, 'utf8'), traceOriginal);
+  assert.equal(readFileSync(gatewayPath, 'utf8'), gatewayOriginal);
+});
+
+test('an empty legacy rollup warns and still returns stats without marking the import', async (t) => {
+  await assertUnreadableLegacyRollup(t, '');
+});
+
+test('a torn or NUL trace line in a legacy trace file is skipped, never a failed import', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-torn-trace-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const trace = (id) =>
+    JSON.stringify({
+      kind: 'usage_raw',
+      ts: now - 2000,
+      model: 'claude-opus-4-8',
+      session_id: id,
+      input_tokens: 1000,
+      output_tokens: 200,
+      payload: { provider: 'anthropic-oauth', response_id: id },
+    });
+  mkdirSync(join(dir, 'history'));
+  const path = join(dir, 'history', 'agent-trace.jsonl');
+  // Intact rows, a cut-short append, a NUL block, and a NUL-torn tail.
+  const original = `${trace('one')}\n${trace('two').slice(0, 40)}\n\0\0\0\0\0\0\0\0\n${trace('three')}\n\0\0\0\0`;
+  writeFileSync(path, original);
+  const { ledger, warnings, api } = legacyStatsApi(t, dir);
+  const stats = await api.getUsageStats({ days: null });
+  assert.equal(stats.totals.turns, 2, 'the intact rows are imported');
+  assert.equal(ledger.get('importedThrough'), String(now));
+  assert.equal(JSON.parse(ledger.get('importReceipt')).tornTraceLines, 3);
+  assert.equal(
+    warnings.some((line) => line.includes('torn trace line')),
+    true
+  );
+  assert.equal(readFileSync(path, 'utf8'), original, 'the original is never rewritten');
+});
+
+test('wrong-shaped legacy rollup JSON warns and does not mark the import', async (t) => {
+  for (const contents of ['null', '[]', '{}', '{"days": null}', '{"days": "x"}']) {
+    await assertUnreadableLegacyRollup(t, contents);
+  }
+});
+
+test('a valid legacy rollup is imported once and is not counted twice', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-legacy-valid-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'usage-rollup.local.json');
+  writeFileSync(path, legacyRollup(2));
+  const { ledger, warnings, api } = legacyStatsApi(t, dir);
+  assert.equal((await api.getUsageStats({ days: null })).totals.turns, 2);
+  assert.equal(ledger.get('importedThrough'), String(now));
+  writeFileSync(path, legacyRollup(9));
+  assert.deepEqual(await importUsageHistory(ledger, dir, { now, readTrace: async () => [] }), { skipped: true });
+  assert.equal((await api.getUsageStats({ days: null })).totals.turns, 2);
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM legacy_days').get().n, 1);
+  const stored = JSON.parse(ledger.db.prepare('SELECT document FROM legacy_days').get().document);
+  assert.equal(stored.models['other/legacy'].turns, 2);
+  assert.equal(
+    warnings.some((line) => line.includes('usage-rollup.local.json')),
+    false
+  );
+});
+
+test('missing and valid empty legacy rollups complete the import without a warning', async (t) => {
+  for (const [name, contents] of [
+    ['missing file', null],
+    ['empty day map', '{"days": {}}'],
+    ['empty day array', '{"days": []}'],
+  ]) {
+    await t.test(name, async (t) => {
+      const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-legacy-empty-'));
+      t.after(() => rmSync(dir, { recursive: true, force: true }));
+      if (contents !== null) writeFileSync(join(dir, 'usage-rollup.local.json'), contents);
+      const { ledger, warnings, api } = legacyStatsApi(t, dir);
+      assert.equal((await api.getUsageStats({ days: null })).totals.turns, 0);
+      assert.equal(ledger.get('importedThrough'), String(now));
+      assert.equal(
+        warnings.some((line) => line.includes('usage-rollup.local.json')),
+        false
+      );
+      assert.deepEqual(await importUsageHistory(ledger, dir, { now, readTrace: async () => [] }), { skipped: true });
+    });
+  }
+});
+
+test('legacy storage errors are not mistaken for an unreadable rollup', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-legacy-storage-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'usage-rollup.local.json'), legacyRollup(2));
+  const { ledger, warnings, api } = legacyStatsApi(t, dir);
+  const failure = new SyntaxError('storage failed');
+  t.mock.method(ledger, 'preserveLegacyDays', () => {
+    throw failure;
+  });
+  await assert.rejects(api.getUsageStats({ days: null }), (error) => error === failure);
+  assert.equal(ledger.get('importedThrough'), null);
+  assert.equal(
+    warnings.some((line) => line.includes('usage-rollup.local.json')),
+    false
+  );
 });
 
 test('import skips blank PG usage fields, deduplicates raw copies, preserves originals and source precedence', async (t) => {

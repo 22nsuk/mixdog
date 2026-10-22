@@ -2,8 +2,10 @@ import { Check, FileDiff, FileText, Undo2, X } from 'lucide-react';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { t } from './i18n';
 import { errorMessageText } from './ErrorNotice';
+import { publishReviewInvalidation } from './review-invalidation';
 import { GitDiffBody } from './ReviewPane';
 import { IslandSegLabel } from './ComposerIsland';
+import { TurnReviewDigestDiff } from './turn-review-digest-diff';
 import { TurnReviewFilesMenu } from './turn-review-files-menu';
 import { statusLabel, statusCode, type TurnReviewFileEntry, type TurnReviewSummary } from './turn-review-model';
 
@@ -105,16 +107,33 @@ export function turnReviewHead({
  *  history. */
 export function turnReviewSegment({
   fileCount,
+  files,
   headlineStats,
   onOpenChanges,
+  onOpenChangeFile,
   setExpanded,
   sessionId,
   historyTurns,
   busy,
+  label,
+  sourcePicker,
+  emptyText,
+  ready,
 }: {
+  /** The Changes source's name (the segment's accessible label). */
+  label: string;
+  /** A Git root: the menu names its source and offers the source picker. */
+  sourcePicker: boolean;
+  /** Shown in the open menu when its source has no files. */
+  emptyText: string;
+  /** The source's first read has answered (no empty notice before it). */
+  ready: boolean;
   fileCount: number;
+  /** Every changed file, listed in the menu. */
+  files: ReadonlyMap<string, TurnReviewFileEntry>;
   headlineStats: HeadlineStats;
   onOpenChanges: (() => void) | undefined;
+  onOpenChangeFile: ((path: string) => void) | undefined;
   setExpanded: Dispatch<SetStateAction<boolean>>;
   sessionId: string | undefined;
   historyTurns: number;
@@ -125,9 +144,14 @@ export function turnReviewSegment({
       sessionId={sessionId}
       historyTurns={historyTurns}
       busy={busy}
-      label={t('Files changed this session')}
+      label={label}
       title={t('Files {{count}}', { count: fileCount })}
+      files={files}
+      sourcePicker={sourcePicker}
+      emptyText={emptyText}
+      ready={ready}
       onViewChanges={onOpenChanges ?? (() => setExpanded(true))}
+      onOpenFile={onOpenChangeFile ?? (() => setExpanded(true))}
     >
       <IslandSegLabel text={t('Island: {{count}} files', { count: fileCount })} count={fileCount} icon="file-diff" />
       {headlineStats.hasLineStats && (
@@ -220,6 +244,8 @@ function turnReviewRevertControl({
             .then(async () => {
               setReverted((current) => [...current, name]);
               setRevertedBoundary(turnBoundaryKey);
+              window.dispatchEvent(new Event('mixdog:git-changed'));
+              if (sessionId) publishReviewInvalidation(sessionId);
               await refreshAgentReviews();
             })
             .catch((reason: unknown) => setRevertError(errorMessageText(reason)));
@@ -243,6 +269,8 @@ type RowWiring = {
  *  action, its revert slot, and the inline diff it discloses. */
 function turnReviewFileRow({
   entry,
+  name,
+  sessionId,
   rel,
   rowKey,
   isReverted,
@@ -254,6 +282,8 @@ function turnReviewFileRow({
   revertControl,
 }: RowWiring & {
   entry: TurnReviewFileEntry;
+  name: string;
+  sessionId: string | undefined;
   rel: string;
   rowKey: string;
   isReverted: boolean;
@@ -304,7 +334,10 @@ function turnReviewFileRow({
       </span>
       {openFile === rowKey && (
         <div className="turn-review-diff">
-          {entry.parts.length > 0 ? (
+          {entry.slots?.some((slot) => typeof slot === 'object') && sessionId ? (
+            // The phone holds these files' digests, not their diff text.
+            <TurnReviewDigestDiff sessionId={sessionId} entry={entry} name={name} cwd={cwd ?? ''} mode={diffStyle} />
+          ) : entry.parts.length > 0 ? (
             // biome-ignore lint/suspicious/noArrayIndexKey: parts are positional per entry and never reorder
             entry.parts.map((file, index) => <GitDiffBody key={`${rowKey}:${index}`} file={file} mode={diffStyle} />)
           ) : (
@@ -342,12 +375,9 @@ export function turnReviewFileItems({
   return sources.flatMap((source) => {
     const sourceHeader = (
       <li key={`${source.key}:source`} className="turn-review-source">
-        {/* Turn/Lead are catalog keys; agent tags are user data, never keys. */}
-        <strong>
-          {source.key === 'turn' || source.key === 'lead' || source.key === 'session'
-            ? t(source.label)
-            : source.label || t('Agent')}
-        </strong>
+        {/* Turn/Lead are catalog keys; the session label arrives translated;
+            agent tags are user data, never keys. */}
+        <strong>{source.key === 'turn' || source.key === 'lead' ? t(source.label) : source.label || t('Agent')}</strong>
         <span className="diff-stats" aria-hidden={!source.summary.hasLineStats}>
           <i>{source.summary.additions > 0 ? `+${source.summary.additions}` : ''}</i>
           <em>{source.summary.deletions > 0 ? `-${source.summary.deletions}` : ''}</em>
@@ -367,6 +397,8 @@ export function turnReviewFileItems({
       const canRevertFile = ownFile && canRevertTurn && !busy && !isReverted;
       return turnReviewFileRow({
         entry,
+        name,
+        sessionId: wiring.sessionId,
         rel,
         rowKey,
         isReverted,

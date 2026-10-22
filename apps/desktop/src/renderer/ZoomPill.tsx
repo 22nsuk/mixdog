@@ -2,19 +2,20 @@
 // The percent button opens a small menu of presets (and, in the editor
 // previews, "Fit width"). The value is always the live, resolved scale.
 //
-// Shared by the browser panes and the editor previews; the browser keeps its
-// own name (BrowserZoomPill) for the default 50%–200% range and stays always
-// visible, while the previews drive `visible`. The stylesheet ships with the
-// component so every surface renders it alike.
+// Shared by the browser panes, the editor previews and Visualize; the browser
+// keeps its own name (BrowserZoomPill) for the default 50%–200% range. Every
+// surface shows it always, unless the shared zoom-bar preference
+// (zoom-bar-pref.ts) hides it. The stylesheet ships with the component so
+// every surface renders it alike.
 import { Check, ChevronDown, Minus, Plus } from 'lucide-react';
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 
 import { BROWSER_ZOOM_PRESETS, BROWSER_ZOOM_RANGE, stepZoom, type ZoomRange } from './zoom-range';
 import { t } from './i18n';
 import { useMobileBack } from './mobile-back';
 import './zoom-pill.css';
 
-export interface ZoomPillLead {
+interface ZoomPillLead {
   label: string;
   checked: boolean;
   onSelect(): void;
@@ -29,9 +30,11 @@ export function ZoomPill({
   presets = BROWSER_ZOOM_PRESETS,
   step = (current, direction) => stepZoom(current, direction, range),
   lead,
-  visible = true,
-  onActiveChange,
+  before,
 }: {
+  /** Controls ahead of the zoom steps (Visualize's pane switcher); a
+   *  separator follows them. */
+  before?: ReactNode;
   /** The resolved scale (1 = 100%). */
   level: number;
   onChange(level: number): void;
@@ -41,15 +44,10 @@ export function ZoomPill({
   step?(level: number, direction: 1 | -1): number;
   /** First menu entry, e.g. "Fit width"; defaults to "Zoom to 100%". */
   lead?: ZoomPillLead;
-  visible?: boolean;
-  /** True while the pill is hovered, focused or has its menu open. */
-  onActiveChange?(active: boolean): void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const percentRef = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const [focused, setFocused] = useState(false);
   const percent = Math.round(level * 100);
   const head: ZoomPillLead = lead ?? {
     label: t('Zoom to {{value0}}%', { value0: 100 }),
@@ -58,10 +56,6 @@ export function ZoomPill({
   };
 
   useMobileBack(open, () => setOpen(false));
-
-  useEffect(() => {
-    onActiveChange?.(open || hovered || focused);
-  }, [open, hovered, focused, onActiveChange]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -109,7 +103,7 @@ export function ZoomPill({
     // biome-ignore lint/a11y/useSemanticElements: a <fieldset> brings its own border, padding and min-width into the floating pill.
     <div
       ref={rootRef}
-      className={visible ? 'browser-zoom-pill' : 'browser-zoom-pill is-hidden'}
+      className="browser-zoom-pill"
       role="group"
       aria-label={t('Zoom')}
       // Pointer events on the pill must never reach the surface below: the
@@ -117,14 +111,14 @@ export function ZoomPill({
       onPointerDown={(event) => event.stopPropagation()}
       onPointerUp={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      onFocus={() => setFocused(true)}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false);
-      }}
       onKeyDown={onKeyDown}
     >
+      {before ? (
+        <>
+          {before}
+          <span className="browser-zoom-separator" aria-hidden="true" />
+        </>
+      ) : null}
       <button
         type="button"
         className="browser-zoom-step"

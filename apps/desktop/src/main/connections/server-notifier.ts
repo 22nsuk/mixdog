@@ -11,6 +11,7 @@ import type {
 import type { Notification } from 'electron';
 import { createDesktopTurnNotifier } from '../desktop-turn-notifier';
 import type { SessionFinalAnswer } from '../session-final-answer';
+import { type SessionTitleLabels, sessionTitleLabel } from '../../shared/session-title.mjs';
 
 type NativeNotification = ReturnType<ServerNotifierOptions['createNotification']>;
 
@@ -22,7 +23,7 @@ export interface ServerNotifierSources {
   subscribeAgentPool(listener: (agents: DesktopAgentPoolRow[]) => void): () => void;
   subscribeSessionStates(listener: (update: DesktopSessionStateUpdate) => void): () => void;
   subscribeLink(listener: (view: DesktopConnectionLinkView) => void): () => void;
-  readFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null>;
+  readFinalAnswer(sessionId: string, startedAt: number, signal?: AbortSignal): Promise<SessionFinalAnswer | null>;
 }
 
 export interface ServerNotifierOptions {
@@ -33,12 +34,17 @@ export interface ServerNotifierOptions {
   isSupported(): boolean;
   /** The server's window is visible and focused. */
   isForeground(): boolean;
+  /** The server's focused window is showing this very session. */
+  isSessionOnScreen(sessionId: string): boolean;
   createNotification(content: { title: string; body: string }): Pick<Notification, 'on' | 'show' | 'close'>;
   playSound?(): Promise<string>;
   /** Bring the server's window to the front, on `sessionId` when given. */
   focus(sessionId?: string): void;
   /** The fixed texts, in this PC's UI language at the moment they show. */
   text: ServerNotifierText;
+  /** This PC's words for an attachment-only session title (`[Image]` …);
+   *  English when absent. */
+  titleLabels?(): SessionTitleLabels;
   diagnostic(event: string, details: Record<string, unknown>): void;
   setTimeout?: (callback: () => void, ms: number) => unknown;
   clearTimeout?: (handle: unknown) => void;
@@ -58,7 +64,7 @@ export interface ServerNotifier {
   dispose(): void;
 }
 
-const named = (template: string, name: string): string => template.replace('{{name}}', name);
+const named = (template: string, name: string): string => template.replace('{{name}}', () => name);
 
 /** A server names its sessions and supplies their previews: the OS gets
  *  bounded text, one line for the title. */
@@ -107,11 +113,12 @@ export function createServerNotifier(options: ServerNotifierOptions): ServerNoti
   const turns = createDesktopTurnNotifier({
     isEnabled: options.isEnabled,
     isSupported: options.isSupported,
-    isForeground: options.isForeground,
+    isSessionOnScreen: options.isSessionOnScreen,
     createNotification: (content) => create({ ...content, title: label(content.title) }),
     ...(options.playSound ? { playSound: options.playSound } : {}),
     readFinalAnswer: options.sources.readFinalAnswer,
     openSession: (sessionId) => options.focus(sessionId),
+    ...(options.titleLabels ? { titleLabels: options.titleLabels } : {}),
     diagnostic: (event, details) => options.diagnostic(`server-turn-notification-${event}`, details),
   });
 
@@ -128,7 +135,10 @@ export function createServerNotifier(options: ServerNotifierOptions): ServerNoti
     if (!key || key === previous || update.frameSource === 'replay') return;
     if (!options.isEnabled() || options.isForeground()) return;
     show(
-      { title: label(titles.get(sessionId) || options.serverName), body: options.text.approvalWaiting() },
+      {
+        title: label(sessionTitleLabel(titles.get(sessionId) || options.serverName, options.titleLabels?.())),
+        body: options.text.approvalWaiting(),
+      },
       sessionId
     );
   };

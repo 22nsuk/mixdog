@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { sessionSummaryTitle } from '../../shared/session-title.mjs';
+import { isAgentHomeSessionId } from '../../../../../src/runtime/agent/orchestrator/session/agent-home.mjs';
+import { BOT_DELETED_EVENT } from '../agent-profile-actions';
+import { navigationKey } from '../text-format';
+import { sessionDisplayTitle } from '../session-display-title';
 import type { useAppSessionActions } from '../use-app-session-actions';
 import { isMobileRemoteSurface } from '../mobile-surface';
 import { useShellUpdateReload } from '../use-shell-update-reload';
@@ -11,6 +14,8 @@ type SessionActivityOptions = Pick<
   'sessions' | 'setTabs' | 'refreshSessions'
 > & {
   setSessionCatalogReady: (ready: boolean) => void;
+  subscribeSessionsRemoved: (listener: (sessionIds: string[]) => void) => () => void;
+  closePaneTab: (key: string) => void;
 };
 
 export function useAppSessionActivity({
@@ -18,6 +23,8 @@ export function useAppSessionActivity({
   setTabs,
   refreshSessions,
   setSessionCatalogReady,
+  subscribeSessionsRemoved,
+  closePaneTab,
 }: SessionActivityOptions) {
   // Re-evaluate unread consumption when a desktop window or phone resumes.
   const [windowFocusTick, setWindowFocusTick] = useState(0);
@@ -52,7 +59,7 @@ export function useAppSessionActivity({
   }, [sessions]);
   useEffect(() => {
     const catalogTitles = new Map(
-      sessions.map((session) => [session.id, sessionSummaryTitle(session, t('Untitled session'))] as const)
+      sessions.map((session) => [session.id, sessionDisplayTitle(session, t('Untitled session'))] as const)
     );
     if (!catalogTitles.size) return;
     setTabs((current) => {
@@ -68,6 +75,37 @@ export function useAppSessionActivity({
       return changed ? next : current;
     });
   }, [sessions, setTabs]);
+  // A non-empty host catalog (listing or push) dropped sessions the previous
+  // catalog held: they were deleted elsewhere (IPC, another window, the phone,
+  // a sweep), so their tabs close. Cache seeds, optimistic edits, empty lists
+  // and transport errors never reach this subscription, and a tab for a
+  // session that was never listed (new draft, agent worker) is untouched.
+  useEffect(() => {
+    const closeTabs = (ids: readonly string[]) => {
+      const gone = new Set(ids);
+      if (!gone.size) return;
+      setTabs((current) => {
+        const next = current.filter((tab) => !(tab.selection.kind === 'session' && gone.has(tab.selection.id)));
+        return next.length === current.length ? current : next;
+      });
+      for (const id of gone) closePaneTab(navigationKey({ kind: 'session', id }));
+    };
+    // An agent's home keeps its fixed id for good: after 대화 초기화 it is
+    // empty, so the catalog leaves it out, yet its chat stays open.
+    const unsubscribe = subscribeSessionsRemoved((removedIds) =>
+      closeTabs(removedIds.filter((id) => !isAgentHomeSessionId(id)))
+    );
+    // A bot deleted in this window: its chat is archived, its tabs close.
+    const onBotDeleted = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: unknown }>).detail?.sessionId;
+      if (typeof sessionId === 'string' && sessionId) closeTabs([sessionId]);
+    };
+    window.addEventListener(BOT_DELETED_EVENT, onBotDeleted);
+    return () => {
+      unsubscribe();
+      window.removeEventListener(BOT_DELETED_EVENT, onBotDeleted);
+    };
+  }, [subscribeSessionsRemoved, setTabs, closePaneTab]);
   useEffect(() => {
     let live = true;
     // Child pane effects commit first, keeping visible reads ahead of this

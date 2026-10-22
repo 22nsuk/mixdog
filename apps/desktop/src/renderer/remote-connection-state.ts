@@ -1,3 +1,5 @@
+import { DESKTOP_OFFLINE_CLOSE } from '../../../relay/lib/relay-close-codes.mjs';
+
 type RemoteConnectionState = 'connecting' | 'syncing' | 'connected' | 'reconnecting';
 
 /** Dispatched on window once the remote shim (re)connects and has synced. */
@@ -8,6 +10,11 @@ const REMOTE_CONNECTION_INTERRUPTED_CODE = 'MIXDOG_REMOTE_CONNECTION_INTERRUPTED
 /** Manual retry from the connection chip. The shim reconnects on it exactly as
  *  it does on a foreground wake, so a user never has to wait out the backoff. */
 export const REMOTE_WAKE_EVENT = 'mixdog:remote-wake';
+
+/** The relay's close for a paired browser whose PC has no live leg — at
+ *  connect, or after a parked browser outlived the PC's absence. Transient:
+ *  it never touches the stored pairing (remote-pairing-recovery.ts). */
+export const REMOTE_DESKTOP_OFFLINE_CLOSE = DESKTOP_OFFLINE_CLOSE;
 
 type RemoteConnectionPhase =
   | 'approval'
@@ -97,6 +104,8 @@ export function setRemoteConnectionPhase(phase: RemoteConnectionPhase): void {
   if (data.mixdogRemotePhase === phase) return;
   markRemoteConnectionTimeline(`phase=${phase}`);
   data.mixdogRemotePhase = phase;
+  // Synchronizing with the PC is proof it answered.
+  if (phase === 'sync' || phase === 'connected') delete data.mixdogRemoteDesktop;
   window.dispatchEvent(new window.Event(REMOTE_CONNECTION_STATE_EVENT));
 }
 
@@ -115,6 +124,14 @@ export function reportRemoteConnectionIssue(issue: RemoteConnectionIssue, error?
   const detail = diagnosticDetail(error);
   markRemoteConnectionTimeline(`issue=${issue}${Number.isInteger(code) ? `:${code}` : ''}`);
   const data = document.documentElement.dataset;
+  // The latest failure is the one that names the cause: only the relay's own
+  // "PC offline" close says the PC is unreachable, and any other failure after
+  // it means that is no longer known.
+  if (issue === 'websocket-closed' && code === REMOTE_DESKTOP_OFFLINE_CLOSE) data.mixdogRemoteDesktop = 'offline';
+  else delete data.mixdogRemoteDesktop;
+  // Held until the state moves on: the retries of a failing sync keep the
+  // state at 'syncing', and a new connection or a completed sync clears it.
+  if (issue === 'sync-failed') data.mixdogRemoteSync = 'failed';
   data.mixdogRemoteError = [
     data.mixdogRemotePhase || 'approval',
     issue,
@@ -154,6 +171,8 @@ export function setRemoteConnectionState(state: RemoteConnectionState): void {
   if (currentRemoteConnectionState() === state) return;
   markRemoteConnectionTimeline(`state=${state}`);
   document.documentElement.dataset.mixdogRemoteConnection = state;
+  delete document.documentElement.dataset.mixdogRemoteSync;
+  if (state === 'connected') delete document.documentElement.dataset.mixdogRemoteDesktop;
   if (state === 'connected' && document.documentElement.dataset.mixdogRemotePhase) {
     document.documentElement.dataset.mixdogRemotePhase = 'connected';
     delete document.documentElement.dataset.mixdogRemoteError;
@@ -167,6 +186,39 @@ export function clearRemoteConnectionState(): void {
   delete document.documentElement.dataset.mixdogRemoteConnection;
   delete document.documentElement.dataset.mixdogRemotePhase;
   delete document.documentElement.dataset.mixdogRemoteError;
+  delete document.documentElement.dataset.mixdogRemoteDesktop;
+  delete document.documentElement.dataset.mixdogRemoteSync;
+  window.dispatchEvent(new window.Event(REMOTE_CONNECTION_STATE_EVENT));
+}
+
+/** Why a boot had to go through approval, recorded on the boot timeline:
+ *  no stored credential, no stored E2EE key, or a surface that may not hold one. */
+export function markRemoteApprovalReason(reason: 'no-token' | 'no-key' | 'not-installed'): void {
+  markRemoteConnectionTimeline(`approval=${reason}`);
+}
+
+/** Whether the link to the PC is down — the only thing the calm "Connecting…"
+ *  indicator counts toward. Every redial ('connecting', 'reconnecting') is;
+ *  a view sync on a socket that is up is not — the transcript on screen stays
+ *  readable — until that sync has failed. A cold boot has nothing on screen
+ *  yet, so its sync counts too. */
+export function isRemoteConnectionOutage(boot: boolean): boolean {
+  const state = currentRemoteConnectionState();
+  if (state === 'reconnecting' || state === 'connecting') return true;
+  if (state === 'syncing') return boot || document.documentElement.dataset.mixdogRemoteSync === 'failed';
+  return false;
+}
+
+/** The relay's latest answer was that the PC has no live leg (its own close). */
+export function isRemoteDesktopOffline(): boolean {
+  return typeof document !== 'undefined' && document.documentElement.dataset.mixdogRemoteDesktop === 'offline';
+}
+
+/** A manual retry: the PC's last reported absence stands only once the relay
+ *  says so again. */
+export function forgetRemoteDesktopOffline(): void {
+  if (!isRemoteDesktopOffline()) return;
+  delete document.documentElement.dataset.mixdogRemoteDesktop;
   window.dispatchEvent(new window.Event(REMOTE_CONNECTION_STATE_EVENT));
 }
 

@@ -1,12 +1,15 @@
 import {
   ArrowLeft,
   Blocks,
+  Bot,
   Brain,
   Cable,
   Code,
   GitBranch,
   Heart,
   Keyboard,
+  ListChecks,
+  Paintbrush,
   Palette,
   PenLine,
   Plug,
@@ -25,17 +28,19 @@ import { isRemoteHostRenderer } from '../remote-ui-projection';
 import { isSshConnectionWindow } from '../desktop-connection';
 import { useRemoteHostOpenAccess } from '../remote-host-access';
 import { t } from '../i18n';
+import { scrimDismiss } from '../scrim-dismiss';
+import { useMobileRemoteSurface } from '../mobile-surface';
 import { acquireTitleBarDim, refreshTitleBarDim } from '../titlebar-dim';
 import { CapabilitySettings, getCachedCapabilitySettings, preloadCapabilitySettings } from './CapabilitySettings';
 import { preloadConnectionInfo } from './connection-info';
 import { preloadDesktopStatus } from './desktop-status-cache';
 import { preloadProviderPanel } from './provider-panel';
-import { FOCUSABLE_SELECTOR, inertBackground, portaledMenuOpen, trapTab } from './dialog-modality';
+import { FOCUSABLE_SELECTOR, openModal, portaledMenuOpen, trapTab } from './dialog-modality';
 import { preloadGitPanelInfo } from './git-panel-info';
 import { ServerSettingsScope } from './server-settings-scope';
 import { RemotePcLabel } from '../RemotePcSwitcher';
 import {
-  DEVICE_SETTINGS_CATEGORY,
+  DEVICE_SETTINGS_CATEGORIES,
   type SETTINGS_ITEMS,
   categoryForSettingsItem,
   settingsCategoriesForSurface,
@@ -71,9 +76,12 @@ interface SettingsViewProps {
 
 const CATEGORY_ICONS = {
   general: SlidersHorizontal,
+  skin: Paintbrush,
+  bots: Bot,
   context: Brain,
   'output-style': PenLine,
   providers: Cable,
+  models: ListChecks,
   git: GitBranch,
   connection: Smartphone,
   mcp: Plug,
@@ -99,29 +107,29 @@ export const SettingsView = memo(function SettingsView({
   const hostOpenAccess = useRemoteHostOpenAccess();
   // A server window has no phone access: Connection pairs phones with THIS PC.
   const serverWindow = isSshConnectionWindow();
+  // The Shortcuts reference is keyboard-only, so the phone drops the tab.
+  const phone = useMobileRemoteSurface();
+  // The bot overlay is this PC's own window: not in a server window either.
+  const hidden = (value: SettingsCategory) =>
+    (serverWindow && (value === 'connection' || value === 'bots')) || (phone && value === 'shortcuts');
   const visibleCategories = settingsCategoriesForSurface(remoteSettings, hostOpenAccess).filter(
-    (item) => !(serverWindow && item.value === 'connection')
+    (item) => !hidden(item.value)
   );
   const surfaceCategory = (next: SettingsCategory): SettingsCategory => {
     const resolved = settingsCategoryForSurface(next, remoteSettings, hostOpenAccess);
-    return serverWindow && resolved === 'connection' ? 'general' : resolved;
+    return hidden(resolved) ? 'general' : resolved;
   };
   const resolveCategory = (next: SettingsCategory): SettingsCategory => surfaceCategory(next);
-  // On a remote surface the theme lives on the device's own Display page.
-  const startCategory = (): SettingsCategory =>
-    initialSection === 'theme' && remoteSettings
-      ? 'display'
-      : initialSection
-        ? categoryForSettingsItem(initialSection)
-        : 'general';
+  const startCategory = (): SettingsCategory => (initialSection ? categoryForSettingsItem(initialSection) : 'general');
   const [category, setCategory] = useState<SettingsCategory>(resolveCategory(startCategory()));
   const openCategory = useCallback(
     (next: SettingsCategory) => {
       const resolved = settingsCategoryForSurface(next, remoteSettings, hostOpenAccess);
-      setCategory(serverWindow && resolved === 'connection' ? 'general' : resolved);
+      setCategory(serverWindow && (resolved === 'connection' || resolved === 'bots') ? 'general' : resolved);
     },
     [remoteSettings, hostOpenAccess, serverWindow]
   );
+  const deviceCategory = category === 'display' || category === 'skin';
   const dialogRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -180,7 +188,7 @@ export const SettingsView = memo(function SettingsView({
     if (!open) return undefined;
     priorFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
-    const restoreBackground = inertBackground((element) => element !== dialog && !element.contains(dialog));
+    const restoreBackground = dialog ? openModal(dialog) : () => {};
     closeRef.current?.focus();
     return () => {
       restoreBackground();
@@ -259,10 +267,7 @@ export const SettingsView = memo(function SettingsView({
       data-surface-active={open ? 'true' : 'false'}
       inert={open ? undefined : true}
       aria-hidden={open ? undefined : true}
-      onPointerDown={(event) => {
-        if (event.target !== event.currentTarget) return;
-        requestClose();
-      }}
+      {...scrimDismiss(requestClose)}
     >
       {/* A CLOSED settings dialog stays mounted for a warm reopen, so it must
         stop claiming to be modal — the workbench keymap treats any live
@@ -287,7 +292,7 @@ export const SettingsView = memo(function SettingsView({
                   <Smartphone aria-hidden="true" size={13} />
                   <span>{t('This device')}</span>
                 </div>
-                {railButton(DEVICE_SETTINGS_CATEGORY)}
+                {DEVICE_SETTINGS_CATEGORIES.map(railButton)}
               </div>
             )}
             <div className="mixdog-settings__rail-group" data-settings-group="pc">
@@ -307,13 +312,13 @@ export const SettingsView = memo(function SettingsView({
             <div className="mixdog-settings__header-title">
               <h1 id="mixdog-settings-title">
                 {t(
-                  [...visibleCategories, DEVICE_SETTINGS_CATEGORY].find((item) => item.value === category)?.label ||
-                    'Settings'
+                  [...visibleCategories, ...DEVICE_SETTINGS_CATEGORIES].find((item) => item.value === category)
+                    ?.label || 'Settings'
                 )}
               </h1>
               {remoteSettings && (
-                <span className="mixdog-settings__where" data-settings-where={category === 'display' ? 'device' : 'pc'}>
-                  {category === 'display' ? (
+                <span className="mixdog-settings__where" data-settings-where={deviceCategory ? 'device' : 'pc'}>
+                  {deviceCategory ? (
                     <>
                       <Smartphone aria-hidden="true" size={12} />
                       {t('This device')}

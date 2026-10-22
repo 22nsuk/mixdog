@@ -47,9 +47,6 @@ export function createContextState({
     // (fresh id, copied transcript), hosts validating "resume returned the
     // requested session" must accept the fork by its origin id.
     sessionForkedFrom: runtime.session?.forkedFrom || null,
-    // Remote-attach marker: this surface is a live viewer on a session owned
-    // by another process; submits are injected, transcript follows disk.
-    sessionRemoteAttached: runtime.session?.remoteAttached === true,
     clientHostPid: runtime.clientHostPid || null,
     model: runtime.model,
     provider: runtime.provider,
@@ -71,13 +68,19 @@ export function createContextState({
     // Lead workspace record (worktrees/contract.mjs SessionWorkspace): the
     // registered Project, the execution root, the worktree binding and its
     // revision. Null while the session has never left its project folder.
-    // Identity-stable until a transition commits.
-    workspace: runtime.getWorkspace?.() ?? null,
+    // Identity-stable until a transition commits. A project-folder session in a
+    // git repository publishes the folder's branch / detached commit too
+    // (getLiveWorkspace reads HEAD without spawning git).
+    workspace: runtime.getLiveWorkspace?.() ?? runtime.getWorkspace?.() ?? null,
     systemShell: runtime.systemShell || { source: 'auto', command: '', effective: '' },
     webSearchRoute: runtime.getWebSearchRoute?.() || runtime.webSearchRoute || null,
     autoClear: autoClearState(),
     workflow: runtime.workflow || null,
     orchestrationMode: runtime.orchestrationMode || 'none',
+    // A workflow / orchestration mode chosen during a turn: shown above,
+    // applied when the next turn starts (tool-policy-refresh.mjs).
+    pendingWorkflowSwitch: runtime.session?.pendingWorkflowId !== undefined,
+    pendingOrchestrationModeSwitch: runtime.session?.pendingOrchestrationMode !== undefined,
     // Every `set({ ...routeState() })` (the 2s runtime pulse, model/effort
     // switches, turn end, resume) republishes the Goal. It must read it
     // through the goal-continuation mask: the raw record still holds a
@@ -136,7 +139,12 @@ export function createContextState({
     const ctx = runtime.contextStatus?.() || null;
     if (!ctx) return null;
     syncContextDisplayFields(ctx);
-    const stats = { ...getState().stats, ...contextMeasurementStats(ctx) };
+    const stats = {
+      ...getState().stats,
+      ...contextMeasurementStats(ctx),
+      // The persisted session totals behind the composer's usage readout.
+      usageReadout: ctx.usage?.usageReadout ?? null,
+    };
     updateState({ stats });
     return ctx;
   };

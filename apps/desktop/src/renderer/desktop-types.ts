@@ -15,6 +15,15 @@ export type TranscriptItem = RecordValue & {
   agent?: string;
   /** Device that submitted this prompt (user rows only). */
   device?: string;
+  /** The bot that sent this user-kind row into this chat (a bot's `session send`). */
+  fromAgent?: string;
+  /** A message the model read inside its running turn (user rows only). */
+  steered?: boolean;
+  /** A message sent while a turn runs that the model has not read yet: it
+   *  waits for the next step boundary (`pending`), runs after the turn (a
+   *  slash command, `held`), is being sent now (`sending`), or could not be
+   *  sent (`failed`). */
+  steer?: 'pending' | 'held' | 'sending' | 'failed';
   /** The turn checkpoint a `user` prompt opened or a `turndone` closed. */
   checkpointId?: string;
   /** A row a compaction took out of the model context: display-only. */
@@ -44,8 +53,28 @@ export type TranscriptItem = RecordValue & {
   callErrorCount?: number;
   exitErrorCount?: number;
   images?: Array<{ id?: number | null; name?: string; mimeType?: string; bytes?: number; attachmentRef?: string }>;
+  /** User rows: the attachments the message carries, by the content hash the host stores them under;
+   *  task reports and room speech: the files the turn returned. */
+  attachments?: Array<{ id: string; kind: 'image' | 'file' | 'text'; name: string; mimeType: string; size: number }>;
   /** Restored rows: each image's stored original, by the `[Image: …]` line that draws it. */
   imageRefs?: Array<{ line: string; ref?: string }>;
+  /** A group-room row (agent-room.mjs): who spoke, a pass, a limit notice,
+   *  or (host overlay) the member speaking now. */
+  room?: TranscriptRoomRow;
+};
+
+export type TranscriptRoomRow = {
+  id?: string;
+  kind: 'user' | 'speech' | 'pass' | 'cap' | 'stopped' | 'interrupted' | 'typing';
+  speaker?: string;
+  name?: string;
+  /** The members a user message or a member's @mention addresses, in order. */
+  to?: string[];
+  toName?: string[];
+  failed?: boolean;
+  limit?: 'rounds' | 'messages';
+  rounds?: number;
+  messages?: number;
 };
 
 export type Approval = RecordValue & {
@@ -171,6 +200,8 @@ export type Snapshot = RecordValue & {
       command?: string;
       cwd?: string;
       startedAt?: number | string | null;
+      /** Killed, but not every process is confirmed gone; the folder stays held. */
+      terminationUnconfirmed?: boolean;
     }>;
     /** Recently finished background jobs; never part of `count`. */
     finished?: Array<{
@@ -186,12 +217,15 @@ export type Snapshot = RecordValue & {
   };
   workflow?: RecordValue | null;
   orchestrationMode?: import('../shared/contract').DesktopOrchestrationMode;
+  pendingWorkflowSwitch?: boolean;
+  pendingOrchestrationModeSwitch?: boolean;
 };
 
 export const EMPTY_SNAPSHOT: Snapshot = { items: [], queued: [] };
 export const EMPTY_TRANSCRIPT_ITEMS: TranscriptItem[] = [];
 
-/** Session owners whose Lead or child-agent heartbeat is active. Unlike the
+/** Session owners whose Lead or child-agent turn the daemon reports running in
+ * its in-memory state (`leadWorking` / `agentWorking`). Unlike the
  * sidebar selection helper below, this list is process-wide and must never be
  * changed by whichever conversation currently has focus. */
 export function agentActivitySessionIds(sessions: readonly DesktopSessionSummary[]): string[] {
@@ -209,6 +243,8 @@ export const REVIEW_DIFF_STYLE_KEY = 'mixdog.review-diff-style.v1';
 export const SCM_DIFF_STYLE_KEY = 'mixdog.scm-diff-style.v1';
 export const TURN_REVIEW_DIFF_STYLE_KEY = 'mixdog.turn-review-diff-style.v1';
 export const SESSION_DIFF_STYLE_KEY = 'mixdog.session-diff-style.v1';
+/** The composer chip's and Changes pane's one global source (uncommitted, branch, …). */
+export const SESSION_CHANGES_SOURCE_KEY = 'mixdog.session-changes-source.v1';
 
 export type DiffStyle = 'unified' | 'split';
 

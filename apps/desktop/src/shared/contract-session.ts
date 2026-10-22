@@ -94,6 +94,18 @@ export interface DesktopAgentPoolRow extends Readonly<Record<string, unknown>> {
   autoEffort?: boolean | null;
   status: string;
   stage: string;
+  /** Why a `failed` row failed: `process-restart` (the process running the
+   *  turn went away) or `stalled` (the progress watchdog stopped it); absent
+   *  for any other failure and for every row that did not fail. */
+  failureReason?: string | null;
+  /** While the turn runs: the last moment it made progress the stall
+   *  watchdog counts (epoch ms), the runtime stage it is in, the tool it runs
+   *  (`tool_running`), and that agent's watchdog warn point (ms without
+   *  progress). Absent on a row that is not running. */
+  progressAt?: number | null;
+  progressStage?: string | null;
+  progressTool?: string | null;
+  stallWarnMs?: number | null;
   startedAt: number | string | null;
   turnStartedAt: number | string | null;
   createdAt: number | string | null;
@@ -134,6 +146,10 @@ export interface DesktopShellJobRow extends Readonly<Record<string, unknown>> {
   command: string;
   cwd: string;
   startedAt: number | string | null;
+  /** The command's result is reported, but its processes are not confirmed
+   *  gone: the workspace stays held until they are, or until the user
+   *  releases it explicitly (releaseShellJob). */
+  terminationUnconfirmed?: boolean;
 }
 
 export interface DesktopWorkflowState extends Readonly<Record<string, unknown>> {
@@ -184,12 +200,26 @@ export interface DesktopGoalState extends Readonly<Record<string, unknown>> {
   completedAt?: number | null;
 }
 
+/** Streamed text beyond the line-gated tail: `text` continues the tail whose
+ *  text is `from` characters long. Before the row's first completed line
+ *  there is no tail; `from` is 0 and `tail` carries the row identity. */
+export interface DesktopStreamingPartial extends Readonly<Record<string, unknown>> {
+  id: string | number;
+  from: number;
+  text: string;
+  tail?: DesktopTranscriptItem;
+}
+
 export interface DesktopSessionState extends Readonly<Record<string, unknown>> {
   items?: DesktopTranscriptItem[];
   /** `items` is a tail window and older history can be paged in; absent on a
    *  whole-transcript (legacy) body. */
   transcriptHasOlder?: boolean;
   streamingTail?: DesktopTranscriptItem | null;
+  /** The live row's unfinished line, which the line-gated `streamingTail`
+   *  holds back (see shared/streaming-partial.ts). Terminal clients drop it;
+   *  a client that predates it simply paints the line-gated tail. */
+  streamingPartial?: DesktopStreamingPartial | null;
   queued?: unknown[];
   busy?: boolean;
   commandBusy?: boolean;
@@ -228,6 +258,10 @@ export interface DesktopSessionState extends Readonly<Record<string, unknown>> {
   hostShellJobs?: DesktopShellJobsState;
   workflow?: DesktopWorkflowState | null;
   orchestrationMode?: DesktopOrchestrationMode;
+  /** A workflow / orchestration mode chosen while a turn ran: `workflow` and
+   *  `orchestrationMode` above already show it; it applies from the next turn. */
+  pendingWorkflowSwitch?: boolean;
+  pendingOrchestrationModeSwitch?: boolean;
   remoteEnabled?: boolean;
   /** How the last tool approval ended and from which device. */
   toolApprovalResult?: { id: string; approved: boolean; device: string; at: number } | null;
@@ -318,6 +352,16 @@ export interface ToolApprovalDecision {
   reason?: string;
   /** ask_user answers, aligned by index with the questions; null = unanswered. */
   answers?: Array<{ selected: string[]; text?: string } | null>;
+  /** ask_user: the composer message that answered the question. */
+  reply?: string;
+  /** Human-in-the-loop response (human-gate/requests.mjs); never carries a
+   *  secret value — that goes through provideSecretInput only. */
+  response?: 'approve' | 'deny' | 'edit-and-approve' | 'provide-secret' | 'skip' | 'done';
+  /** edit-and-approve: the card's edited text for the request's editable fields. */
+  editedArgs?: Record<string, string>;
+  remember?: 'once' | 'agent' | 'always';
+  /** permission: the chosen scope id. */
+  scope?: string;
   /** Host-stamped name of the device that answered. */
   device?: string;
 }
@@ -346,6 +390,8 @@ export interface DesktopModelOption {
   latest?: boolean;
   /** Free-form secondary line; media lanes use it for the provider name. */
   description?: string;
+  /** A custom provider's registered name, so the picker needs no setup call. */
+  providerName?: string;
   supportsVision?: boolean;
   effortOptions: DesktopModelEffortOption[];
   fastCapable: boolean;
@@ -364,9 +410,21 @@ export interface DesktopModelOption {
   defaultModelParameters?: Record<string, string>;
   savedModelParameters?: Record<string, string>;
   savedContextPercent?: number;
+  /** Model management: the user's explicit /model visibility choice; absent
+   *  means the picker's default listing (family limit). */
+  savedHidden?: boolean;
+  /** Model management favorite: listed first in /model. */
+  favorite?: boolean;
   /** Set only on a quick answer the daemon served from its loaded catalog:
    *  that answer is already the full catalog, so no full read has to follow. */
   catalogComplete?: true;
+  /** Set on every row of an answer some provider was missing from (failed or
+   *  timed out); absent on complete answers. */
+  catalogPartial?: true;
+  /** Providers missing from a partial answer. */
+  catalogMissing?: string[];
+  /** Daemon epoch ms after which a partial answer should be fetched again. */
+  catalogRetryAt?: number;
 }
 
 export interface DesktopModelCatalogOptions {
@@ -386,6 +444,11 @@ export interface DesktopModelSelection {
   contextPercent?: number;
   /** Exact window (positive integer); overrides contextPercent. */
   contextTokens?: number;
+  /** The Lead's ordered fallback models (leaf selections); [] clears, absent keeps the stored list. */
+  fallbacks?: DesktopModelSelection[];
+  /** Compare-and-set: the runtime applies the selection only while the route
+   *  it targets still has no model, so a model picked meanwhile is kept. */
+  onlyIfEmpty?: boolean;
 }
 
 export interface DesktopPromptTextPart {
@@ -449,9 +512,16 @@ export interface DesktopSubmitOptions {
   priority?: DesktopPromptPriority;
   pastedImages?: Record<string, DesktopPromptAttachment>;
   pastedTexts?: Record<string, DesktopPastedText>;
+  /** A runtime kickoff (a new agent's greeting turn): the model reads it, the
+   *  transcript and the queue never show it as the user speaking. */
+  kickoff?: boolean;
   /** Host-stamped name of the device that sent this (see session-device.ts).
    *  Request validation rejects it from a caller. */
   device?: string;
+  /** Host-only: a group-room member turn's place in a bot-to-bot chain
+   *  (bot-hops.mjs), from the send or relay it answers. Request validation
+   *  rejects it from a caller. */
+  hop?: number;
 }
 
 export interface DesktopAbortOptions {

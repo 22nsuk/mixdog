@@ -1,7 +1,7 @@
 // Tag registry: owns the tag maps (tag -> sessionId/agent/cwd) and every
 // resolution/mutation path — resolve/next/bind/forget and the session-index
 // refresh. Worker-index persistence lives in worker-index.mjs and terminal
-// tombstones/reap timers in terminal-reaper.mjs; the tag maps are shared by
+// tombstones in terminal-reaper.mjs; the tag maps are shared by
 // reference so all three sides see the same live state.
 import { agentTagOf } from './helpers.mjs';
 import { createLeadWorkerIndex } from './lead-worker-index.mjs';
@@ -27,9 +27,10 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
     dataDir,
     cfgMod,
     workerRowFromSession: index.workerRowFromSession,
+    isSessionRunning: (sessionId) => mgr.isSessionTurnInFlight?.(sessionId) === true,
   });
 
-  const { upsertLeadSession, updateLeadWorkerCwd } = leadIndex;
+  const { upsertLeadSession, updateLeadWorkerCwd, forgetLeadSession } = leadIndex;
 
   function dispose(options) {
     try {
@@ -37,6 +38,17 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
     } finally {
       leadIndex.dispose(options);
     }
+  }
+
+  /** Drain every queued index write (batches included) without disposing. */
+  async function flushIndexWrites() {
+    await Promise.all([index.flushWorkerIndexWrites(), leadIndex.flushLeadWorkerIndexWrites()]);
+  }
+
+  async function disposeAsync(options) {
+    const results = await Promise.allSettled([index.disposeAsync(), leadIndex.disposeAsync(options)]);
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
   }
 
   function getLiveSession(sessionId) {
@@ -55,7 +67,7 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
     return null;
   }
 
-  const reaper = createTerminalReaper({ cfgMod, mgr, tagMaps, index, getLiveSession, tagForSession });
+  const reaper = createTerminalReaper({ cfgMod, mgr, tagMaps, index, getLiveSession });
 
   function wantsSessionScan(args = {}) {
     return args.recover === true || args.scanSessions === true || args.scan_sessions === true;
@@ -91,25 +103,28 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
     removeWorkerRow({ tag, sessionId });
   }
 
-  reaper.recoverTerminalReaps();
-
   return {
     dispose,
+    disposeAsync,
+    flushIndexWrites,
     readAllTagTombstones: index.readAllTagTombstones,
     readTagTombstones: index.readTagTombstones,
     readWorkerRows,
     writeWorkerRows: index.writeWorkerRows,
     flushWorkerIndexMutations: index.flushWorkerIndexMutations,
+    recoverStaleWorkerRows: index.recoverStaleWorkerRows,
+    pendingRestartFailures: index.pendingRestartFailures,
+    markRestartNotified: index.markRestartNotified,
     upsertWorkerSession: index.upsertWorkerSession,
     upsertWorkerSessionDeferred,
     upsertLeadSession,
     updateLeadWorkerCwd,
+    forgetLeadSession,
     removeWorkerRow,
     refreshTagsFromIndex,
     tags,
     tagAgents: tagMaps.tagAgents,
     tagCwds: tagMaps.tagCwds,
-    reapTimers: reaper.reapTimers,
     wantsSessionScan,
     resolveTag,
     getLiveSession,
@@ -124,10 +139,6 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
     tombstoneTerminalSession: reaper.tombstoneTerminalSession,
     tagTombstoneForTag: reaper.tagTombstoneForTag,
     consumeTagTombstone: reaper.consumeTagTombstone,
-    cancelReap: reaper.cancelReap,
-    clearScheduledReaps: reaper.clearScheduledReaps,
-    scheduleReap: reaper.scheduleReap,
-    recoverTerminalReaps: reaper.recoverTerminalReaps,
     transitionStaleNonterminalRows: reaper.transitionStaleNonterminalRows,
   };
 }

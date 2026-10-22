@@ -20,6 +20,7 @@ import { registerJsonProjection } from '../../../runtime/shared/pending-json-pro
 import { sleep } from '../../../runtime/shared/sleep.mjs';
 
 const RETRY_DELAYS_MS = [50, 250, 1000];
+const RETRY_AFTER_FAILURE_MS = 15_000;
 const unsettled = new Set(); // queues holding unpersisted writes
 // Exit is the one place a bounded synchronous lock wait is acceptable: the
 // loop is gone, and a dropped settlement would leave rows "running" forever.
@@ -122,8 +123,15 @@ function replayBatch(batch, args, mergeSet) {
   replayRun();
 }
 
+// A write that cannot reach disk loses a state change other processes rely on
+// (e.g. a deleted Lead row that never leaves the pool), so every failure is
+// reported. In the daemon stderr IS daemon.log (daemon-log.mjs installRedirect).
 function reportFailure(file, what, error) {
-  process.stderr.write(`[index-write] ${file}: ${what}: ${error?.message || error}\n`);
+  try {
+    process.stderr.write(`[index-write] ${file}: ${what}: ${error?.message || error}\n`);
+  } catch {
+    /* logging is best effort */
+  }
 }
 
 /**
@@ -151,9 +159,15 @@ export function createIndexWriteQueue({
   let pending = []; // op sets not yet handed to a job
   let inflight = []; // op sets of the running job
   let running = null;
+  const failures = new WeakMap(); // settled job → the error that failed it
   let timer = null;
+  let retryTimer = null;
 
   function clearTimer() {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     if (!timer) return;
     clearImmediate(timer);
     timer = null;
@@ -173,8 +187,8 @@ export function createIndexWriteQueue({
         return;
       } catch (error) {
         if (attempt >= RETRY_DELAYS_MS.length) {
-          reportFailure(file, `dropped ${batch.length} unpersisted write(s)`, error);
-          return;
+          reportFailure(file, `${batch.length} unpersisted write(s) kept queued after retries`, error);
+          throw error;
         }
         await sleep(RETRY_DELAYS_MS[attempt]);
       }
@@ -187,23 +201,45 @@ export function createIndexWriteQueue({
     inflight = pending;
     pending = [];
     const batch = inflight;
-    running = persist(batch).then(() => {
-      inflight = [];
-      running = null;
-      onPersisted();
-      if (pending.length === 0) {
-        projection = null;
-        unsettled.delete(self);
+    const job = persist(batch).then(
+      () => {
+        inflight = [];
+        running = null;
+        onPersisted();
+        if (pending.length === 0) {
+          projection = null;
+          unsettled.delete(self);
+        }
+        schedule();
+      },
+      (error) => {
+        // Persistent failure: nothing reached disk. Requeue the batch ahead of
+        // newer writes (the projection and `unsettled` keep covering it) so a
+        // later flush, write or exit flush retries. Do not reschedule at once,
+        // a held foreign lock would otherwise be hammered; a slow unref'd retry
+        // keeps a failed LAST write (a delete) from waiting for unrelated traffic.
+        failures.set(job, error);
+        pending = [...batch, ...pending];
+        inflight = [];
+        running = null;
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          schedule();
+        }, RETRY_AFTER_FAILURE_MS);
+        retryTimer.unref?.();
       }
-      schedule();
-    });
+    );
+    running = job;
   }
 
-  /** Resolves once everything written so far is on disk (or dropped). */
+  /** Resolves once everything written so far is on disk; rejects when a persist
+   *  failed for good (the writes stay queued for a later flush). */
   async function flush() {
     for (;;) {
       if (running) {
-        await running;
+        const job = running;
+        await job;
+        if (failures.has(job)) throw failures.get(job);
         continue;
       }
       if (pending.length === 0) return;
@@ -212,10 +248,16 @@ export function createIndexWriteQueue({
     }
   }
 
-  /** Exit path: persist inflight + pending ops synchronously (bounded lock wait). */
+  /** Persist pending ops synchronously (bounded lock wait). While an async job
+   *  runs it owns the lock (and its ops are in flight): never wait on it, take
+   *  over its lock, or replay its ops — report false and let that job and its
+   *  follow-ups drain. At the last-resort process 'exit' hook that is
+   *  best-effort: the graceful shutdown path drains before exit. */
   function flushSync() {
-    const ops = [...inflight, ...pending];
-    if (!file || ops.length === 0) return true;
+    if (!file) return true;
+    if (running) return false;
+    const ops = pending;
+    if (ops.length === 0) return true;
     clearTimer();
     pending = [];
     try {
@@ -225,10 +267,10 @@ export function createIndexWriteQueue({
       });
     } catch (error) {
       reportFailure(file, `synchronous flush of ${ops.length} write(s) failed; kept queued`, error);
-      pending = ops;
+      pending = [...ops, ...pending];
+      schedule();
       return false;
     }
-    inflight = [];
     projection = null;
     unsettled.delete(self);
     onPersisted();
@@ -251,9 +293,11 @@ export function createIndexWriteQueue({
         version += 1;
         pending.push(rerun ? mutator : ops);
         unsettled.add(self);
+        installProcessExitFlush();
         schedule();
         return next;
-      } catch {
+      } catch (error) {
+        reportFailure(file, 'write rejected (mutator or document rewrite threw); nothing queued', error);
         return null;
       }
     },
@@ -264,6 +308,23 @@ export function createIndexWriteQueue({
     flush,
     flushSync,
   };
+}
+
+let processExitFlushInstalled = false;
+
+/** The process owns last-resort exit flushing of every queue holding unpersisted
+ *  writes, so a disposed (e.g. evicted) runtime needs no exit callback of its
+ *  own. Best effort: a persist still running is left to the graceful drain. */
+function installProcessExitFlush() {
+  if (processExitFlushInstalled) return;
+  processExitFlushInstalled = true;
+  process.on('exit', () => {
+    try {
+      flushAllIndexWritesSync();
+    } catch {
+      /* exit flush is best effort */
+    }
+  });
 }
 
 /** Synchronous variant (exit paths, tests that read the file directly). */

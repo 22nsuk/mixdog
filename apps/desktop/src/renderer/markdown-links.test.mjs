@@ -248,6 +248,124 @@ test('transcript link formats land in the side editor, side browser or OS as tab
   }
 });
 
+test('previewable local files open in the session Visualize panel; the rest keep their routes', async (t) => {
+  const withSession = (text) =>
+    React.createElement(MarkdownSessionContext.Provider, { value: 'sess-viz' }, renderers.settled(text));
+  const stopReveal = onBrowserPageRevealRequested(() => {});
+  t.after(stopReveal);
+  const files = ['site/index.html', 'docs/a.pdf', 'docs/a.docx', 'img/a.png', 'src/app.ts'];
+  const setup = (fixture) => {
+    installProjectFiles(fixture, { [PROJECT]: files });
+    fixture.sent = [];
+    fixture.dom.window.mixdogDesktop.visualizeCommand = async (command) => {
+      fixture.sent.push(command);
+    };
+    fixture.dom.window.mixdogDesktop.localPageUrl = async (_project, rel) => `http://127.0.0.1:9/token/${rel}`;
+  };
+  const f = await mount(
+    t,
+    withSession,
+    '[h](site/index.html) [p](docs/a.pdf) [d](docs/a.docx) [i](img/a.png) [s](src/app.ts) [w](https://example.com/a)',
+    PROJECT,
+    setup
+  );
+  for (let index = 0; index < 4; index++) await f.click(index);
+  assert.deepEqual(
+    f.sent.map(({ sessionId, action, targets }) => [sessionId, action, targets]),
+    ['site/index.html', 'docs/a.pdf', 'docs/a.docx', 'img/a.png'].map((rel) => [
+      'sess-viz',
+      'reopen',
+      [`${PROJECT}/${rel}`],
+    ])
+  );
+  assert.deepEqual(f.local, []);
+  assert.deepEqual(f.opened, []);
+  await f.click(4);
+  assert.deepEqual(f.opened, [[PROJECT, 'src/app.ts', undefined]]);
+  assert.equal(f.sent.length, 4);
+  await f.click(5);
+  assert.deepEqual(f.external, [['https://example.com/a']]);
+  assert.equal(f.sent.length, 4);
+  // Ctrl-click keeps the external behaviour.
+  await f.click(1, { ctrlKey: true });
+  assert.equal(f.sent.length, 4);
+  // A refused open falls back to the regular route (the side file tab).
+  f.dom.window.mixdogDesktop.visualizeCommand = async () => {
+    throw new Error('refused');
+  };
+  await f.click(1);
+  assert.deepEqual(f.opened.at(-1), [PROJECT, 'docs/a.pdf', undefined]);
+});
+
+test('Visualize targets are checked against the session cwd, a subfolder of the Project', async (t) => {
+  const withSession = (text) =>
+    React.createElement(MarkdownSessionContext.Provider, { value: 'sess-sub' }, renderers.settled(text));
+  const stopReveal = onBrowserPageRevealRequested(() => {});
+  t.after(stopReveal);
+  const sessionCwd = `${PROJECT}/sub`;
+  const f = await mount(
+    t,
+    withSession,
+    '[root](a.pdf) [inner](sub/a.pdf) [outside](docs/b.pdf)',
+    PROJECT,
+    (fixture) => {
+      installProjectFiles(fixture, { [PROJECT]: ['a.pdf', 'sub/a.pdf', 'docs/b.pdf'] });
+      fixture.sent = [];
+      // Main resolves an absolute target against the session cwd and refuses
+      // anything outside it.
+      fixture.dom.window.mixdogDesktop.visualizeCommand = async (command) => {
+        const [target] = command.targets;
+        if (!target.startsWith(`${sessionCwd}/`)) throw new Error('target is outside the working directory');
+        fixture.sent.push(target);
+      };
+    }
+  );
+  // Outside the session cwd: refused, so the regular route runs.
+  await f.click(0);
+  await f.click(2);
+  assert.deepEqual(f.sent, []);
+  assert.deepEqual(f.opened, [
+    [PROJECT, 'a.pdf', undefined],
+    [PROJECT, 'docs/b.pdf', undefined],
+  ]);
+  // Inside it: the exact file, not a same-named one at the Project root.
+  await f.click(1);
+  assert.deepEqual(f.sent, [`${PROJECT}/sub/a.pdf`]);
+  assert.equal(f.opened.length, 2);
+});
+
+test('previewable links of a paired device or behind an access token keep their old route', async (t) => {
+  const withSession = (text) =>
+    React.createElement(MarkdownSessionContext.Provider, { value: 'sess-viz2' }, renderers.settled(text));
+  const f = await mount(t, withSession, '[p](docs/a.pdf)', PROJECT, (fixture) => {
+    installProjectFiles(fixture, { [PROJECT]: ['docs/a.pdf'] });
+    fixture.sent = [];
+    fixture.dom.window.mixdogDesktop.visualizeCommand = async (command) => {
+      fixture.sent.push(command);
+    };
+    fixture.dom.window.mixdogRemoteServer = 'wss://relay.example';
+  });
+  t.after(() => delete f.dom.window.mixdogRemoteServer);
+  await f.click();
+  assert.deepEqual(f.sent, []);
+});
+
+test('a previewable file outside the session working directory (access token) is not reopened', async (t) => {
+  const withSession = (text) =>
+    React.createElement(MarkdownSessionContext.Provider, { value: 'sess-viz3' }, renderers.settled(text));
+  const outside = await mount(t, withSession, '[p](C:/private/report.pdf)', PROJECT, (fixture) => {
+    fixture.sent = [];
+    fixture.dom.window.mixdogDesktop.visualizeCommand = async (command) => {
+      fixture.sent.push(command);
+    };
+    fixture.dom.window.mixdogDesktop.resolveLocalPaths = async ([absolutePath]) => [
+      { absolutePath, projectPath: 'C:/private', relPath: 'report.pdf', accessToken: 'grant', dir: false },
+    ];
+  });
+  await outside.click();
+  assert.deepEqual(outside.sent, []);
+});
+
 test('a Project folder link reveals the dock Files tree, never the file manager', async (t) => {
   const f = await mount(
     t,
@@ -337,7 +455,7 @@ test('a path outside the Project opens in the side editor with its access token'
   assert.deepEqual(f.local, []);
 });
 
-test('html goes to the side browser; http(s) to the side browser with a session, else the system browser', async (t) => {
+test('html and local http(s) go to the side browser; remote http(s) goes to the system browser', async (t) => {
   const withSession = (text) =>
     React.createElement(MarkdownSessionContext.Provider, { value: 'sess-routes' }, renderers.settled(text));
   const stopReveal = onBrowserPageRevealRequested(() => {});
@@ -345,7 +463,7 @@ test('html goes to the side browser; http(s) to the side browser with a session,
   const f = await mount(
     t,
     withSession,
-    '[page](site/index.html) [web](https://example.com/a) [plain](http://example.com/b)',
+    '[page](site/index.html) [web](https://example.com/a) [local](http://localhost:5173/b)',
     PROJECT,
     (fixture) => {
       installProjectFiles(fixture, { [PROJECT]: ['site/index.html'] });
@@ -353,16 +471,13 @@ test('html goes to the side browser; http(s) to the side browser with a session,
     }
   );
   const loaded = [];
-  for (let index = 0; index < 3; index++) {
+  for (const index of [0, 1, 2]) {
     await f.click(index);
-    onBrowserPageAddressRequested('sess-routes', (url) => loaded.push(url))();
+    // A remote page never reaches the pane: nothing new is pending for it.
+    if (index !== 1) onBrowserPageAddressRequested('sess-routes', (url) => loaded.push(url))();
   }
-  assert.deepEqual(loaded, [
-    'http://127.0.0.1:9/token/site/index.html',
-    'https://example.com/a',
-    'http://example.com/b',
-  ]);
-  assert.deepEqual(f.external, []);
+  assert.deepEqual(loaded, ['http://127.0.0.1:9/token/site/index.html', 'http://localhost:5173/b']);
+  assert.deepEqual(f.external, [['https://example.com/a']]);
   assert.deepEqual(f.opened, []);
 });
 
@@ -371,6 +486,17 @@ test('http(s) without a session falls back to the system browser', async (t) => 
   await draft.click();
   assert.deepEqual(draft.external, [['https://example.com/draft']]);
 });
+
+for (const [pipeline, render] of Object.entries(renderers)) {
+  test(`${pipeline}: a mail address opens the system mail app instead of doing nothing`, async (t) => {
+    const f = await mount(t, render, 'Write to admin@tribgames.com or [support](mailto:help@example.com).');
+    const first = await f.click(0);
+    const second = await f.click(1);
+    assert.equal(first.defaultPrevented, true);
+    assert.equal(second.defaultPrevented, true);
+    assert.deepEqual(f.external, [['mailto:admin@tribgames.com'], ['mailto:help@example.com']]);
+  });
+}
 
 for (const [pipeline, render] of Object.entries(renderers)) {
   test(`${pipeline}: files in another registered Project open without changing the conversation Project`, async (t) => {
@@ -444,7 +570,7 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     );
     // Names found only in another Project link there; nothing stays pending.
     assert.equal(f.links().length, 7);
-    assert.equal(f.dom.window.document.querySelectorAll('.markdown-link-pending').length, 0);
+    assert.equal(f.dom.window.document.querySelectorAll('.markdown-link-pending, .markdown-path-pending').length, 0);
     assert.equal(f.links().filter((a) => a.title.startsWith(`${other}/`)).length, 3);
     const count = (method, project, path) =>
       calls.filter((call) => call[0] === method && call[1] === project && call[2] === path).length;
@@ -542,9 +668,10 @@ for (const [pipeline, render] of Object.entries(renderers)) {
         };
       }
     );
-    assert.equal(readableText(f.dom.window.document.querySelector('p')), 'See mixdog-refs-9a64/ or C:\\missing\\refs.');
-    assert.deepEqual(f.labels(), ['mixdog-refs-9a64/']);
-    assert.equal(f.links()[0].querySelector('.seti-icon').getAttribute('data-icon-kind'), 'folder');
+    const source = 'C:\\Users\\me\\AppData\\Local\\Temp\\mixdog-refs-9a64';
+    assert.equal(f.dom.window.document.querySelector('p').textContent, `See ${source} or C:\\missing\\refs.`);
+    assert.deepEqual(f.labels(), [source]);
+    assert.equal(f.dom.window.document.querySelector('.seti-icon'), null);
     await f.click(0);
     assert.deepEqual(f.local, [[folder, '.']]);
     assert.equal(f.opened.length + f.toasts.length, 0);
@@ -758,18 +885,24 @@ for (const [pipeline, render] of Object.entries(renderers)) {
         'https://example.com/docs/guide.md',
       ]
     );
-    // Every mention uses its final icon + filename + line from the first paint.
-    assert.deepEqual(f.labels().slice(0, 4), [
-      'agent.mjs:269',
-      'ipc.ts:12:4',
-      'retry-classifier.mjs:269',
-      'notes.md:7',
-    ]);
+    // Every mention keeps the reply's own text: no icon, no file-name caption.
+    assert.deepEqual(
+      f
+        .links()
+        .slice(0, 4)
+        .map((a) => a.textContent),
+      [
+        'src/runtime/agent.mjs:269',
+        'apps/desktop/src/main/ipc.ts (line 12, col 4)',
+        'retry-classifier.mjs (line 269)',
+        'C:\\Project\\conversation\\docs\\notes.md#L7',
+      ]
+    );
     assert.ok(
       f
         .links()
         .slice(0, 4)
-        .every((a) => a.className === 'markdown-path-link' && a.querySelector('.seti-icon'))
+        .every((a) => a.className === 'markdown-path-link markdown-path-mention' && !a.querySelector('.seti-icon'))
     );
     assert.equal(f.links()[4].querySelector('.seti-icon').getAttribute('data-icon-kind'), 'external');
     assert.equal(f.links()[0].getAttribute('title'), 'C:/Project/conversation/src/runtime/agent.mjs:269');
@@ -852,14 +985,7 @@ for (const [pipeline, render] of Object.entries(renderers)) {
           ],
         })
     );
-    assert.equal(
-      f
-        .links()
-        .find((a) => a.querySelector('.seti-icon:not([data-icon-kind])'))
-        ?.querySelector('.seti-icon')?.textContent.length,
-      1
-    );
-    assert.equal(f.links()[0].querySelector('.seti-icon').getAttribute('data-icon-kind'), 'folder');
+    assert.equal(f.dom.window.document.querySelector('.seti-icon'), null);
     assert.deepEqual(
       f.links().map((a) => a.getAttribute('href')),
       [
@@ -876,16 +1002,16 @@ for (const [pipeline, render] of Object.entries(renderers)) {
       ]
     );
     assert.deepEqual(f.labels(), [
-      'report-2026/',
+      'output/report-2026/',
       'Dockerfile',
       '.gitignore',
-      'app.ts:42',
-      'util.ts:269',
-      'x.ts:7',
-      '제안서 최종.pptx',
+      'src/app.ts:42',
+      'src/util.ts 269번 줄',
+      'src/x.ts (7줄)',
+      'output/제안서 최종.pptx',
       'output/',
       '.env.local',
-      'chart.png',
+      'output/chart.png',
     ]);
     assert.equal(f.dom.window.document.querySelector('img'), null);
     for (let index = 0; index < 10; index++) await f.click(index);
@@ -928,7 +1054,13 @@ for (const [pipeline, render] of Object.entries(renderers)) {
           [root]: ['promo', 'promo/index.html', 'promo/cards/card-1.png', "R&D, Tom's [v2]/PROGRA~1!/a.png"],
         })
     );
-    assert.deepEqual(f.labels(), ['promo/', 'index.html', 'card-1.png', 'a.png', 'card']);
+    assert.deepEqual(f.labels(), [
+      `${win}\\promo`,
+      `${win}\\promo\\index.html`,
+      `${win}\\promo\\cards\\card-1.png`,
+      `${win}\\R&D, Tom's [v2]\\PROGRA~1!\\a.png`,
+      'card',
+    ]);
     for (let index = 0; index < 5; index++) await f.click(index);
     assert.deepEqual(f.local, [[`${root}/promo`, '.']]);
     assert.deepEqual(f.opened, [
@@ -992,7 +1124,7 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     assert.equal(f.opened.length + f.local.length + f.popups.length, 0);
   });
 
-  test(`${pipeline}: automatic links show their final icons immediately and enable clicking only after verification`, async (t) => {
+  test(`${pipeline}: automatic mentions keep their original text and enable clicking only after verification`, async (t) => {
     let release;
     const pending = new Promise((resolve) => {
       release = resolve;
@@ -1001,19 +1133,24 @@ for (const [pipeline, render] of Object.entries(renderers)) {
       f.dom.window.mixdogDesktop.statProjectFile = () => pending;
     });
     assert.equal(f.links().length, 0);
-    const pendingLink = f.dom.window.document.querySelector('.markdown-link-pending');
-    assert.equal(readableText(pendingLink), 'app.ts:12:4');
+    const pendingLink = f.dom.window.document.querySelector('.markdown-path-pending');
+    assert.equal(pendingLink.textContent, 'src/app.ts (line 12, col 4)');
     assert.equal(pendingLink.getAttribute('aria-disabled'), 'true');
-    const initialIcon = pendingLink.querySelector('.seti-icon').outerHTML;
+    assert.equal(pendingLink.querySelector('.seti-icon'), null);
+    // Pending is not settled-but-unparsed content: the row reveals at once.
+    assert.equal(f.dom.window.document.querySelector('[data-transcript-pending]'), null);
+    const initialChildren = pendingLink.innerHTML;
     const initialText = f.dom.window.document.querySelector('p').textContent;
+    assert.equal(initialText, 'See src/app.ts (line 12, col 4).');
     await act(async () => pendingLink.dispatchEvent(new f.dom.window.MouseEvent('click', { bubbles: true })));
     assert.equal(f.opened.length + f.local.length, 0);
     await act(async () => {
       release({ size: 10, mtimeMs: 1 });
     });
-    assert.deepEqual(f.labels(), ['app.ts:12:4']);
+    // Verification swaps only the inert span for a link around the same children.
+    assert.deepEqual(f.labels(), ['src/app.ts (line 12, col 4)']);
     assert.equal(f.dom.window.document.querySelector('p').textContent, initialText);
-    assert.equal(f.links()[0].querySelector('.seti-icon').outerHTML, initialIcon);
+    assert.equal(f.links()[0].innerHTML, initialChildren);
     assert.equal(f.links()[0].title, `${PROJECT}/src/app.ts:12:4`);
     await f.click();
     assert.deepEqual(f.opened, [[PROJECT, 'src/app.ts', 12, undefined, 4]]);
@@ -1142,7 +1279,8 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     };
     f.dom.window.mixdogRemoteServer = 'https://relay.test';
     assert.equal((await contextMenu(1)).defaultPrevented, true);
-    assert.deepEqual(labelsOf(), ['System Browser', 'Copy link', 'Save link as…']);
+    // A paired browser cannot save a cross-origin link: no dead entry.
+    assert.deepEqual(labelsOf(), ['System Browser', 'Copy link']);
     await act(async () =>
       f.dom.window.document.dispatchEvent(new f.dom.window.KeyboardEvent('keydown', { key: 'Escape' }))
     );
@@ -1271,10 +1409,17 @@ for (const [pipeline, render] of Object.entries(streamingRenderers)) {
         assert.equal(f.dom.window.document.querySelector('.seti-icon'), null, path);
       }
       await f.update(PROJECT, format('src/app.ts'));
-      const preview = f.dom.window.document.querySelector('.markdown-link-pending');
-      assert.equal(readableText(preview), 'app.ts');
-      const icon = preview.querySelector('.seti-icon').outerHTML;
-      assert.equal(readableText(f.dom.window.document.querySelector('p')), 'See app.ts');
+      // An authored link caption collapses to its icon + file name; an
+      // automatic mention (prose, inline code) keeps the text as written.
+      const caption = notation === 'link caption';
+      const shown = caption ? 'app.ts' : 'src/app.ts';
+      const preview = f.dom.window.document.querySelector(
+        caption ? '.markdown-link-pending' : '.markdown-path-pending'
+      );
+      assert.equal(readableText(preview), shown);
+      const icon = preview.querySelector('.seti-icon')?.outerHTML;
+      assert.equal(Boolean(icon), caption);
+      assert.equal(readableText(f.dom.window.document.querySelector('p')), `See ${shown}`);
       assert.equal(f.links().length, 0);
       await act(async () => preview.dispatchEvent(new f.dom.window.MouseEvent('click', { bubbles: true })));
       assert.equal(f.opened.length + f.local.length, 0);
@@ -1285,9 +1430,9 @@ for (const [pipeline, render] of Object.entries(streamingRenderers)) {
       await act(async () => {
         release({ size: 10, mtimeMs: 1 });
       });
-      assert.deepEqual(f.labels(), ['app.ts']);
-      assert.equal(readableText(f.dom.window.document.querySelector('p')), 'See app.ts');
-      assert.equal(f.links()[0].querySelector('.seti-icon').outerHTML, icon);
+      assert.deepEqual(f.labels(), [shown]);
+      assert.equal(readableText(f.dom.window.document.querySelector('p')), `See ${shown}`);
+      assert.equal(f.links()[0].querySelector('.seti-icon')?.outerHTML, icon);
       await f.click();
       assert.deepEqual(f.opened, [[PROJECT, 'src/app.ts', undefined]]);
     });
@@ -1436,6 +1581,47 @@ for (const [pipeline, render] of Object.entries(streamingRenderers)) {
     assert.equal(f.toasts.length, 0);
   });
 
+  test(`${pipeline}: on a paired device a local page loads in the PC's browser pane through localPageUrl`, async (t) => {
+    const inSession = (text) =>
+      React.createElement(MarkdownSessionContext.Provider, { value: 'sess-remote' }, render(text));
+    const f = await mount(t, inSession, '[page](site/index.html)', PROJECT, (f) => {
+      installProjectFiles(f, { [PROJECT]: ['site/index.html'] });
+      f.dom.window.mixdogRemoteServer = 'wss://relay.example';
+      f.dom.window.mixdogDesktop.localPageUrl = async (_project, rel) => `http://127.0.0.1:9/token/${rel}`;
+      f.dom.window.mixdogDesktop.localPageSource = async () => '<html></html>';
+    });
+    t.after(() => delete f.dom.window.mixdogRemoteServer);
+    const stopReveal = onBrowserPageRevealRequested(() => {});
+    t.after(stopReveal);
+    await f.click(0);
+    const loaded = [];
+    onBrowserPageAddressRequested('sess-remote', (url) => loaded.push(url))();
+    assert.deepEqual(loaded, ['http://127.0.0.1:9/token/site/index.html']);
+    // Never the phone's own browser, never the sandboxed copy.
+    assert.deepEqual(f.external, []);
+    assert.equal(f.dom.window.document.querySelector('[role="dialog"] iframe'), null);
+  });
+
+  test(`${pipeline}: a host without the localPageUrl method keeps the sandboxed overlay`, async (t) => {
+    const inSession = (text) =>
+      React.createElement(MarkdownSessionContext.Provider, { value: 'sess-old' }, render(text));
+    const f = await mount(t, inSession, '[page](site/index.html)', PROJECT, (f) => {
+      installProjectFiles(f, { [PROJECT]: ['site/index.html'] });
+      f.dom.window.mixdogRemoteServer = 'wss://relay.example';
+      f.dom.window.mixdogDesktop.localPageUrl = async () => {
+        throw new Error('unknown method: localPageUrl');
+      };
+      f.dom.window.mixdogDesktop.localPageSource = async () => '<html></html>';
+    });
+    t.after(() => delete f.dom.window.mixdogRemoteServer);
+    const stopReveal = onBrowserPageRevealRequested(() => {});
+    t.after(stopReveal);
+    await f.click(0);
+    const overlay = f.dom.window.document.querySelector('[role="dialog"]');
+    assert.ok(overlay?.querySelector('iframe'));
+    assert.equal(f.toasts.length, 0);
+  });
+
   test(`${pipeline}: a web page link naming a line opens its source, not the page`, async (t) => {
     const inSession = (text) =>
       React.createElement(MarkdownSessionContext.Provider, { value: 'sess-source' }, render(text));
@@ -1453,22 +1639,35 @@ for (const [pipeline, render] of Object.entries(streamingRenderers)) {
     assert.deepEqual(loaded, []);
   });
 
-  test(`${pipeline}: web links open in the session side browser, else the system browser`, async (t) => {
+  test(`${pipeline}: remote web links open in the system browser, local ones in the session side browser`, async (t) => {
     const inSession = (text) =>
       React.createElement(MarkdownSessionContext.Provider, { value: 'sess-web' }, render(text));
-    const f = await mount(t, inSession, '[web](https://example.com/docs)');
-    // No shell can reveal a pane: the system browser takes it.
-    await f.click();
-    assert.deepEqual(f.external, [['https://example.com/docs']]);
+    const f = await mount(t, inSession, '[web](https://example.com/docs)\n\n[local](http://localhost:5173/app)');
+    // No shell can reveal a pane: the system browser takes both.
+    await f.click(0);
+    await f.click(1);
+    assert.deepEqual(f.external, [['https://example.com/docs'], ['http://localhost:5173/app']]);
     const revealed = [];
     const stopReveal = onBrowserPageRevealRequested(({ sessionId }) => revealed.push(sessionId));
     t.after(stopReveal);
-    await f.click();
+    // With a pane up, a remote page still goes to the system browser, never the pane.
+    await f.click(0);
+    assert.deepEqual(revealed, []);
+    assert.equal(f.external.length, 3);
+    // The loopback page opens in the pane.
+    await f.click(1);
     const loaded = [];
     onBrowserPageAddressRequested('sess-web', (url) => loaded.push(url))();
     assert.deepEqual(revealed, ['sess-web']);
-    assert.deepEqual(loaded, ['https://example.com/docs']);
-    assert.equal(f.external.length, 1);
+    assert.deepEqual(loaded, ['http://localhost:5173/app']);
+    assert.equal(f.external.length, 3);
+    // Shift-click keeps the remote page in the in-app panel.
+    await f.click(0, { shiftKey: true });
+    const shifted = [];
+    onBrowserPageAddressRequested('sess-web', (url) => shifted.push(url))();
+    assert.deepEqual(revealed, ['sess-web', 'sess-web']);
+    assert.deepEqual(shifted, ['https://example.com/docs']);
+    assert.equal(f.external.length, 3);
   });
 
   test(`${pipeline}: Ctrl/Meta/middle click and the menu send web links and local pages to the system browser`, async (t) => {
@@ -1495,11 +1694,15 @@ for (const [pipeline, render] of Object.entries(streamingRenderers)) {
       [served],
     ]);
     assert.deepEqual(revealed, []);
-    // Plain click stays in the pane.
-    await f.click(0);
+    // A plain click on the served local page stays in the pane; the remote
+    // web link goes to the system browser.
     await f.click(1);
-    assert.deepEqual(revealed, ['sess-ext', 'sess-ext']);
+    assert.deepEqual(revealed, ['sess-ext']);
     assert.equal(f.external.length, 5);
+    await f.click(0);
+    assert.deepEqual(revealed, ['sess-ext']);
+    assert.deepEqual(f.external.at(-1), ['https://example.com/docs']);
+    assert.equal(f.external.length, 6);
     // The HTML link's menu offers the system browser with the served URL.
     const menuItems = () => [...f.dom.window.document.querySelectorAll('[role="menu"] [role="menuitem"]')];
     await act(async () =>

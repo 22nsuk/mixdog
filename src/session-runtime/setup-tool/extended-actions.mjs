@@ -1,10 +1,84 @@
 import { SETUP_EXTENDED_PROPERTIES, SETUP_DESKTOP_ACTIONS } from './settings-contract.mjs';
 import { MEDIA_KINDS } from '../../runtime/media/tool-defs.mjs';
+import { OPENAI_COMPAT_PRESETS } from '../../runtime/agent/orchestrator/providers/openai-compat-presets.mjs';
+import { MIXY_AGENT_ID, agentIdOfHomeSession } from '../../runtime/agent/orchestrator/session/agent-home.mjs';
+import { AGENT_MODE, resolveSessionMode } from '../../runtime/agent/orchestrator/session/agent-mode.mjs';
+import { BOT_AGENT_KIND, WORKFLOW_AGENT_KIND } from '../../runtime/shared/agent-route-config.mjs';
+import { assertAutomationAccess, scheduleCallerScope } from '../services/schedule-access.mjs';
 
 const own = (value, key) => Object.hasOwn(value || {}, key);
 const pick = (value, keys) => Object.fromEntries(keys.filter((key) => own(value, key)).map((key) => [key, value[key]]));
 const entryKeys = Object.keys(SETUP_EXTENDED_PROPERTIES.entry.properties);
 const definitionKeys = Object.keys(SETUP_EXTENDED_PROPERTIES.definition.properties);
+
+const MODEL_PAGE_DEFAULT = 25;
+
+function providerIndex(rows) {
+  const counts = new Map();
+  for (const row of rows) counts.set(row.provider, (counts.get(row.provider) || 0) + 1);
+  return [...counts].map(([provider, count]) => {
+    const defaultModel = OPENAI_COMPAT_PRESETS[provider]?.defaultModel;
+    return { provider, count, ...(defaultModel ? { defaultModel } : {}) };
+  });
+}
+
+function compactModelRow(row) {
+  const context = row.contextWindow || null;
+  const maxContext = Number(row.maxContextWindow) || 0;
+  return {
+    id: row.id,
+    display: row.display || row.id,
+    context,
+    ...(maxContext > (context || 0) ? { maxContext } : {}),
+    efforts: (row.effortOptions || []).map((option) => option.value),
+    ...(row.fastCapable === true ? { fast: true } : {}),
+    ...(row.supportsVision === true ? { vision: true } : {}),
+  };
+}
+
+const isPresent = (value) =>
+  value != null && value !== '' && value !== false && !(typeof value === 'object' && !Object.keys(value).length);
+
+/** Everything set_route can use for one model; empty and false fields omitted. */
+function modelDetail(row) {
+  const detail = {
+    provider: row.provider,
+    id: row.id,
+    display: row.display || row.id,
+    context: row.contextWindow,
+    maxContext: Number(row.maxContextWindow) > row.contextWindow ? row.maxContextWindow : null,
+    outputTokens: row.outputTokens,
+    vision: row.supportsVision,
+    webSearch: row.supportsWebSearch,
+    reasoning: row.supportsReasoning,
+    effortOptions: (row.effortOptions || []).map(({ value, label }) => ({ value, label })),
+    defaultEffort: row.defaultEffort,
+    fastCapable: row.fastCapable,
+    fastEfforts: row.fastEfforts,
+    defaultFast: row.defaultFast,
+    serviceTiers: row.serviceTiers,
+    defaultServiceTier: row.defaultServiceTier,
+    additionalSpeedTiers: row.additionalSpeedTiers,
+    modelParameterOptions: row.modelParameterOptions,
+    parameterVariants: row.parameterVariants,
+    defaultModelParameters: row.defaultModelParameters,
+    supportsMaxMode: row.supportsMaxMode,
+  };
+  return Object.fromEntries(Object.entries(detail).filter(([, value]) => isPresent(value)));
+}
+
+function findModel(rows, id, provider) {
+  const matches = rows.filter((row) => row.id === id && (!provider || row.provider === provider));
+  if (!matches.length) {
+    throw new Error(
+      `model "${id}" not found${provider ? ` for provider "${provider}"` : ''}; list_models with catalog.provider returns its model ids`
+    );
+  }
+  const providers = [...new Set(matches.map((row) => row.provider))];
+  if (providers.length > 1)
+    throw new Error(`model "${id}" is offered by ${providers.join(', ')}; pass catalog.provider`);
+  return matches[0];
+}
 
 export function publicAutomation(row) {
   const result = {
@@ -92,13 +166,20 @@ async function readDefinition(rt, kind, name) {
   };
 }
 
-async function saveDefinition(rt, args) {
+// A created agent's explicit marker: the one given, else a bot when Mixy's
+// agent-mode chat creates it (Mixy creates bots), else a workflow agent.
+function createdAgentKind(input, caller) {
+  if (own(input, 'kind')) return input.kind;
+  const { mode, agentId } = resolveSessionMode({ session: caller });
+  return mode === AGENT_MODE && agentId === MIXY_AGENT_ID ? BOT_AGENT_KIND : WORKFLOW_AGENT_KIND;
+}
+
+async function saveDefinition(rt, args, context = {}) {
   const kind = args.definitionKind;
   const input = args.definition;
-  const allowed =
-    kind === 'skill'
-      ? ['originalName', 'name', 'description', 'body', 'whenToUse', 'toolDependencies']
-      : ['id', 'name', 'description', 'body'];
+  let allowed = ['id', 'name', 'description', 'body'];
+  if (kind === 'skill') allowed = ['originalName', 'name', 'description', 'body', 'whenToUse', 'toolDependencies'];
+  else if (kind === 'agent') allowed = [...allowed, 'kind'];
   const unexpected = Object.keys(input).find((key) => !allowed.includes(key));
   if (unexpected) throw new Error(`${unexpected} is not a ${kind} definition field`);
   const creating = args.action === 'create_definition';
@@ -128,20 +209,53 @@ async function saveDefinition(rt, args) {
       const agents = await rt.listAgents();
       if (agents.some((agent) => agent.id === input.id)) throw new Error(`agent "${input.id}" already exists`);
     }
-    return rt.saveAgentDefinition(creating ? next : { ...next, id: current.id });
+    if (creating) return rt.saveAgentDefinition({ ...next, kind: createdAgentKind(input, context.caller) });
+    // The stored kind is kept as it is; an edit naming one is refused by the editor.
+    const { kind: _storedKind, ...edit } = { ...pick(current, definitionKeys), ...input };
+    return rt.saveAgentDefinition({ ...edit, ...(own(input, 'kind') ? { kind: input.kind } : {}), id: current.id });
   }
   return creating ? rt.addSkill(next) : rt.saveSkill({ ...next, originalName: current.originalName });
+}
+
+async function automationRow(rt, kind, name) {
+  const status = await rt.getChannelSetup();
+  return status[kind === 'schedule' ? 'schedules' : 'webhooks'].find((row) => row.name === name) || null;
+}
+
+/** Authorize one automation action for the calling session (`context.caller`,
+ *  its session record; null when it could not be resolved) — schedule-access.mjs. */
+async function authorizeAutomation(rt, context, { kind, action, current, owner = '' }) {
+  const scope = scheduleCallerScope(context.caller);
+  const transfer = String(owner ?? '').trim();
+  const agents = transfer && scope.kind === 'human' ? await rt.listAgents() : [];
+  assertAutomationAccess(scope, {
+    kind,
+    action,
+    current,
+    owner: transfer,
+    agentIds: (Array.isArray(agents) ? agents : []).map((agent) => agent?.id).filter(Boolean),
+  });
 }
 
 export const EXTENDED_SETUP_HANDLERS = Object.freeze({
   set_local_context: (rt, args) => rt.setLocalProviderContext(args.modelId, args.localContextWindow),
   async list_models(rt, args) {
-    const options = args.catalog || {};
-    const refresh = options.refresh === true;
-    const models = options.webSearch
-      ? await rt.listWebSearchModels({ refresh })
-      : await rt.listProviderModels({ refresh });
-    return { models: options.provider ? models.filter((model) => model.provider === options.provider) : models };
+    const { provider, model, page = 1, limit = MODEL_PAGE_DEFAULT, webSearch, refresh } = args.catalog || {};
+    const rows = webSearch
+      ? await rt.listWebSearchModels({ refresh: refresh === true })
+      : await rt.listProviderModels({ refresh: refresh === true });
+    if (model) return { model: modelDetail(findModel(rows, model, provider)) };
+    if (!provider) return { providers: providerIndex(rows) };
+    const own = rows.filter((row) => row.provider === provider);
+    const pages = Math.max(1, Math.ceil(own.length / limit));
+    return {
+      provider,
+      total: own.length,
+      page,
+      pages,
+      ...(page < pages ? { nextPage: page + 1 } : {}),
+      models: own.slice((page - 1) * limit, page * limit).map(compactModelRow),
+    };
   },
   set_orchestration_mode: (rt, args) => rt.setOrchestrationMode(args.mode),
   get_mcp_server: async (rt, args) => publicMcpConfig(await rt.getMcpServerConfig(args.name)),
@@ -158,22 +272,29 @@ export const EXTENDED_SETUP_HANDLERS = Object.freeze({
     return {
       ...result,
       recovery:
-        'User-authored definition files are deleted. A built-in override may revert to its built-in definition.',
+        args.definitionKind === 'workflow'
+          ? 'User-authored definition files are deleted. A built-in override may revert to its built-in definition.'
+          : 'A custom agent or bot is archived with its chat and its routines are switched off; the user can restore it from Sessions → Archived, or delete it there for good. A built-in override reverts to its built-in definition.',
     };
   },
-  async save_automation(rt, args) {
+  async save_automation(rt, args, context = {}) {
     const kind = args.automationKind;
     const input = args.entry;
     if (kind === 'webhook' && ['time', 'at', 'timezone', 'days'].some((key) => own(input, key))) {
-      throw new Error('Schedule timing fields are not accepted for webhooks');
+      throw new Error('Schedule fields (timing) are not accepted for webhooks');
     }
     if (kind === 'schedule' && own(input, 'parser')) throw new Error('parser is a webhook-only field');
     let previous = {};
     if (input.overwrite) {
-      const status = await rt.getChannelSetup();
-      previous = status[kind === 'schedule' ? 'schedules' : 'webhooks'].find((row) => row.name === input.name);
+      previous = await automationRow(rt, kind, input.name);
       if (!previous) throw new Error(`${kind} "${input.name}" does not exist`);
     }
+    await authorizeAutomation(rt, context, {
+      kind,
+      action: input.overwrite ? 'edit' : 'create',
+      current: input.overwrite ? previous : null,
+      owner: input.owner,
+    });
     const next = { ...pick(previous, entryKeys), ...input };
     if (kind === 'schedule') {
       if (previous.whenAt && !own(input, 'time') && !own(input, 'at')) {
@@ -182,6 +303,11 @@ export const EXTENDED_SETUP_HANDLERS = Object.freeze({
       }
       if (own(input, 'time') && !own(input, 'at')) delete next.at;
       if (own(input, 'at') && !own(input, 'time')) delete next.time;
+    }
+    // An automation created from an agent's home thread belongs to that agent.
+    if (!input.overwrite && !own(input, 'owner')) {
+      const homeAgent = agentIdOfHomeSession(context.sessionId);
+      if (homeAgent) next.owner = homeAgent;
     }
     const result = kind === 'schedule' ? await rt.saveSchedule(next) : await rt.saveWebhook(next);
     return {
@@ -195,18 +321,42 @@ export const EXTENDED_SETUP_HANDLERS = Object.freeze({
         : {}),
     };
   },
-  async delete_automation(rt, args) {
-    const status = await rt.getChannelSetup();
-    const rows = status[args.automationKind === 'schedule' ? 'schedules' : 'webhooks'];
-    if (!rows.some((row) => row.name === args.name)) throw new Error('Automation entry not found');
+  async delete_automation(rt, args, context = {}) {
+    const current = await automationRow(rt, args.automationKind, args.name);
+    if (!current) throw new Error('Automation entry not found');
+    await authorizeAutomation(rt, context, { kind: args.automationKind, action: 'delete', current });
     const result =
       args.automationKind === 'schedule' ? await rt.deleteSchedule(args.name) : await rt.deleteWebhook(args.name);
     return { ...result, recovery: 'The automation record is deleted; recreating it requires its definition.' };
   },
-  set_automation_enabled: (rt, args) =>
-    args.automationKind === 'schedule'
+  async set_automation_enabled(rt, args, context = {}) {
+    const current = await automationRow(rt, args.automationKind, args.name);
+    if (!current) throw new Error('Automation entry not found');
+    const action = args.enabled === false ? 'pause' : 'resume';
+    await authorizeAutomation(rt, context, { kind: args.automationKind, action, current });
+    return args.automationKind === 'schedule'
       ? rt.setScheduleEnabled(args.name, args.enabled)
-      : rt.setWebhookEnabled(args.name, args.enabled),
+      : rt.setWebhookEnabled(args.name, args.enabled);
+  },
+  // Starts the run and returns at once: the run is its own session, and its
+  // result posts into the owning agent's thread when it ends. A webhook
+  // re-runs on its latest received payload.
+  async run_automation(rt, args, context = {}) {
+    const kind = args.automationKind;
+    const current = await automationRow(rt, kind, args.name);
+    if (!current) throw new Error('Automation entry not found');
+    await authorizeAutomation(rt, context, { kind, action: 'run', current });
+    if (kind === 'webhook' && current.hasLastPayload !== true) {
+      throw new Error(`webhook "${args.name}" has not received a payload yet`);
+    }
+    const run = kind === 'webhook' ? rt.runWebhookNow(args.name) : rt.runScheduleNow(args.name);
+    void Promise.resolve(run).catch(() => {});
+    return {
+      name: args.name,
+      started: true,
+      note: "The run is its own session; its result posts into the owning agent's thread when it finishes.",
+    };
+  },
   async set_developer_option(rt, args) {
     const option = rt
       .getDeveloperSettings()
@@ -280,9 +430,9 @@ function hookRuleAt(rt, index) {
   return publicHookRule(rule);
 }
 
-export async function executeExtendedSetupAction(rt, args, requestDesktop) {
+export async function executeExtendedSetupAction(rt, args, requestDesktop, context = {}) {
   if (SETUP_DESKTOP_ACTIONS.includes(args.action)) return requestDesktop(args);
   const handler = EXTENDED_SETUP_HANDLERS[args.action];
   if (!handler) throw new Error(`setup: unhandled action "${args.action}"`);
-  return handler(rt, args);
+  return handler(rt, args, context);
 }

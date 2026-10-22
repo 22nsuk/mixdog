@@ -78,7 +78,12 @@ export async function executeBatchCall(batch, call, callIndex) {
 // Read entries are stat-validated; scoped entries retain dependency
 // invalidation and their bounded TTL. A miss proceeds to execution.
 function lookupCaches(batch, call, exec) {
-  const cached = lookupToolResultReuse({ sessionId: batch.sessionId, call, cwd: batch.cwd });
+  const cached = lookupToolResultReuse({
+    sessionId: batch.sessionId,
+    call,
+    cwd: batch.cwd,
+    sessionRef: batch.sessionRef,
+  });
   if (cached?.kind === 'read') exec.readCacheHit = cached.entry;
   else if (cached?.kind === 'scoped') exec.scopedCacheHit = cached.entry;
 }
@@ -115,9 +120,7 @@ async function executeLive(batch, call, callIndex, exec) {
   // this session never received the discarded body.
   let discardedRead = false;
   if (eager !== undefined && eager.mutationEpoch < epoch.mutation && isEagerDispatchable(call.name, tools)) {
-    const stale = _isReadTool(call.name)
-      ? mutationAffectsRead(epoch, eager.mutationEpoch, call, batch.cwd)
-      : true;
+    const stale = _isReadTool(call.name) ? mutationAffectsRead(epoch, eager.mutationEpoch, call, batch.cwd) : true;
     if (stale) {
       discardedRead = _isReadTool(call.name);
       pending.delete(call.id);
@@ -176,14 +179,10 @@ async function executeSerially(batch, call, exec, suppressReadUnchangedStub = fa
   exec.executionStartedAt = Date.now();
   exec.serialExecutionStartedAt = exec.executionStartedAt;
   exec.localSearchTelemetry = {};
-  exec.result = await executeToolFn(
-    call.name,
-    call.arguments,
-    cwd,
-    sessionId,
-    sessionRef,
-    { ...invocationOptions(batch, call, exec), ...(suppressReadUnchangedStub ? { suppressReadUnchangedStub: true } : {}) }
-  );
+  exec.result = await executeToolFn(call.name, call.arguments, cwd, sessionId, sessionRef, {
+    ...invocationOptions(batch, call, exec),
+    ...(suppressReadUnchangedStub ? { suppressReadUnchangedStub: true } : {}),
+  });
   exec.toolEndedAt = Date.now();
   classifyExecuted(call, exec);
 }
@@ -208,6 +207,7 @@ function invocationOptions(batch, call, exec) {
     iteration: batch.iterations,
     localSearchTelemetry: exec.localSearchTelemetry || {},
     resultTelemetry: exec.resultTelemetry,
+    ...(call.wireCall ? { bridgeWireCall: call.wireCall } : {}),
   };
 }
 

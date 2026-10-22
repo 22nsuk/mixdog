@@ -7,7 +7,7 @@
 
 /** `agent`: an agent tool asked (visualize), not the user, so a browser panel
  *  the user closed stays closed; the address still waits for the pane. */
-export type BrowserPageRequest = { sessionId: string; url: string; agent?: boolean };
+export type BrowserPageRequest = { sessionId: string; url?: string; agent?: boolean };
 type RevealListener = (request: BrowserPageRequest) => void;
 type AddressListener = (url: string) => void;
 
@@ -15,8 +15,9 @@ const revealListeners = new Set<RevealListener>();
 const addressListeners = new Map<string, Set<AddressListener>>();
 const pendingAddress = new Map<string, { url: string; newTab: boolean }>();
 
-/** True while a shell that can reveal a browser pane is mounted. A surface
- *  without one (a paired phone) shows no "open" affordance. */
+/** True while a shell that can reveal a browser pane is mounted. A paired
+ *  phone mounts one too: its pane streams the host's browser, so a requested
+ *  address is navigated on the PC (see onBrowserPageAddressTaken). */
 export function browserPageRequestsAvailable(): boolean {
   return revealListeners.size > 0;
 }
@@ -34,6 +35,63 @@ export function requestBrowserPage(
   for (const listener of revealListeners) listener(request);
   const listeners = addressListeners.get(sessionId);
   if (listeners) for (const listener of [...listeners]) listener(url);
+}
+
+/** The user asks to see the session's browser as it is now (the transcript's
+ *  "브라우저 · 보기"): the pane opens on its current page, loading nothing. */
+export function revealBrowserPane(sessionId: string): void {
+  if (!sessionId) return;
+  for (const listener of revealListeners) listener({ sessionId });
+  const panes = paneRevealListeners.get(sessionId);
+  if (panes?.size) for (const listener of [...panes]) listener();
+  else pendingPaneReveal.add(sessionId);
+}
+
+const paneRevealListeners = new Map<string, Set<() => void>>();
+const pendingPaneReveal = new Set<string>();
+
+/** The session's pane hears each "보기"; one pressed while the pane was not
+ *  mounted yet (the shell opens it in response) is delivered on mount. */
+export function onBrowserPaneRevealed(sessionId: string, listener: () => void): () => void {
+  let listeners = paneRevealListeners.get(sessionId);
+  if (!listeners) {
+    listeners = new Set();
+    paneRevealListeners.set(sessionId, listeners);
+  }
+  listeners.add(listener);
+  if (pendingPaneReveal.delete(sessionId)) listener();
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) paneRevealListeners.delete(sessionId);
+  };
+}
+
+const importListeners = new Map<string, Set<() => void>>();
+const pendingImport = new Set<string>();
+
+/** "크롬에서 다시 가져오기" on an expired sign-in: the session's pane opens
+ *  with the existing Chrome import dialog, which waits for a pane not
+ *  mounted yet. */
+export function requestBrowserImport(sessionId: string): void {
+  if (!sessionId) return;
+  revealBrowserPane(sessionId);
+  const listeners = importListeners.get(sessionId);
+  if (listeners?.size) for (const listener of [...listeners]) listener();
+  else pendingImport.add(sessionId);
+}
+
+export function onBrowserImportRequested(sessionId: string, listener: () => void): () => void {
+  let listeners = importListeners.get(sessionId);
+  if (!listeners) {
+    listeners = new Set();
+    importListeners.set(sessionId, listeners);
+  }
+  listeners.add(listener);
+  if (pendingImport.delete(sessionId)) listener();
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) importListeners.delete(sessionId);
+  };
 }
 
 export function onBrowserPageRevealRequested(listener: RevealListener): () => void {

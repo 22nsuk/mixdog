@@ -1,5 +1,7 @@
 import type { DesktopApi, DesktopModelOption } from '../shared/contract';
 import { catalogStorageKey, catalogStorageScope } from './catalog-storage-scope';
+import { isSshConnectionWindow } from './desktop-connection';
+import { requireDesktopProviders } from './desktop-provider-retry';
 
 const MODEL_CATALOG_STORAGE_KEY = 'mixdog.desktop-model-catalog.v2';
 const MODEL_CATALOG_LIMIT = 1_000;
@@ -102,6 +104,8 @@ function modelOption(value: unknown): DesktopModelOption | null {
     ...(typeof option.savedContextPercent === 'number' && Number.isFinite(option.savedContextPercent)
       ? { savedContextPercent: option.savedContextPercent }
       : {}),
+    ...(typeof option.savedHidden === 'boolean' ? { savedHidden: option.savedHidden } : {}),
+    ...(option.favorite === true ? { favorite: true } : {}),
     ...(typeof option.defaultEffort === 'string' ? { defaultEffort: option.defaultEffort } : {}),
     ...(typeof option.defaultFast === 'boolean' ? { defaultFast: option.defaultFast } : {}),
     ...(option.autoEffortCapable === true ? { autoEffortCapable: true } : {}),
@@ -168,14 +172,32 @@ function normalizeModelCatalog(models: unknown): DesktopModelOption[] {
 
 export const PROVIDER_MODELS_FRESH_MS = 30_000;
 
+/** Bounds on how long a PARTIAL answer (rows marked `catalogPartial`) is held
+ *  before it is fetched again: the daemon's `catalogRetryAt`, clamped so a
+ *  skewed remote clock can neither pin it nor make it spin. */
+const PARTIAL_MODEL_CATALOG_MIN_MS = 1_000;
+const PARTIAL_MODEL_CATALOG_MAX_MS = 60_000;
+
+/** When a partial answer must be refetched, or null for a complete one. */
+function partialModelCatalogExpiry(models: readonly unknown[], now = Date.now()): number | null {
+  const partial = models.find(
+    (row): row is DesktopModelOption => Boolean(row) && (row as { catalogPartial?: unknown }).catalogPartial === true
+  );
+  if (!partial) return null;
+  const retryAt = Number(partial.catalogRetryAt);
+  const wait = Number.isFinite(retryAt) ? retryAt - now : PROVIDER_MODELS_FRESH_MS;
+  return now + Math.min(PARTIAL_MODEL_CATALOG_MAX_MS, Math.max(PARTIAL_MODEL_CATALOG_MIN_MS, wait));
+}
+
 type ProviderModelsApi = Partial<Pick<DesktopApi, 'listProviderModels'>>;
 
 interface ProviderModelsFetchState {
   scope: string;
   generation: number;
+  requestId: number;
   quick?: Promise<DesktopModelOption[]>;
   full?: Promise<DesktopModelOption[]>;
-  complete?: { models: DesktopModelOption[]; at: number };
+  complete?: { models: DesktopModelOption[]; expiresAt: number };
 }
 
 const PROVIDER_MODEL_FETCHES = new WeakMap<object, ProviderModelsFetchState>();
@@ -186,7 +208,7 @@ function providerModelsFetchState(api: object): ProviderModelsFetchState {
   const current = PROVIDER_MODEL_FETCHES.get(api);
   if (current && current.scope === scope && current.generation === providerModelsGeneration) return current;
   // Another device route or a provider change: nothing held answers for it.
-  const created: ProviderModelsFetchState = { scope, generation: providerModelsGeneration };
+  const created: ProviderModelsFetchState = { scope, generation: providerModelsGeneration, requestId: 0 };
   PROVIDER_MODEL_FETCHES.set(api, created);
   return created;
 }
@@ -208,16 +230,27 @@ export function fetchProviderModels(
   const state = providerModelsFetchState(api);
   if (!force) {
     const complete = state.complete;
-    if (complete && Date.now() - complete.at < PROVIDER_MODELS_FRESH_MS) return Promise.resolve(complete.models);
+    if (complete && Date.now() < complete.expiresAt) return Promise.resolve(complete.models);
     const joined = quick ? state.quick : state.full;
     if (joined) return joined;
   }
+  const requestId = ++state.requestId;
   // Issued now, so the slot below is visible to the very next caller.
-  const issued = new Promise<unknown>((resolve) => resolve(api.listProviderModels!({ quick })));
+  const issued = new Promise<unknown>((resolve) =>
+    resolve(api.listProviderModels!({ quick, ...(force ? { force: true } : {}) }))
+  );
   const request = issued.then((value) => {
     const models: DesktopModelOption[] = Array.isArray(value) ? value : [];
-    if (PROVIDER_MODEL_FETCHES.get(api) === state && (!quick || completeQuickAnswer(models))) {
-      state.complete = { models, at: Date.now() };
+    if (
+      PROVIDER_MODEL_FETCHES.get(api) === state &&
+      state.requestId === requestId &&
+      (!quick || completeQuickAnswer(models))
+    ) {
+      const now = Date.now();
+      state.complete = {
+        models,
+        expiresAt: Math.min(now + PROVIDER_MODELS_FRESH_MS, partialModelCatalogExpiry(models, now) ?? Infinity),
+      };
     }
     return models;
   });
@@ -246,6 +279,8 @@ type SharedModelCatalogRequest = {
   scope: string;
   isCurrent(): boolean;
   startedAt: number;
+  /** A complete catalog is shared for a day; a partial one until its retry. */
+  expiresAt: number;
   quick: Promise<DesktopModelOption[]>;
   full: Promise<DesktopModelOption[]>;
   setup: Promise<unknown>;
@@ -254,6 +289,7 @@ type SharedModelCatalogRequest = {
 export const SHARED_MODEL_CATALOG_MAX_AGE_MS = 24 * 60 * 60_000;
 let sharedModelCatalogRequest: SharedModelCatalogRequest | null = null;
 let catalogGeneration = 0;
+let forceNextCatalog = false;
 const invalidationListeners = new Set<() => void>();
 
 /** Forgets the shared request, so the next caller fetches again. Guarded by
@@ -263,15 +299,34 @@ function dropSharedModelCatalogRequest(request: SharedModelCatalogRequest): void
 }
 
 export function subscribeModelCatalogInvalidation(listener: () => void): () => void {
+  const events = typeof window === 'undefined' ? null : window;
+  if (invalidationListeners.size === 0) {
+    events?.addEventListener?.('mixdog:remote-reconnected', invalidateSharedModelCatalogRequest);
+    events?.addEventListener?.('mixdog:remote-state-gap', invalidateSharedModelCatalogRequest);
+  }
   invalidationListeners.add(listener);
-  return () => invalidationListeners.delete(listener);
+  return () => {
+    invalidationListeners.delete(listener);
+    if (invalidationListeners.size === 0) {
+      events?.removeEventListener?.('mixdog:remote-reconnected', invalidateSharedModelCatalogRequest);
+      events?.removeEventListener?.('mixdog:remote-state-gap', invalidateSharedModelCatalogRequest);
+    }
+  };
 }
 
 /** Drops the shared request and wakes mounted pickers after provider changes. */
 export function invalidateSharedModelCatalogRequest(): void {
   catalogGeneration += 1;
+  // Only a server window must bypass the daemon's proxied provider cache; a
+  // local window keeps its plain re-read.
+  if (isSshConnectionWindow()) forceNextCatalog = true;
   providerModelsGeneration += 1;
   sharedModelCatalogRequest = null;
+  clearPartialExpiry();
+  notifyModelCatalogListeners();
+}
+
+function notifyModelCatalogListeners(): void {
   for (const listener of [...invalidationListeners]) {
     queueMicrotask(() => {
       if (invalidationListeners.has(listener)) listener();
@@ -279,17 +334,40 @@ export function invalidateSharedModelCatalogRequest(): void {
   }
 }
 
+/** A partial full answer (some provider was missing) is not kept for a day:
+ *  at its retry time the shared request is dropped and mounted pickers are
+ *  woken to read again, which picks up the providers the daemon refilled. */
+// Only the current shared request can expire, so one timer serves: a newer
+// partial answer (or an invalidation) replaces it instead of leaving the old
+// one, and the request it holds, alive until it fires.
+let partialExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPartialExpiry(): void {
+  if (partialExpiryTimer !== null) clearTimeout(partialExpiryTimer);
+  partialExpiryTimer = null;
+}
+
+function expirePartialModelCatalog(request: SharedModelCatalogRequest, models: readonly unknown[]): void {
+  const expiresAt = partialModelCatalogExpiry(models);
+  if (expiresAt === null) return;
+  request.expiresAt = expiresAt;
+  clearPartialExpiry();
+  partialExpiryTimer = setTimeout(() => {
+    partialExpiryTimer = null;
+    if (sharedModelCatalogRequest !== request) return;
+    sharedModelCatalogRequest = null;
+    notifyModelCatalogListeners();
+  }, expiresAt - Date.now());
+}
+
 export function requestModelCatalog(api: DesktopApi): SharedModelCatalogRequest {
   const scope = catalogStorageScope();
   const current = sharedModelCatalogRequest;
-  if (
-    current &&
-    current.api === api &&
-    current.scope === scope &&
-    Date.now() - current.startedAt < SHARED_MODEL_CATALOG_MAX_AGE_MS
-  ) {
+  if (current && current.api === api && current.scope === scope && Date.now() < current.expiresAt) {
     return current;
   }
+  const forceSetup = forceNextCatalog;
+  forceNextCatalog = false;
   const generation = ++catalogGeneration;
   const isCurrent = () => generation === catalogGeneration && scope === catalogStorageScope();
   const quick = fetchProviderModels(api, { quick: true }).then(normalizeModelCatalog);
@@ -297,26 +375,31 @@ export function requestModelCatalog(api: DesktopApi): SharedModelCatalogRequest 
   // A quick answer that was already the full catalog leaves this read to the
   // shared result instead of the wire.
   const full = quickSettled
-    .then(() => fetchProviderModels(api, { quick: false }))
+    .then(() => fetchProviderModels(api, { quick: false, force: forceSetup }))
     .then((models) => {
       if (!isCurrent()) return normalizeModelCatalog(models);
-      return writeCachedModelCatalog(Array.isArray(models) ? models : [], scope).models;
+      const rows = Array.isArray(models) ? models : [];
+      expirePartialModelCatalog(request, rows);
+      return writeCachedModelCatalog(rows, scope).models;
     });
   const setup = api.invokeCapability
     ? quickSettled
         .then(() =>
           api.invokeCapability<unknown>({
             capability: 'getProviderSetup',
-            args: [],
+            args: forceSetup ? [{ force: true }] : [],
           })
         )
-        .then((result) => result.value)
+        // Settings may render the offline snapshot, but a picker must retry it
+        // instead of caching an empty authenticated-provider set for a day.
+        .then((result) => requireDesktopProviders(result.value))
     : Promise.resolve(null);
   const request: SharedModelCatalogRequest = {
     api,
     scope,
     isCurrent,
     startedAt: Date.now(),
+    expiresAt: Date.now() + SHARED_MODEL_CATALOG_MAX_AGE_MS,
     quick,
     full,
     setup,

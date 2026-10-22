@@ -18,6 +18,7 @@ import {
 } from './connection-link-store';
 import { desktopConnection, isSshConnectionWindow } from './desktop-connection';
 import { t } from './i18n';
+import { displaySessionTitle } from './session-display-title';
 import { OPEN_CONNECTION_SETTINGS_EVENT } from './remote-claim-events';
 import { requestConnectionDialog } from './settings/connection-intent';
 import { SshLogDialog } from './settings/ssh-log-dialogs';
@@ -129,25 +130,10 @@ function LinkBanner({ view, serverName }: { view: DesktopConnectionLinkView; ser
   );
 }
 
-type NoticeReason = Extract<DesktopConnectionNotice, { kind: 'model-proxy-limited' }>['reason'];
-
-function permissionEndedText(reason: NoticeReason): string {
-  if (reason === 'expired') return t('This window saw no action for longer than the permission lasts.');
-  if (reason === 'calls') return t('The server used all the model calls the permission allows.');
-  if (reason === 'tokens') return t('The server used all the tokens the permission allows.');
-  if (reason === 'background-calls') {
-    return t('Scheduled and webhook work on the server used its model calls for the last hour.');
-  }
-  if (reason === 'background-tokens') {
-    return t('Scheduled and webhook work on the server used its tokens for the last 24 hours.');
-  }
-  return t('This PC runs the server’s model calls after you start or continue work in this window.');
-}
-
 function noticeText(
   notice: DesktopConnectionNotice,
   serverName: string
-): { title: string; lines: string[]; tone: string; action?: { label: string; run(): Promise<unknown> } } | null {
+): { title: string; lines: string[]; tone: string } | null {
   if (notice.kind === 'model-sign-in') {
     return {
       title: t('This PC’s model sign-in has expired'),
@@ -157,30 +143,19 @@ function noticeText(
       tone: 'error',
     };
   }
-  if (notice.kind === 'model-proxy-limited') {
-    if (notice.limit === 'not-authorized') {
-      const api = window.mixdogDesktop;
-      const allow = api?.allowServerModelUse;
-      return {
-        title: t('This server’s permission to use this PC’s models has ended'),
-        lines: [permissionEndedText(notice.reason)],
-        tone: 'error',
-        ...(allow ? { action: { label: t('Keep allowing'), run: () => allow.call(api) } } : {}),
-      };
-    }
-    const reason =
-      notice.limit === 'rate-limited'
-        ? t('The server made model calls faster than this PC allows.')
-        : t('A model call ran longer than this PC allows and was stopped.');
-    return { title: t('This server’s model calls were limited'), lines: [reason], tone: 'error' };
-  }
   if (notice.kind !== 'reattached') return null;
   const lines: string[] = [];
   if (notice.finished.length) {
-    lines.push(t('Finished on the server while away: {{titles}}', { titles: notice.finished.join(', ') }));
+    lines.push(
+      t('Finished on the server while away: {{titles}}', {
+        titles: notice.finished.map(displaySessionTitle).join(', '),
+      })
+    );
   }
   if (notice.continued.length) {
-    lines.push(t('Still running on the server: {{titles}}', { titles: notice.continued.join(', ') }));
+    lines.push(
+      t('Still running on the server: {{titles}}', { titles: notice.continued.map(displaySessionTitle).join(', ') })
+    );
   }
   if (notice.interruptedModelCalls) lines.push(t('A model call in progress was interrupted. It was not retried.'));
   return { title: t('Reconnected to {{name}}', { name: serverName }), lines, tone: 'success' };
@@ -202,7 +177,6 @@ function Notices({ serverName }: { serverName: string }) {
       {notices.map(({ id, notice }) => {
         const text = noticeText(notice, serverName);
         if (!text) return null;
-        const { action } = text;
         return (
           <div key={id} className="mx-toast conn-link-notice" role="status" data-tone={text.tone}>
             <div className="conn-link-copy">
@@ -213,23 +187,6 @@ function Notices({ serverName }: { serverName: string }) {
                 </span>
               ))}
             </div>
-            {action && (
-              <div className="conn-link-actions">
-                <button
-                  type="button"
-                  className="conn-btn conn-btn--sm conn-btn--primary"
-                  onClick={() => {
-                    // The notice stays until the permission is actually given.
-                    void action.run().then(
-                      () => setNotices((current) => current.filter((entry) => entry.id !== id)),
-                      () => undefined
-                    );
-                  }}
-                >
-                  {action.label}
-                </button>
-              </div>
-            )}
             <button
               type="button"
               className="mx-toast-close"
@@ -250,7 +207,7 @@ function ServerWindowStatus() {
   const serverName = desktopConnection()?.name ?? '';
   useComposerBlocked(isConnectionDown(view));
   return createPortal(
-    <div className="conn-link-stack">
+    <div className="conn-link-stack" data-modal-background>
       {view && <LinkBanner view={view} serverName={serverName} />}
       <Notices serverName={serverName} />
     </div>,
@@ -301,7 +258,7 @@ function ServerRestoreStatus() {
   }, []);
   if (!entries.length) return null;
   return createPortal(
-    <div className="conn-link-stack">
+    <div className="conn-link-stack" data-modal-background>
       {entries.map((entry) => {
         const failed = entry.phase === 'failed';
         return (

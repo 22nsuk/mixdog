@@ -13,6 +13,7 @@ import type { DismissedBrowserDialog, PendingBrowserDialog } from './dialog-repo
 import type { BrowserDragData } from './input';
 import { BrowserNetworkLedger } from './network';
 import type { ActiveBrowserPerformanceTrace } from './performance';
+import type { PageActor, WindowOpenGesture } from './popup-focus';
 import { redactBrowserKnownSecrets, redactBrowserText } from './redaction';
 import type { VisualGrounding } from './ref-points';
 import type { BrowserRefSet } from './ref-recovery';
@@ -56,6 +57,11 @@ interface BrowserDiagnostics {
   /** Execution contexts (`session:id`) running Chromium's own bundled
    *  components, such as the PDF viewer. Whatever they log is not page content. */
   browserComponentContexts: Set<string>;
+  /** Console and log entries come up again whenever the driving domains are
+   *  switched back on (see cdp-session-init). Per session and domain: the
+   *  newest entry recorded, and while a switch is replaying, the newest one
+   *  the replay may skip. */
+  consoleReplay: { seen: Map<string, number>; floor: Map<string, number> };
   fault: string;
 }
 
@@ -75,6 +81,14 @@ interface BrowserGuestState extends BrowserDiagnostics {
   /** A person clicked or typed into this document. What they entered lives
    *  only in the document, so it must not be unloaded to save memory. */
   userInput: boolean;
+  /** Who acted on this document last: a person's press, key or dialog
+   *  answer, or an agent command. A window it opens is that actor's. */
+  actor?: PageActor;
+  /** When the person last answered one of this document's dialogs. */
+  personDialogAnswerAt?: number;
+  /** Chromium's recent Page.windowOpen reports: whether each window being
+   *  opened had a user gesture (popup-focus). */
+  windowOpens: WindowOpenGesture[];
   accessibilityRefs?: AccessibilityRefSnapshot;
   refSet?: BrowserRefSet;
   visualGrounding?: VisualGrounding;
@@ -122,6 +136,7 @@ export class BrowserGuestStateStore {
       // before it existed. A new page has already heard about all of them.
       downloadsReportedAt: Date.now(),
       openedPopups: [],
+      windowOpens: [],
       crashed: false,
       userInput: false,
       pendingDialog: null,
@@ -134,6 +149,7 @@ export class BrowserGuestStateStore {
       network: new BrowserNetworkLedger(),
       cdpSessions: new Map(),
       browserComponentContexts: new Set(),
+      consoleReplay: { seen: new Map(), floor: new Map() },
       fault: '',
     };
     this.states.set(guest, created);
@@ -288,6 +304,9 @@ export class BrowserGuestStateStore {
     state.pendingDialog = null;
     state.dismissedDialog = null;
     state.userInput = false;
+    state.actor = undefined;
+    state.personDialogAnswerAt = undefined;
+    state.windowOpens = [];
   }
 
   /** Text bound for the caller, minus the page's known secrets. */

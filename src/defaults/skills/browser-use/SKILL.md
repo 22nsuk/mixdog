@@ -192,7 +192,8 @@ not as two blocks joined.
 - **Screen is the deliverable / user continues** — leave the relevant foreground
   page visible using `open` with its `tab`; clean up only disposable support
   pages. A CAPTCHA, 2FA, or identity check is a handoff, not completion: retain
-  that exact page with `open` and wait.
+  that exact page with `open`. The Lead may wait; an agent preserves the
+  state, reports the required user action, and stops.
 - Preserve pre-existing user tabs, unfinished forms, and pages needed for
   recovery. If ownership or disposability is unclear, preserve the page;
   never clear cookies/storage as cleanup. Do not hide a screen the user asked
@@ -314,10 +315,18 @@ in the page instead of retrying the same `navigate`.
   personal details, or files only to the destination the user named.
 - A refused or restricted action stays refused; do not reach the same effect
   through another page, tool, or `evaluate`.
-- Tool-side confirmation does not replace the user's approved scope.
+- Tool-side confirmation does not replace the user's approved scope, and its
+  absence is not approval. Ordinary sessions submit, post and upload without
+  a card. A bot's own chat asks before a form submit (`submit`, Enter), a
+  click on a send/post control, or an upload, unless that bot already holds
+  an "always allow" for it; schedule and webhook runs never ask, though the
+  bot's block still refuses. A denial dispatches nothing.
   `MIXDOG_BROWSER_CONFIRM_ACTIONS` and
   `MIXDOG_BROWSER_DENY_ACTIONS` optionally name comma-separated public actions
   (or `*`) the desktop app confirms once or refuses; denial takes precedence.
+- For a password or token, focus the field and call `ask_user` with
+  `handoff: { kind: 'secret', surface: 'browser' }`; for sign-in, CAPTCHA or
+  2FA use `kind: 'takeover'` with instructions. Never ask for secrets in chat.
 - Cookie listings never expose values. Registered secret values remain
   redacted across redirects. A blocked result is not success; an inconclusive
   postcondition is not proof.

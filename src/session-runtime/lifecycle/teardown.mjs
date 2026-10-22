@@ -7,10 +7,13 @@
  */
 import { SessionClosedError } from '../../runtime/agent/orchestrator/session/manager/session-errors.mjs';
 import { forgetSessionSaveBaseline } from '../../runtime/agent/orchestrator/session/store/save-worker.mjs';
+import { flushAllIndexWrites } from '../services/agent-tool/index-write-queue.mjs';
+import { PROCESS_RESTART_FAILURE } from '../services/agent-tool/worker-index/row-liveness.mjs';
 import { unregisterLiveSession } from '../../runtime/shared/staged-update.mjs';
 import { abortRuntime, closeCanonicalSession, closeOwnSession, dispatchSessionEnd } from './teardown/session-close.mjs';
 import { settleAll, settleDetached, startRuntimeStops, startWorkStops } from './teardown/runtime-stops.mjs';
 
+const CLOSE_ALL_DEADLINE_MS = 5000;
 const PROCESS_EXIT_REASON = /exit|quit|shutdown|sighup|sigint|sigterm/;
 const WARMUP_TIMER_KEYS = [
   'providerSetupWarmupTimer',
@@ -109,13 +112,55 @@ export function createTeardown(deps, { ingestSessionIntoMemory, closeSurfaceSess
   function reapWork(reason, scope) {
     if (!scope.teardownReapsWork) return;
     try {
-      // A task that dies for a reason its owner never asked for must still be reported.
+      // A task that dies for a reason its owner never asked for must still be
+      // reported: now for a scoped close; for a process exit (its owner is
+      // closing too) by the next process, which tells the owner of each agent
+      // turn the exit cut off (agent-tool restart-notify).
       cancelBackgroundTasks(
         scope.scopedTeardown
-          ? { reason, notify: true, callerSessionId: scope.closingSessionId }
-          : { reason, notify: false }
+          ? { reason, notify: true, executionSessionId: scope.closingSessionId }
+          : { reason, notify: false, terminalReason: PROCESS_RESTART_FAILURE }
       );
     } catch {}
+  }
+
+  // Agent closes that have not settled yet (one per close invocation, kept
+  // past the bounded wait if it overran).
+  const outstandingCloses = new Set();
+
+  /** Persist every queued index write. A close only ever drains: the shared
+   *  indexes stay registered (exit hook included) for the closes still to come. */
+  async function drainIndexWrites() {
+    try {
+      await agentTool.flushIndexWrites?.();
+      await flushAllIndexWrites();
+    } catch {}
+  }
+
+  // The disposal in progress (if any). New closes wait for it before starting
+  // their own closeAll, so no close produces writes while registrations are
+  // being released.
+  let indexDisposal = null;
+
+  /** Release this runtime's per-runtime index registrations (exit callbacks,
+   *  approval writer, store refs) once its drain has completed. Idempotent. A
+   *  drain that cannot complete tears nothing down: the registrations stay until
+   *  a later close drains successfully. Exit flushing itself is process-owned. */
+  function disposeIndexes(settle) {
+    // Assign before disposal runs (deferred), clear on settlement: a synchronous
+    // dispose must not clear the slot before it is assigned.
+    indexDisposal ??= Promise.resolve()
+      .then(async () => {
+        if (typeof agentTool.disposeAsync === 'function') await agentTool.disposeAsync({ settle });
+        else agentTool.dispose?.({ settle });
+      })
+      .catch(() => {
+        /* drain failed: registrations are kept for a later retry */
+      })
+      .finally(() => {
+        indexDisposal = null;
+      });
+    return indexDisposal;
   }
 
   async function close(reason = 'cli-exit', options = {}) {
@@ -155,28 +200,50 @@ export function createTeardown(deps, { ingestSessionIntoMemory, closeSurfaceSess
       // session-pinned intent so the resumed session can reclaim it.
       preserveRemoteIntent: true,
     });
-    // Agent workers die with a REAL teardown only (process exit, explicit
-    // close). A keepBackgroundWork dispose (daemon idle eviction) reclaims
-    // memory and must leave workers/rows for the re-materialized owner.
-    // Scoped teardown closes only THIS session's workers — the worker index
-    // is shared across every Lead in the process.
-    if (scope.teardownReapsWork) {
+    // Only process-wide teardown closes delegated sessions. Session-local
+    // disposal already stopped its own execution work above.
+    let closing = null;
+    while (indexDisposal) await indexDisposal;
+    if (scope.teardownReapsWork && !scope.scopedTeardown) {
+      const settled = () => {
+        outstandingCloses.delete(closing);
+      };
+      // processExit: the workers close, their rows stay for the next process.
+      closing = new Promise((resolve) => resolve(agentTool.closeAll(reason, { processExit: true }))).then(
+        settled,
+        settled
+      );
+      outstandingCloses.add(closing);
       try {
-        agentTool.closeAll(reason, scope.scopedTeardown ? { callerSessionId: scope.closingSessionId } : {});
+        await withTeardownDeadline(closing, CLOSE_ALL_DEADLINE_MS, false);
       } catch {}
     }
-    // Release the worker/lead index exit registrations (persists pending rows
-    // first). Idempotent, so repeated closes of one runtime dispose once.
-    try {
-      agentTool.dispose?.({ settle: scope.teardownReapsWork === true });
-    } catch {}
-    const { ok, stops } = await inOwnLoopTurn(() => {
+    // Drain after the closes settle, then release this runtime's index
+    // registrations. A close that overran its deadline chains this onto its
+    // settlement (teardown may return before then). The live outstanding set is
+    // re-checked after every wait and drain, so the single disposal runs only
+    // when no close is outstanding; the check and the disposal start share one
+    // tick, and closes admitted afterwards wait for it.
+    const finish = async () => {
+      for (;;) {
+        while (outstandingCloses.size > 0) await Promise.allSettled([...outstandingCloses]);
+        await drainIndexWrites();
+        if (outstandingCloses.size === 0) break;
+      }
+      await disposeIndexes(scope.teardownReapsWork === true);
+    };
+    if (outstandingCloses.size > 0) void finish();
+    else await finish();
+    const { ownClose, stops } = await inOwnLoopTurn(() => {
       const runtimeStops = startRuntimeStops(deps, reason, scope);
       const closed = closeOwnSession(deps, closeSurfaceSession, reason);
-      return { ok: closed, stops: { channelStop, ...runtimeStops, ...startWorkStops(deps, reason, scope) } };
+      return { ownClose: closed, stops: { channelStop, ...runtimeStops, ...startWorkStops(deps, reason, scope) } };
     });
     if (scope.detach) await settleDetached(withTeardownDeadline, stops);
     else await settleAll(withTeardownDeadline, stops);
+    // Reported closed only once the barrier is on disk (closeSessionAsync),
+    // and its write control is released only after that.
+    const ok = await ownClose;
     // The session went away (idle eviction included): free its save baselines.
     if (scope.closingSessionId) forgetSessionSaveBaseline(scope.closingSessionId, { releaseWriteControl: true });
     // Self-update stages in the background and swaps on the next clean launch
@@ -194,7 +261,7 @@ export function createTeardown(deps, { ingestSessionIntoMemory, closeSurfaceSess
   }
 
   return {
-    closeCanonicalSession: (reason) => closeCanonicalSession(deps, reason),
+    closeCanonicalSession: (reason, options) => closeCanonicalSession(deps, reason, options),
     close,
     abort: (reason) => abortRuntime(deps, reason),
   };

@@ -12,13 +12,15 @@ import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import { bootProfile } from '../tui/session/boot-profile.mjs';
 import { createGoalContinuation } from '../tui/session/goal-continuation.mjs';
-import { createToolApproval } from '../tui/session/tool-approval.mjs';
+import { createToolApproval, resolveToolApprovalTimeoutMs } from '../tui/session/tool-approval.mjs';
 import { createToolCardResults } from '../tui/session/tool-card-results.mjs';
 import { createAgentJobFeed } from '../tui/session/agent-job-feed.mjs';
+import { createWorktreeSetupNotices } from '../tui/session/worktree-setup-notice.mjs';
 import { createContextState } from '../tui/session/context-state.mjs';
 import { createSessionFlow } from '../tui/session/session-flow.mjs';
 import { createRunTurn } from '../tui/session/turn.mjs';
 import { createQuotaResumeLane } from '../tui/session/quota-resume.mjs';
+import { createGitHeadWatcher } from '../runtime/shared/worktrees/git-head.mjs';
 import { publicQuotaResume, quotaResumeEntry } from '../runtime/shared/quota-resume-store.mjs';
 import { createSessionApi } from '../tui/session/session-api.mjs';
 import { createSessionDraftStore } from '../tui/session/draft-store.mjs';
@@ -27,28 +29,72 @@ import { createActiveToolTracker } from '../tui/session/active-tool-summary.mjs'
 import { createTranscriptStore } from '../tui/session/transcript-store.mjs';
 import { createTranscriptIntake } from '../tui/session/transcript-intake.mjs';
 import { createNoticeSurface } from '../tui/session/notice-surface.mjs';
-import { attachCrossSurfaceShare } from '../tui/session/cross-surface-share.mjs';
+import { rearmGoalContinuationOnSessionBoundaries } from '../tui/session/goal-continuation/session-boundary.mjs';
 import { createTranscriptRouteMetadata } from '../runtime/shared/transcript-metadata.mjs';
 import { formatDoctorReport, runDoctorChecks } from '../tui/app/doctor.mjs';
 // tuiDebug is an opt-in diagnostic trace for the hang chain (runTurn start/end,
 // busy-queue enqueue/drain). Quiet by default so it can never tear through
 // the alternate-screen render; enable with MIXDOG_TUI_DEBUG=1.
-import { tuiDebug, nextId, createTranscriptSpillBuffer } from '../tui/session/transcript-spill.mjs';
+import {
+  tuiDebug,
+  nextId,
+  createTranscriptSpillBuffer,
+  sweepStaleTranscriptSpillDirsOnce,
+} from '../tui/session/transcript-spill.mjs';
+import { importInStages } from './staged-import.mjs';
 
 const SESSION_RUNTIME_MODULE = '../mixdog-session-runtime.mjs';
+// Its one module (only mixdog-session-runtime.mjs imports it): its boot
+// modules are the graph's stages.
+const SESSION_RUNTIME_CORE = '../session-runtime/runtime-core.mjs';
+const importSessionRuntimeInStages = () =>
+  importInStages(
+    new URL(SESSION_RUNTIME_MODULE, import.meta.url).href,
+    new URL(SESSION_RUNTIME_CORE, import.meta.url).href
+  );
 
 // Shared across create calls so concurrent session startups import the
 // runtime graph once.
 let sessionRuntimeModulePromise = null;
+let sessionRuntimeImporter = importSessionRuntimeInStages;
 function importSessionRuntimeModule() {
-  sessionRuntimeModulePromise ??= import(SESSION_RUNTIME_MODULE);
+  // A failed import is forgotten so the next caller retries lazily.
+  sessionRuntimeModulePromise ??= Promise.resolve()
+    .then(() => sessionRuntimeImporter())
+    .catch((error) => {
+      sessionRuntimeModulePromise = null;
+      throw error;
+    });
   return sessionRuntimeModulePromise;
 }
 
-const TOOL_APPROVAL_TIMEOUT_MS = (() => {
-  const value = Number(process.env.MIXDOG_TOOL_APPROVAL_TIMEOUT_MS);
-  return Number.isFinite(value) && value > 0 ? Math.max(1000, Math.round(value)) : 120_000;
-})();
+/**
+ * Background warm-up for the daemon (scheduled after the ready signal): loads
+ * the session-runtime module tree and runs the one-per-process transcript
+ * spill sweep, so the first session.create pays for neither. Failures are
+ * swallowed — create falls back to the same lazy import.
+ */
+export async function warmLocalSessionRuntime() {
+  try {
+    await importSessionRuntimeModule();
+    // Separate turn: let queued I/O run between the import and the sync sweep.
+    await new Promise((resolve) => setImmediate(resolve));
+    sweepStaleTranscriptSpillDirsOnce();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Test seam: replace the dynamic import of the session-runtime module. */
+export function setSessionRuntimeImporterForTest(importer) {
+  sessionRuntimeImporter = importer || importSessionRuntimeInStages;
+  sessionRuntimeModulePromise = null;
+}
+
+// An approval waits until the user answers (Deny, Stop or a closing runtime
+// settle it); MIXDOG_TOOL_APPROVAL_TIMEOUT_MS opts into a limit for tests/ops.
+const TOOL_APPROVAL_TIMEOUT_MS = resolveToolApprovalTimeoutMs();
 
 export {
   cleanupStaleTranscriptSpillDirs,
@@ -72,7 +118,6 @@ export { parseBackgroundTaskEnvelope } from '../tui/session/agent-envelope.mjs';
  */
 export function createRuntimePulse({
   flags,
-  liveShareMirroring,
   getState,
   getPublishedState,
   set,
@@ -98,16 +143,9 @@ export function createRuntimePulse({
     if (!set(changed)) emit();
     return true;
   };
-  return () => {
+  const pulse = () => {
     if (flags.disposed) return;
     if (flags.pendingSessionReset) return;
-    // Attached viewer with a live pipe: the owner's frames are authoritative
-    // for stats/agent/tool state. Recomputing them locally here would stomp
-    // the mirror with this process's empty registries every 2s.
-    if (liveShareMirroring()) {
-      publishChanged({ ...routeState() });
-      return;
-    }
     syncContextStats({ allowEstimated: true });
     publishChanged({
       ...routeState(),
@@ -115,6 +153,12 @@ export function createRuntimePulse({
       ...agentStatusState(),
     });
   };
+  /** Publishes just the workspace (a HEAD change): no stats or agent recompute. */
+  pulse.publishWorkspace = () => {
+    if (flags.disposed || flags.pendingSessionReset) return;
+    publishChanged({ workspace: routeState().workspace });
+  };
+  return pulse;
 }
 
 export async function createLocalSessionRuntime({
@@ -134,6 +178,7 @@ export async function createLocalSessionRuntime({
   sessionProfile,
   worktree,
   executeAgentControl,
+  executeSessionControl,
 } = {}) {
   const startedAt = performance.now();
   bootProfile('session:create:start', { provider: providerName, model, toolMode, remote });
@@ -166,6 +211,7 @@ export async function createLocalSessionRuntime({
     // Session creation worktree intent; consumed by the workspace transition scope.
     ...(worktree && typeof worktree === 'object' ? { worktree } : {}),
     ...(typeof executeAgentControl === 'function' ? { executeAgentControl } : {}),
+    ...(typeof executeSessionControl === 'function' ? { executeSessionControl } : {}),
   });
   bootProfile('session:create:runtime-ready', { ms: (performance.now() - startedAt).toFixed(1) });
   const runtimeCwd = runtime.cwd || process.cwd();
@@ -268,29 +314,46 @@ export async function createLocalSessionRuntime({
     pushItem,
     replaceItems,
   });
-  const { presentNextToolApproval, finishToolApproval, denyAllToolApprovals, requestToolApproval } = createToolApproval(
-    {
-      getState,
-      set,
-      nextId,
-      getDisposed: () => flags.disposed,
-      timeoutMs: TOOL_APPROVAL_TIMEOUT_MS,
-    }
-  );
-  lifecycle.runtimePulseTimer = setInterval(
-    createRuntimePulse({
-      flags,
-      liveShareMirroring: () => bag.liveShareMirroring?.() === true,
-      getState,
-      getPublishedState,
-      set,
-      emit: store.emit,
-      routeState,
-      agentStatusState,
-      syncContextStats,
-    }),
-    2000
-  );
+  // A sub-agent's approvals also show in the top-level chat (human-gate/gate.mjs).
+  const { approvalSurface } = await import('../runtime/agent/orchestrator/session/human-gate/gate.mjs');
+  const {
+    presentNextToolApproval,
+    finishToolApproval,
+    denyAllToolApprovals,
+    requestToolApproval,
+    adoptDelegatedApprovals,
+  } = createToolApproval({
+    getState,
+    set,
+    nextId,
+    getDisposed: () => flags.disposed,
+    timeoutMs: TOOL_APPROVAL_TIMEOUT_MS,
+    surfaceOf: approvalSurface,
+  });
+  const runtimePulse = createRuntimePulse({
+    flags,
+    getState,
+    getPublishedState,
+    set,
+    emit: store.emit,
+    routeState,
+    agentStatusState,
+    syncContextStats,
+  });
+  // A `git switch` from any terminal reaches the island within ~a frame; the
+  // pulse retargets the watch when the session's folder moves.
+  const headWatch = createGitHeadWatcher({
+    getCwd: () => runtime.getLiveWorkspace?.()?.cwd || runtime.cwd,
+    onChange: runtimePulse.publishWorkspace,
+  });
+  headWatch.retarget();
+  lifecycle.unsubscribeGitHeadWatch = headWatch.dispose;
+  lifecycle.runtimePulseTimer = setInterval(() => {
+    headWatch.retarget();
+    runtimePulse();
+    // A sub-agent's approval made before this session loaded (or bound its id).
+    adoptDelegatedApprovals();
+  }, 2000);
   lifecycle.runtimePulseTimer.unref?.();
 
   const {
@@ -322,9 +385,14 @@ export async function createLocalSessionRuntime({
     itemIndexById,
   });
   lifecycle.unsubscribeRuntimeNotifications = subscribeRuntimeNotifications();
+  if (typeof runtime.onWorktreeSetup === 'function') {
+    lifecycle.unsubscribeWorktreeSetup = runtime.onWorktreeSetup(
+      createWorktreeSetupNotices({ pushItem, patchItem, nextId })
+    );
+  }
   if (typeof runtime.onAgentStatusChange === 'function') {
     lifecycle.unsubscribeAgentStatus = runtime.onAgentStatusChange(() => {
-      if (flags.disposed || flags.pendingSessionReset || bag.liveShareMirroring?.()) return;
+      if (flags.disposed || flags.pendingSessionReset) return;
       set({ ...agentStatusState({ force: true }) });
       bag.scheduleGoalContinuation?.();
     });
@@ -405,8 +473,7 @@ export async function createLocalSessionRuntime({
   Object.assign(bag, createSessionFlow(bag));
   // Runtime-driven completion wakes (no attached surface acked the completion)
   // get the same idle auto-clear as a user submit.
-  lifecycle.unsubscribeCompletionWakeGate =
-    runtime.setCompletionWakeGate?.(() => bag.autoClearBeforeWake()) || null;
+  lifecycle.unsubscribeCompletionWakeGate = runtime.setCompletionWakeGate?.(() => bag.autoClearBeforeWake()) || null;
   Object.assign(
     bag,
     createGoalContinuation({
@@ -423,7 +490,7 @@ export async function createLocalSessionRuntime({
   bag.runTurn = createRunTurn(bag);
   bag.doctor = { runDoctorChecks, formatDoctorReport };
   const api = createSessionApi(bag);
-  attachCrossSurfaceShare({ runtime, api, bag, flags, getState, getPublishedState, listeners, set });
+  rearmGoalContinuationOnSessionBoundaries({ api, bag });
   void Promise.resolve(bag.restoreLeadSteeringFromDisk())
     .catch(() => {})
     .finally(() => {

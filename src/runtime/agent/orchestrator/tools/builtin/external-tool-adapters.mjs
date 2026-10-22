@@ -12,9 +12,16 @@
 // adapter expects — the caller (builtin.mjs default: case) falls back to
 // the existing EXTERNAL_TOOL_REDIRECTS guidance message in that case.
 import { readFileSync, mkdirSync, existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { atomicWrite, symlinkWriteTarget } from './atomic-write.mjs';
-import { fileVersion } from './file-version.mjs';
+import { fileVersion, sameFileVersion } from './file-version.mjs';
+import { withBuiltinPathLocks } from './path-locks.mjs';
+import { withAdvisoryLocks } from './advisory-lock.mjs';
+import { canonicalCachePath } from './read-range-index.mjs';
+import { readSourceWindows } from './read-source-windows.mjs';
+import { isReadLineClipped } from './read-formatting.mjs';
+import { readSourceWindow } from '../../../../shared/read-row-numbers.mjs';
+import { cursorNativeCall, releaseCursorNativeCall } from '../../providers/cursor-native-context.mjs';
 import { assertPathsReachable } from './fs-reachability.mjs';
 import {
   normalizeInputPath,
@@ -30,13 +37,14 @@ import {
   isBlockedDevicePath,
   isSpecialFileStat,
 } from './device-paths.mjs';
-import { recordReadSnapshot } from './read-snapshot-runtime.mjs';
+import { recordReadSnapshot, getReadSnapshot } from './read-snapshot-runtime.mjs';
 import { executeBashTool } from './bash-tool.mjs';
 import { nativeEditSessionSatisfiesContract, runServerEdit } from '../patch/native-server.mjs';
 import { decodeValidUtf8OrNull, detectPatchTargetCodec, nearestPatchLineMatch } from '../patch/matcher.mjs';
 import { hashText } from './hash-utils.mjs';
-import { invalidateBuiltinResultCache } from './cache-layers.mjs';
+import { invalidateBuiltinResultCache, rawContentCacheGet } from './cache-layers.mjs';
 import { markCodeGraphDirtyPaths } from '../code-graph-state.mjs';
+import { reviewFileContent } from '../../../../shared/bounded-file-read.mjs';
 
 const STR_REPLACE_NAMES = new Set(['edit', 'strreplace', 'str_replace', 'str_replace_editor', 'search_replace']);
 const WRITE_NAMES = new Set(['write', 'create_file', 'createfile']);
@@ -189,24 +197,25 @@ function recordEditSnapshot(fullPath, options, contentHash = null, preMutationSt
 // UI diff parity with apply_patch: register the before/after pair on the
 // shared per-call side channel so tool cards render edit results with the
 // same diff markup. Lazy import breaks the orchestrator→builtin→adapters
-// module cycle; failures never affect the edit result.
-async function recordEditUiDiff(options, workDir, fullPath, before, after, encoding) {
+// module cycle; failures never affect the edit result. `sides()` yields the
+// file's `{ before, after }` content (null = absent).
+async function recordToolUiDiff(options, workDir, fullPath, sides) {
   const callId = options?.toolCallId;
   const sessionId = options?.sessionId || options?.readStateScope;
   if (!callId || !sessionId) return;
   try {
     const { registerEditToolUiDiff } = await import('../patch/orchestrator.mjs');
-    registerEditToolUiDiff({
-      callId,
-      sessionId,
-      basePath: workDir,
-      fullPath,
-      before: before === null ? null : encodeEditContent(before, encoding),
-      after: after === null ? null : encodeEditContent(after, encoding),
-    });
+    registerEditToolUiDiff({ callId, sessionId, basePath: workDir, fullPath, ...sides() });
   } catch {
     /* best-effort display channel */
   }
+}
+
+async function recordEditUiDiff(options, workDir, fullPath, before, after, encoding) {
+  await recordToolUiDiff(options, workDir, fullPath, () => ({
+    before: before === null ? null : encodeEditContent(before, encoding),
+    after: after === null ? null : encodeEditContent(after, encoding),
+  }));
 }
 
 // The 0-based line the failure excerpt centres on, or -1: the engine's
@@ -513,13 +522,14 @@ function readEditTarget(fullPath) {
   let statBefore = {};
   let content;
   let fileEnc;
+  let rawBuf;
   try {
     try {
       statBefore = { ...fileVersion(statSync(fullPath)) };
     } catch {
       /* readFileSync below surfaces the real error */
     }
-    const rawBuf = readFileSync(fullPath);
+    rawBuf = readFileSync(fullPath);
     fileEnc = detectPatchTargetCodec(rawBuf);
     content = fileEnc.certain ? decodeEditBuffer(rawBuf, fileEnc) : null;
   } catch (err) {
@@ -534,7 +544,7 @@ function readEditTarget(fullPath) {
         ' Convert the encoding first.',
     };
   }
-  return { content, fileEnc, statBefore };
+  return { content, fileEnc, statBefore, rawBuf };
 }
 
 /**
@@ -698,7 +708,7 @@ async function applyEditNative(edit, oldStr, newStr, editPlan, replaceAll) {
     if (/old_string (?:not found|found \d+ times)/i.test(message)) {
       const latest = readEditTextForDisplay(fullPath, fileEnc) ?? content;
       const hinted = /found \d+ times/i.test(message)
-        ? message.replace(/(found \d+ times)/i, `$1${matchLineHint(latest, oldStr)}`)
+        ? message.replace(/(found \d+ times)/i, (__m, __1) => `${__1}${matchLineHint(latest, oldStr)}`)
         : message;
       return `Error: edit failed (${hinted})${formatEditFailureExcerpt(latest, oldStr, message)}`;
     }
@@ -757,7 +767,7 @@ function resolveStrReplaceArgs(args) {
   return out;
 }
 
-async function adaptStrReplace(args, workDir, options) {
+async function adaptStrReplace(args, workDir, options, resolvedTarget = null) {
   const resolved = resolveStrReplaceArgs(args);
   if (resolved.error) return resolved.error;
   let oldStr = resolved.old_string;
@@ -767,7 +777,16 @@ async function adaptStrReplace(args, workDir, options) {
   }
   if (oldStr === newStr) return SAME_STRINGS_ERROR;
   const replaceAll = args?.replace_all === true || String(args?.replace_all || '').toLowerCase() === 'true';
-  const target = await resolveTargetPath(args, workDir);
+  if (!resolvedTarget) {
+    return withEditTargetLock(
+      args,
+      workDir,
+      options,
+      (target) => adaptStrReplace(args, workDir, options, target),
+      oldStr.length === 0
+    );
+  }
+  const target = resolvedTarget || (await resolveTargetPath(args, workDir));
   if (!target) return null;
   if (target.error) return target.error;
   const fullPath = target.full;
@@ -820,14 +839,18 @@ async function adaptStrReplace(args, workDir, options) {
   return applyEditNative(edit, oldStr, newStr, editPlan, replaceAll);
 }
 
-async function adaptWrite(args, workDir, options) {
+async function adaptWrite(args, workDir, options, resolvedTarget = null) {
   const contents = args?.contents ?? args?.content ?? args?.file_text;
   if (typeof contents !== 'string') return null;
-  const target = await resolveTargetPath(args, workDir);
+  if (!resolvedTarget) {
+    return withEditTargetLock(args, workDir, options, (target) => adaptWrite(args, workDir, options, target));
+  }
+  const target = resolvedTarget || (await resolveTargetPath(args, workDir));
   if (!target) return null;
   if (target.error) return target.error;
   const fullPath = target.full;
   const existed = existsSync(fullPath);
+  const before = existed ? reviewFileContent(fullPath) : null;
   try {
     mkdirSync(dirname(fullPath), { recursive: true });
   } catch {
@@ -835,6 +858,7 @@ async function adaptWrite(args, workDir, options) {
   }
   await atomicWrite(fullPath, contents, { sessionId: editScope(options) });
   invalidateAfterWrite(fullPath);
+  await recordToolUiDiff(options, workDir, fullPath, () => ({ before, after: contents }));
   return `${existed ? 'Updated' : 'Created'} ${fullPath} (${Buffer.byteLength(contents, 'utf8')} bytes)`;
 }
 
@@ -843,6 +867,180 @@ async function adaptBash(key, args, workDir, options) {
   const shellArgs = { ...args };
   if (BASH_SHELL_KIND_NAMES.has(key) && shellArgs.shell === undefined) shellArgs.shell = 'bash';
   return executeBashTool(shellArgs, workDir, options);
+}
+
+async function withEditTargetLock(args, workDir, options, run, allowCreate = true) {
+  if (options?.signal?.aborted) throw options.signal.reason || new Error('Edit cancelled');
+  const target = await resolveTargetPath(args, workDir);
+  if (!target || target.error) return target?.error ?? null;
+  if (!allowCreate && !existsSync(target.full)) {
+    return `Error: cannot read ${target.full} (target is missing or inaccessible)`;
+  }
+  const resolveReal = () => {
+    const nearest = realpathNearestExisting(target.full);
+    return nearest ? resolve(nearest.real, relative(nearest.probe, target.full)) : null;
+  };
+  const real = resolveReal();
+  if (!real) return 'Error: cannot resolve edit target for locking';
+  return withBuiltinPathLocks([target.full, real], () =>
+    withAdvisoryLocks([real], async () => {
+      if (options?.signal?.aborted) throw options.signal.reason || new Error('Edit cancelled');
+      if (resolveReal() !== real) return 'Error: edit target changed while acquiring its lock';
+      return run(target);
+    })
+  );
+}
+
+const NATIVE_SNAPSHOT_MAX_BYTES = 1024 * 1024;
+
+// Structured truncation report for a returned read window, taken from the raw
+// source lines of that window with the read display's own clip predicate. A
+// window that cannot be verified is reported clipped (fail closed).
+async function nativeReadWindowReport(fullPath, source) {
+  if (source.startLine == null || source.endLine < source.startLine) return { lineClipped: false };
+  try {
+    const rows = await readSourceWindows(fullPath, [{ start: source.startLine, end: source.endLine }]);
+    return { lineClipped: [...rows.values()].some((row) => isReadLineClipped(row)) };
+  } catch {
+    return { lineClipped: true };
+  }
+}
+
+/** Clip report of an ordinary read result, for a Cursor read the daemon runs
+ * for a remote/proxied provider: `{ lineClipped: true }`, or null when the
+ * result is no source window or none of its lines were clipped. */
+export async function remoteReadWindowReport(args, workDir, result) {
+  const source = readSourceWindow(typeof result === 'string' ? result : '');
+  if (!source) return null;
+  const target = await resolveTargetPath(args, workDir);
+  const report = !target || target.error ? { lineClipped: true } : await nativeReadWindowReport(target.full, source);
+  return report.lineClipped ? report : null;
+}
+
+async function captureNativeRead(context, args, workDir, options, result) {
+  const pending = context.pending;
+  delete pending.nativeSnapshot;
+  delete pending.nativeReadReply;
+  delete pending.nativeReadWindow;
+  const target = await resolveTargetPath(args, workDir);
+  if (!target || target.error) return;
+  let stat;
+  try {
+    stat = statSync(target.full);
+  } catch (error) {
+    if (error.code === 'ENOENT') pending.nativeReadReply = { fileNotFound: { path: pending.native.args.path } };
+    return;
+  }
+  const source = readSourceWindow(typeof result === 'string' ? result : '');
+  if (source) pending.nativeReadWindow = await nativeReadWindowReport(target.full, source);
+  if (
+    !source ||
+    source.truncated ||
+    source.startLine !== 1 ||
+    args.offset ||
+    args.limit ||
+    stat.size > NATIVE_SNAPSHOT_MAX_BYTES ||
+    !stat.isFile()
+  )
+    return;
+  const observed = getReadSnapshot(target.full, options?.readStateScope ?? options?.sessionId ?? null);
+  if (!observed?.bodyDelivered || !sameFileVersion(observed, stat)) return;
+  const cached = rawContentCacheGet(target.full, stat);
+  if (!cached) return;
+  const bytes = Buffer.from(cached);
+  const text = bytes.toString('utf8');
+  if (text.includes('\0') || !Buffer.from(text, 'utf8').equals(bytes)) return;
+  const displayed = text
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n$/, '');
+  if (displayed !== source.content) return;
+  const realPath = canonicalCachePath(realpathSync(target.full));
+  if (!sameFileVersion(stat, statSync(target.full))) return;
+  pending.nativeSnapshot = {
+    bytes,
+    text,
+    version: fileVersion(stat),
+    realPath,
+    path: canonicalCachePath(target.full),
+    delivered: false,
+  };
+  pending.nativeReadReply = {
+    success: {
+      path: pending.native.args.path,
+      content: text,
+      totalLines: source.totalLines,
+      fileSize: bytes.length,
+      truncated: false,
+      rangeApplied: false,
+    },
+  };
+}
+
+async function replaceNativeSnapshot(context, args, workDir, options) {
+  return withEditTargetLock(args, workDir, options, async (target) => {
+    const parent = context.pending.native.args.toolCallId;
+    if (typeof parent !== 'string' || parent.length === 0) {
+      return adaptStrReplace(args, workDir, options, target);
+    }
+    const path = canonicalCachePath(target.full);
+    const reads = [...context.executions.values()].filter(
+      (entry) =>
+        entry.native?.resultType === 'readResult' &&
+        entry.native.args.toolCallId === parent &&
+        entry.nativeSnapshot?.path === path
+    );
+    // Creating a missing/empty file retains the normal create-only contract.
+    if (reads.length === 0) return adaptStrReplace(args, workDir, options, target);
+    if (reads.length !== 1 || !reads[0].nativeSnapshot.delivered) {
+      return 'Error: native edit has no unambiguous, delivered full-file snapshot; use MCP edit with explicit old_string';
+    }
+    const snapshot = reads[0].nativeSnapshot;
+    const read = readEditTarget(target.full);
+    if (read.error) return read.error;
+    if (
+      canonicalCachePath(realpathSync(target.full)) !== snapshot.realPath ||
+      !sameFileVersion(snapshot.version, read.statBefore) ||
+      !read.rawBuf.equals(snapshot.bytes)
+    ) {
+      return 'Error: native edit target changed since its read; no replacement was written';
+    }
+    let after = args.new_string;
+    if (typeof after !== 'string') return 'Error: native replacement requires text';
+    if (read.fileEnc.bomLen && after.startsWith('\uFEFF')) after = after.slice(1);
+    const lineEndings = new Set(read.content.match(/\r\n|\r|\n/g) || []);
+    if (lineEndings.size > 1) {
+      return 'Error: native full-file replacement cannot preserve mixed line endings; use MCP edit with explicit old_string';
+    }
+    if (lineEndings.size === 1) after = convertTextEol(after, lineEndings.values().next().value);
+    const edit = { fullPath: target.full, workDir, options, ...read };
+    const bytes = encodeEditContent(after, read.fileEnc);
+    const stale = await commitEdit(edit, {
+      bytes,
+      after,
+      staleMessage: STALE_DURING_EDIT,
+    });
+    if (!stale) context.pending.nativeWrittenBytes = bytes.length;
+    return stale ?? `Updated ${editDisplayPath(edit)} (conditional native replacement)`;
+  });
+}
+
+// Called only after normal runtime permission checks. The capability is tied to
+// the streamed execution, not to a flag supplied in model arguments.
+export async function executeCursorNativeBuiltin(name, args, workDir, options, execute) {
+  const context = cursorNativeCall(options.sessionId, options.toolCallId, name, args);
+  if (!context) return execute(name, args, workDir, options);
+  if (name === 'read') {
+    const result = await execute(name, args, workDir, { ...options, suppressReadUnchangedStub: true });
+    await captureNativeRead(context, args, workDir, options, result);
+    return result;
+  }
+  releaseCursorNativeCall(context.pending);
+  try {
+    return await replaceNativeSnapshot(context, args, workDir, options);
+  } catch (error) {
+    return `Error: native edit failed (${error?.message || error})`;
+  }
 }
 
 export async function tryExecuteExternalToolAdapter(name, args, workDir, options) {

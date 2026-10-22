@@ -1,6 +1,7 @@
 /**
  * Transcript spill storage, history paging, and session item-state mutations.
  */
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -19,8 +20,11 @@ export const tuiDebug = (msg) => {
   } catch {}
 };
 
+// Item ids outlive the process (queued-input mirror, turn change records), so
+// a restarted process never issues an id again.
+const ID_PREFIX = `it_${randomBytes(4).toString('hex')}_`;
 let _idSeq = 0;
-export const nextId = () => `it_${++_idSeq}`;
+export const nextId = () => `${ID_PREFIX}${++_idSeq}`;
 
 export const TRANSCRIPT_LIVE_ITEM_CAP = 512;
 export const TRANSCRIPT_SPILL_CHUNK_ITEMS = 128;
@@ -29,6 +33,13 @@ const TRANSCRIPT_RESTORE_OVERLAP_ITEMS = 64;
 export { cleanupStaleTranscriptSpillDirs };
 
 let staleSpillSweepDone = false;
+
+/** One sweep per process: it lists the whole temp directory synchronously. */
+export function sweepStaleTranscriptSpillDirsOnce() {
+  if (staleSpillSweepDone) return;
+  staleSpillSweepDone = true;
+  cleanupStaleTranscriptSpillDirs();
+}
 
 // Serialized pages deliberately release the old item object graph while
 // keeping every byte restorable. Only `items` is render-live and walkable.
@@ -47,12 +58,9 @@ export function createTranscriptSpillBuffer({
   try {
     writeOwnerRegistry();
   } catch {}
-  // One sweep per process: it lists the whole temp directory synchronously,
-  // and a buffer is created per session.
-  if (!staleSpillSweepDone) {
-    staleSpillSweepDone = true;
-    cleanupStaleTranscriptSpillDirs();
-  }
+  // A buffer is created per session; the sweep runs once per process (the
+  // daemon runs it in its post-ready warm-up).
+  sweepStaleTranscriptSpillDirsOnce();
   const pages = [];
   let cursor = null;
   let spillDir = null;
@@ -228,13 +236,16 @@ export function reindexItems(itemIndexById, items) {
 export function replaceSessionItemsState({ state, items, itemIndexById, preserveStreamingTail = false, extra = {} }) {
   const nextItems = Array.isArray(items) ? items : [];
   reindexItems(itemIndexById, nextItems);
-  return {
+  const next = {
     ...state,
     ...extra,
     items: nextItems,
     structureRevision: (Number(state.structureRevision) || 0) + 1,
     streamingTail: preserveStreamingTail ? state.streamingTail : null,
   };
+  // The desktop's partial line belongs to the live row it continues.
+  if (!preserveStreamingTail && next.streamingPartial) next.streamingPartial = null;
+  return next;
 }
 
 // Shared by the live session runtime and focused transcript tests so revision/tail

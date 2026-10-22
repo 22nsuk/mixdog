@@ -10,18 +10,23 @@
  * anthropic-turn-result.mjs); nothing here touches the socket.
  */
 import { prepareAnthropicImages } from './lib/anthropic-image-input.mjs';
+import { anthropicPrefixFingerprint, recordAnthropicPrefix } from './lib/anthropic-prefix-trace.mjs';
 import { buildAnthropicBetaHeaders, supportsAnthropicFastMode } from './anthropic-betas.mjs';
 import { applyAnthropicServerFallback } from './anthropic-server-fallback.mjs';
 import { fastModeAvailable } from './anthropic-fast-mode.mjs';
 import { applyAnthropicEffortToBody, shouldIncludeEffortBeta } from './anthropic-effort.mjs';
 import { isCustomProviderName, resolveCustomReasoning } from './custom-reasoning.mjs';
 import {
+  anthropicThinkingActive,
+  appendAnthropicTailReminder,
   applyAnthropicCacheMarkers,
   clampAnthropicThinkingBudget as clampThinkingBudgetTokens,
   resolveAnthropicCacheTtls as resolveCacheTtls,
   resolveAnthropicMessageCacheSlots,
+  sharedCachePrefixBoundary,
   toAnthropicToolChoice,
 } from './lib/anthropic-request-utils.mjs';
+import { splitTailReminder } from './lib/tail-reminder-split.mjs';
 import {
   buildSystemBlocks,
   resolveMaxTokens,
@@ -48,23 +53,31 @@ import {
 export async function buildAnthropicApiRequest({
   name,
   config,
-  messages,
+  messages: requestMessages,
   useModel,
   tools,
   opts,
   fastModeLatched,
   modelInfo = null,
+  // The Claude id a gateway slug stands for (OpenRouter `anthropic/claude-opus-4.8`
+  // → `claude-opus-4.8`): the output cap and the thinking/effort shape are read
+  // from it, while the wire still names `useModel`.
+  capabilityModel = useModel,
+  // A gateway-supplied output limit for the model; wins over the Anthropic catalog.
+  modelMaxOutputTokens = opts?.modelMaxOutputTokens ?? null,
 }) {
   // A user-defined provider's reasoning comes from its own model row only:
   // the global by-model-id capability index and the Claude-id ladders are
   // first-party knowledge and must not leak onto (or from) a custom endpoint.
   const isCustom = isCustomProviderName(name);
-  const maxTokens = resolveMaxTokens(useModel);
-  const effortProjection = projectEffortConfiguration(messages, name, useModel, {
-    ...config,
-    ...opts,
-    disableBetaHeaders: config?.disableBetaHeaders,
+  const { messages, reminder } = splitTailReminder(requestMessages);
+  const maxTokens = resolveMaxTokens(capabilityModel, {
+    modelMaxOutputTokens,
+    override: opts?.maxOutputTokensOverride,
   });
+  const effortOptions = { ...config, ...opts, disableBetaHeaders: config?.disableBetaHeaders };
+  const gatewayEffort = typeof config?.messagesEffort === 'function' ? config.messagesEffort(opts) : null;
+  const effortProjection = projectEffortConfiguration(messages, name, useModel, effortOptions);
   const ttls = resolveCacheTtls(opts);
 
   const systemMsgs = messages.filter((m) => m.role === 'system');
@@ -73,27 +86,38 @@ export async function buildAnthropicApiRequest({
   // (cacheTier:'tier3') at ttls.tier3 — each its own system content block.
   const systemBlocks = buildSystemBlocks(systemMsgs, ttls.system, ttls.tier3);
 
-  // Message-tail cache budget (4-BP layout + ANTHROPIC_MSG_SLOTS) is
-  // shared with anthropic-oauth — see resolveAnthropicMessageCacheSlots.
-  const messageCacheSlots = resolveAnthropicMessageCacheSlots(systemBlocks, ttls);
   // Tools are resolved BEFORE the messages: the lowering needs the final
   // tool list to drop tool_reference blocks whose tool no longer ships
   // in this request (otherwise the API rejects the whole turn).
-  const requestTools = requestAnthropicTools(tools, chatMsgs, opts);
+  const requestTools = requestAnthropicTools(tools, chatMsgs, opts, name);
+  // Message-tail cache budget (4-BP layout + ANTHROPIC_MSG_SLOTS) is
+  // shared with anthropic-oauth — see resolveAnthropicMessageCacheSlots.
+  const messageCacheSlots = resolveAnthropicMessageCacheSlots(systemBlocks, ttls, { tools: requestTools });
   // Build → sanitize (once, inside toAnthropicMessages) → mark. Markers
   // are applied to the FINAL sanitized array by invariant, so block
   // drops / inserts / reorders performed by the sanitizer can never move
   // or delete a marked block. NEVER sanitize again after this.
+  const lowerHistory = (history, projection) =>
+    lowerAnthropicEffortHistory(
+      history.filter((m) => m.role !== 'system'),
+      (segment) => toAnthropicMessages(segment, requestTools, name),
+      projection
+    );
   const anthropicMessages = applyAnthropicCacheMarkers(
-    lowerAnthropicEffortHistory(chatMsgs, (segment) => toAnthropicMessages(segment, requestTools), effortProjection),
-    messageCacheSlots
+    lowerHistory(chatMsgs, effortProjection),
+    messageCacheSlots,
+    sharedCachePrefixBoundary(messages, opts, (prefix) =>
+      lowerHistory(prefix, projectEffortConfiguration(prefix, name, useModel, effortOptions))
+    )
   );
 
   const params = {
     model: useModel,
     max_tokens: maxTokens,
     system: systemBlocks.length ? systemBlocks : undefined,
-    messages: await prepareAnthropicImages(anthropicMessages, { signal: opts.signal }),
+    messages: await prepareAnthropicImages(appendAnthropicTailReminder(anthropicMessages, reminder), {
+      signal: opts.signal,
+    }),
   };
   // Server-side fallback and fast mode are decided from Claude model ids:
   // first-party knowledge, never applied to a custom endpoint.
@@ -108,10 +132,9 @@ export async function buildAnthropicApiRequest({
   // tool_choice only when tools are actually present (Anthropic rejects
   // tool_choice without tools). 'none' rides the hard-cap final turn to
   // forbid tool USE while keeping the tools prefix stable for cache reuse.
-  if (params.tools) {
-    const toolChoice = toAnthropicToolChoice(opts.toolChoice);
-    if (toolChoice) params.tool_choice = toolChoice;
-  }
+  // The key is reserved here (wire key order) and resolved once thinking is
+  // known: forced any/tool is invalid while thinking is enabled.
+  if (params.tools) params.tool_choice = undefined;
   const hasDeferredTools = Array.isArray(params.tools) && params.tools.some((tool) => tool?.defer_loading === true);
   // Known tool names for the shared parseSSEStream leaked-tool-call guard
   // (same guard fixes both Anthropic providers). Recovered leaked calls
@@ -121,24 +144,18 @@ export async function buildAnthropicApiRequest({
       .map((t) => (t && typeof t.name === 'string' ? t.name : null))
       .filter(Boolean)
   );
-  if (isCustom) {
-    const { fields } = resolveCustomReasoning({
-      protocol: 'anthropic',
-      model: modelInfo,
-      effort: opts.effort ?? config?.reasoningEffort,
-    });
-    if (fields.thinking) params.thinking = fields.thinking;
-    if (fields.output_config) params.output_config = { ...(params.output_config || {}), ...fields.output_config };
-  } else {
-    applyAnthropicEffortToBody(params, {
-      model: useModel,
-      opts: effortProjection ? { ...opts, effort: effortProjection.initialEffort } : opts,
-      maxTokens,
-      clampThinkingBudgetTokens,
-      logTag: name,
-      progressUpdates: config?.disableBetaHeaders !== true,
-    });
-  }
+  applyRequestReasoning(params, {
+    isCustom,
+    name,
+    config,
+    opts,
+    modelInfo,
+    capabilityModel,
+    maxTokens,
+    gatewayEffort,
+    effortProjection,
+  });
+  if (params.tools) resolveRequestToolChoice(params, opts, config);
   // Fast mode → speed: "fast" on models Anthropic marks as speed-capable.
   // Suppressed while the fast capacity pool is cooling down.
   let fastLatched = fastModeLatched;
@@ -153,7 +170,73 @@ export async function buildAnthropicApiRequest({
   // exact COLD-turn bug this change fixes. Order: build → sanitize
   // (once) → mark → prepare image bytes → send.
   params.stream = true;
+  // Diagnostic: per-block prefix hashes of exactly what is sent.
+  recordAnthropicPrefix(opts.sessionId || opts.session?.id || null, anthropicPrefixFingerprint(params));
 
+  const requestHeaders = requestHeadersFor(params, {
+    config,
+    opts,
+    isCustom,
+    fastLatched,
+    hasDeferredTools,
+    capabilityModel,
+    effortProjection,
+  });
+
+  return { params, requestHeaders, knownToolNames, fastModeLatched: fastLatched };
+}
+
+/** The turn's thinking/effort fields on `params` (in place): a custom
+ *  provider's from its own model row, else the turn effort (or a gateway's
+ *  own `messagesEffort`; 'none' sends no thinking at all). */
+function applyRequestReasoning(
+  params,
+  { isCustom, name, config, opts, modelInfo, capabilityModel, maxTokens, gatewayEffort, effortProjection }
+) {
+  if (isCustom) {
+    const { fields } = resolveCustomReasoning({
+      protocol: 'anthropic',
+      model: modelInfo,
+      effort: opts.effort ?? config?.reasoningEffort,
+    });
+    if (fields.thinking) params.thinking = fields.thinking;
+    if (fields.output_config) params.output_config = { ...(params.output_config || {}), ...fields.output_config };
+  } else if (gatewayEffort !== 'none') {
+    // A gateway's own reasoning control (`messagesEffort`) replaces the turn
+    // effort; 'none' sends no thinking at all.
+    const turnOpts = effortProjection ? { ...opts, effort: effortProjection.initialEffort } : opts;
+    applyAnthropicEffortToBody(params, {
+      model: capabilityModel,
+      opts: gatewayEffort ? { ...turnOpts, effort: gatewayEffort } : turnOpts,
+      maxTokens,
+      clampThinkingBudgetTokens,
+      logTag: name,
+      progressUpdates: config?.disableBetaHeaders !== true,
+    });
+  }
+}
+
+/** The reserved `tool_choice` of a request with tools, resolved once
+ *  thinking is known (forced any/tool is invalid while thinking is on);
+ *  dropped when none applies. */
+function resolveRequestToolChoice(params, opts, config) {
+  const toolChoice = toAnthropicToolChoice(opts.toolChoice, {
+    thinking: anthropicThinkingActive(params),
+    disableParallelToolUse: opts.disableParallelToolUse === true,
+    // A gateway that cannot honour disable_parallel_tool_use declares so.
+    supportsDisableParallelToolUse: config?.supportsDisableParallelToolUse !== false,
+    onThinkingConflict: opts.toolChoiceThinkingConflict,
+  });
+  if (toolChoice) params.tool_choice = toolChoice;
+  else delete params.tool_choice;
+}
+
+/** The per-request headers of the final body `params`: the anthropic-beta
+ *  set it needs, then the caller's `opts.requestHeaders`; null when none. */
+function requestHeadersFor(
+  params,
+  { config, opts, isCustom, fastLatched, hasDeferredTools, capabilityModel, effortProjection }
+) {
   // Per-call headers override the client defaultHeaders, so the
   // constructor-level disableBetaHeaders opt-out must be honoured here
   // too — otherwise opencode-go's anthropic-compatible routing
@@ -169,7 +252,7 @@ export async function buildAnthropicApiRequest({
         fastMode: fastLatched,
         toolSearch: hasDeferredTools,
         // Custom: the beta follows the resolver's output, not the model id.
-        effort: isCustom ? Boolean(params.output_config?.effort) : shouldIncludeEffortBeta(useModel, opts),
+        effort: isCustom ? Boolean(params.output_config?.effort) : shouldIncludeEffortBeta(capabilityModel, opts),
         serverFallback: params.fallbacks === 'default',
         thinkingDisplayUpdates: params.thinking?.display === 'updates',
       }),
@@ -177,8 +260,5 @@ export async function buildAnthropicApiRequest({
     ].filter(Boolean);
     if (betas.length) betaHeaders = { 'anthropic-beta': betas.join(',') };
   }
-  const requestHeaders =
-    betaHeaders || opts.requestHeaders ? { ...(betaHeaders || {}), ...(opts.requestHeaders || {}) } : null;
-
-  return { params, requestHeaders, knownToolNames, fastModeLatched: fastLatched };
+  return betaHeaders || opts.requestHeaders ? { ...(betaHeaders || {}), ...(opts.requestHeaders || {}) } : null;
 }

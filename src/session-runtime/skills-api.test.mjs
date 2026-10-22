@@ -7,6 +7,51 @@ import test from 'node:test';
 import * as contextMod from '../runtime/agent/orchestrator/context/collect.mjs';
 import { parseSkillDocument } from '../runtime/shared/skill-document.mjs';
 import { createSkillsApi } from './skills-api.mjs';
+import { createSetupToolExecutor } from './setup-tool/executor.mjs';
+
+test('a write through the skills API is visible to the very next read, with no waiting', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-skill-fresh-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = join(root, 'data');
+  const turn = () => new Promise((resolve) => setTimeout(resolve, 30));
+  try {
+    mkdirSync(join(process.env.MIXDOG_DATA_DIR, 'skills'), { recursive: true });
+    const api = createSkillsApi({ contextMod, getCwd: () => root });
+    const describe = (name) => api.skillsStatus().skills.find((skill) => skill.name === name)?.description;
+    // Let the watched roots settle, so reads reuse their last walk.
+    const settle = async () => {
+      api.skillsStatus();
+      await turn();
+      api.skillsStatus();
+      await turn();
+    };
+    await settle();
+    api.addGlobalSkill({ name: 'fresh-skill', description: 'Use when first added.' });
+    assert.equal(describe('fresh-skill'), 'Use when first added.');
+
+    await settle();
+    api.saveSkillDocument({
+      originalName: 'fresh-skill',
+      name: 'fresh-skill',
+      description: 'Use when saved again.',
+      instructions: '# Saved',
+    });
+    assert.equal(describe('fresh-skill'), 'Use when saved again.');
+
+    // An external write followed by the explicit invalidation that reloadSkills
+    // and settings mutations run.
+    await settle();
+    const filePath = join(process.env.MIXDOG_DATA_DIR, 'skills', 'fresh-skill', 'SKILL.md');
+    writeFileSync(filePath, readFileSync(filePath, 'utf8').replace('Use when saved again.', 'Use when reloaded.'));
+    api.invalidateSkills();
+    assert.equal(describe('fresh-skill'), 'Use when reloaded.');
+  } finally {
+    contextMod.invalidateSkillsCache(root);
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('edits existing skills without dropping optional metadata or sibling resources', () => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-skill-edit-'));
@@ -108,6 +153,69 @@ test('skillsStatus attributes each skill to the owner that installs and toggles 
     else process.env.MIXDOG_DATA_DIR = previousDataDir;
     if (previousRoot === undefined) delete process.env.MIXDOG_ROOT;
     else process.env.MIXDOG_ROOT = previousRoot;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('setup definitions round-trip a skill trigger through SKILL.md when_to_use', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-skill-setup-trigger-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = join(root, 'data');
+  const cwd = join(root, 'project');
+  try {
+    mkdirSync(cwd, { recursive: true });
+    const skills = createSkillsApi({ contextMod, getCwd: () => cwd });
+    const api = {
+      skillContent: async (name) => skills.skillContent(name),
+      skillsStatus: async () => skills.skillsStatus(),
+      addSkill: async (input) => ({ skill: skills.addGlobalSkill(input) }),
+      saveSkill: async (input) => ({ skill: skills.saveSkillDocument(input) }),
+    };
+    const caller = { id: 'sess_trigger_fixture', owner: 'user' };
+    const setup = createSetupToolExecutor({
+      getApi: () => api,
+      getCallerSession: (id) => (id === caller.id ? caller : null),
+    });
+    const run = async (args) => JSON.parse(await setup.execute(args, { callerSessionId: caller.id }));
+    const save = (definition) =>
+      run({
+        action: 'save_definition',
+        definitionKind: 'skill',
+        definition: { originalName: 'trigger-skill', ...definition },
+      });
+    const stored = () =>
+      parseSkillDocument(
+        readFileSync(join(process.env.MIXDOG_DATA_DIR, 'skills', 'trigger-skill', 'SKILL.md'), 'utf8')
+      );
+    const read = () => run({ action: 'read_definition', definitionKind: 'skill', name: 'trigger-skill' });
+
+    await run({
+      action: 'create_definition',
+      definitionKind: 'skill',
+      definition: { name: 'trigger-skill', description: 'Probe skill.', whenToUse: 'First trigger', body: '# Probe' },
+    });
+    assert.equal(stored().whenToUse, 'First trigger');
+    assert.equal((await read()).whenToUse, 'First trigger');
+
+    await save({ description: 'Changed skill.' });
+    assert.equal(stored().description, 'Changed skill.');
+    assert.equal(stored().whenToUse, 'First trigger');
+
+    await save({ whenToUse: 'Second trigger' });
+    assert.equal((await read()).whenToUse, 'Second trigger');
+
+    await save({ whenToUse: '' });
+    assert.equal(stored().whenToUse, '');
+    assert.doesNotMatch(
+      readFileSync(join(process.env.MIXDOG_DATA_DIR, 'skills', 'trigger-skill', 'SKILL.md'), 'utf8'),
+      /when_to_use/
+    );
+    assert.equal((await read()).whenToUse, '');
+    assert.equal(stored().body, '# Probe\n');
+  } finally {
+    contextMod.invalidateSkillsCache(cwd);
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -234,6 +342,58 @@ test('read-only packaged skills permit local dependency edits but not source edi
     else process.env.MIXDOG_DATA_DIR = previousDataDir;
     if (previousRoot === undefined) delete process.env.MIXDOG_ROOT;
     else process.env.MIXDOG_ROOT = previousRoot;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('removeGlobalSkill deletes only the user skill folder and refuses built-in skills', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-skill-remove-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = join(root, 'data');
+  try {
+    mkdirSync(join(process.env.MIXDOG_DATA_DIR, 'skills'), { recursive: true });
+    const api = createSkillsApi({ contextMod, getCwd: () => root });
+    api.addGlobalSkill({ name: 'doomed-skill', description: 'Use when removing.' });
+    const dir = join(process.env.MIXDOG_DATA_DIR, 'skills', 'doomed-skill');
+    assert.equal(existsSync(dir), true);
+    assert.deepEqual(api.removeGlobalSkill({ name: 'doomed-skill' }), { name: 'doomed-skill' });
+    assert.equal(existsSync(dir), false);
+    assert.equal(
+      api.skillsStatus().skills.some((skill) => skill.name === 'doomed-skill'),
+      false
+    );
+    assert.throws(() => api.removeGlobalSkill({ name: 'doomed-skill' }), /skill not found/);
+    const builtin = api.skillsStatus().skills.find((skill) => skill.source === 'builtin');
+    if (builtin) assert.throws(() => api.removeGlobalSkill({ name: builtin.name }), /only your own skills/);
+  } finally {
+    contextMod.invalidateSkillsCache(root);
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a SKILL.md left NUL-filled by a crash does not block creating the skill again; saves keep a .bak', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-skill-damaged-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = join(root, 'data');
+  try {
+    const cwd = join(root, 'project');
+    const api = createSkillsApi({ contextMod, getCwd: () => cwd });
+    const dir = join(process.env.MIXDOG_DATA_DIR, 'skills', 'torn-skill');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'SKILL.md'), '\0'.repeat(80));
+    const input = { name: 'torn-skill', description: 'Use when testing.', instructions: '# Instructions\n\nFirst.' };
+    const created = api.addGlobalSkill(input);
+    assert.equal(parseSkillDocument(readFileSync(created.filePath, 'utf8')).body, '# Instructions\n\nFirst.\n');
+    assert.throws(() => api.addGlobalSkill(input), /skill already exists/, 'a skill with data still blocks');
+    api.saveSkillDocument({ originalName: 'torn-skill', ...input, instructions: '# Instructions\n\nSecond.' });
+    assert.match(readFileSync(join(dir, 'SKILL.md.bak'), 'utf8'), /First\./);
+    assert.match(readFileSync(join(dir, 'SKILL.md'), 'utf8'), /Second\./);
+  } finally {
+    contextMod.invalidateSkillsCache(join(root, 'project'));
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
     rmSync(root, { recursive: true, force: true });
   }
 });

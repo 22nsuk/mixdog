@@ -5,6 +5,8 @@ import { startTransition, useCallback, useEffect, useRef, useState, type Dispatc
 
 import type { DesktopSessionSummary } from '../shared/contract';
 import { mergeSessionCatalogPushRows, mergeSessionCatalogRows } from '../shared/session-catalog';
+import { publishAgentRooms } from './agent-room-store';
+import { publishAgentModeSessions } from './agent-chat-mode';
 import {
   purgeRemovedSessionPreviews,
   readCachedSessionCatalog,
@@ -30,19 +32,28 @@ interface SessionCatalog {
   pendingDeletes: React.MutableRefObject<Set<string>>;
   /** Drop in-flight list responses so a local optimistic change is not undone. */
   invalidateInFlight: () => void;
+  /** Sessions a non-empty host catalog (listing or push) no longer contains
+   *  although the previous catalog did: deleted elsewhere. */
+  subscribeRemoved: (listener: (sessionIds: string[]) => void) => () => void;
 }
 
 export function useSessionCatalog(reconcileUnreadSessions: (rows: DesktopSessionSummary[]) => void): SessionCatalog {
   // Paint the durable presentation cache on the first render. It never makes
   // a session addressable: pane/session reads still validate the exact record,
   // and the incremental host catalog replaces stale rows in the background.
-  const [sessions, setSessionsState] = useState<DesktopSessionSummary[]>(readCachedSessionCatalog);
+  const [sessions, setSessionsState] = useState<DesktopSessionSummary[]>(() => {
+    const cached = readCachedSessionCatalog();
+    publishAgentRooms(cached);
+    publishAgentModeSessions(cached);
+    return cached;
+  });
   const sessionsRef = useRef<DesktopSessionSummary[]>(sessions);
   const pendingRenames = useRef(new Map<string, { title: string }>());
   const pendingArchives = useRef(new Map<string, { archived: boolean }>());
   const pendingDeletes = useRef(new Set<string>());
   const pendingCreates = useRef(new Map<string, DesktopSessionSummary>());
   const refreshVersion = useRef(0);
+  const removalListeners = useRef(new Set<(sessionIds: string[]) => void>());
 
   const invalidateInFlight = useCallback(() => {
     refreshVersion.current += 1;
@@ -107,6 +118,8 @@ export function useSessionCatalog(reconcileUnreadSessions: (rows: DesktopSession
       const merged = lowPriority ? mergeSessionCatalogPushRows(current, rows) : mergeSessionCatalogRows(current, rows);
       if (merged === current) return current;
       sessionsRef.current = merged;
+      publishAgentRooms(merged);
+      publishAgentModeSessions(merged);
       // A renderer-staged create is presentation state, not durable startup
       // truth. It enters the cache only after a host catalog confirms the id.
       scheduleCachedSessionCatalogWrite(merged.filter((session) => !pendingCreates.current.has(session.id)));
@@ -114,10 +127,27 @@ export function useSessionCatalog(reconcileUnreadSessions: (rows: DesktopSession
       if (lowPriority) startTransition(publish);
       else publish();
       reconcileUnreadSessions(merged);
+      // Only a host catalog reaches here (never the cache seed or an
+      // optimistic local edit), and an empty one is not evidence that every
+      // session was deleted: it never reports removals.
+      if (rows.length > 0 && removalListeners.current.size > 0) {
+        const present = new Set(rows.map((session) => session.id));
+        const removed = current
+          .filter((session) => !present.has(session.id) && !pendingDeletes.current.has(session.id))
+          .map((session) => session.id);
+        if (removed.length > 0) for (const listener of [...removalListeners.current]) listener(removed);
+      }
       return merged;
     },
     [reconcileUnreadSessions]
   );
+
+  const subscribeRemoved = useCallback((listener: (sessionIds: string[]) => void) => {
+    removalListeners.current.add(listener);
+    return () => {
+      removalListeners.current.delete(listener);
+    };
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     const host = window.mixdogDesktop;
@@ -180,5 +210,6 @@ export function useSessionCatalog(reconcileUnreadSessions: (rows: DesktopSession
     pendingArchives,
     pendingDeletes,
     invalidateInFlight,
+    subscribeRemoved,
   };
 }

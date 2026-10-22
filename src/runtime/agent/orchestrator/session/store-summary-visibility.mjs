@@ -50,6 +50,39 @@ export function isAgentOnlySession(value) {
   return sessionVisibility(value) === SESSION_VISIBILITY_AGENT_ONLY;
 }
 
-export function isOrdinarySession(value) {
-  return !isAgentOnlySession(value);
+/** Every session a record links itself to as its owner or parent (both links,
+ *  never itself): the links the descendant walk and the sub-agent retention
+ *  trees follow. */
+export function agentParentIds(value) {
+  const id = clean(value?.id);
+  return [...new Set([clean(value?.ownerSessionId), clean(value?.parentSessionId)])].filter(
+    (parent) => parent && parent !== id
+  );
+}
+
+/** The agent-only sessions under `rootId` at any depth, from session rows. A
+ *  catalog row links a sub-agent to its root Lead (`ownerSessionId`) or, on a
+ *  legacy row, to its parent, so the walk follows every link a row names. */
+export function agentDescendantIds(rows, rootId) {
+  const root = clean(rootId);
+  const children = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!isAgentOnlySession(row)) continue;
+    const id = clean(row.id);
+    if (!id) continue;
+    for (const parent of agentParentIds(row)) {
+      if (!children.has(parent)) children.set(parent, []);
+      children.get(parent).push(id);
+    }
+  }
+  const found = new Set();
+  const queue = [root];
+  while (queue.length) {
+    for (const child of children.get(queue.pop()) || []) {
+      if (child === root || found.has(child)) continue;
+      found.add(child);
+      queue.push(child);
+    }
+  }
+  return [...found];
 }

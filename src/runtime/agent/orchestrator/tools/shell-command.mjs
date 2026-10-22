@@ -27,9 +27,9 @@ export {
 } from './shell-powershell.mjs';
 export { stripAnsi, ExecResult } from './shell-exec-output.mjs';
 
-async function _execPolicyBlockMessage(command) {
+async function _execPolicyBlockMessage(command, elevationApproved = false) {
   const { checkExecPolicyMessage } = await import('./bash-policy-scan.mjs');
-  return checkExecPolicyMessage(command);
+  return checkExecPolicyMessage(command, { elevationApproved });
 }
 
 // Admission-wait ceiling. Without it a saturated shell lane (all leases held
@@ -233,7 +233,7 @@ const failedResult = (run, stderr, failureReason) =>
 // Admission lease, policy preflight, then the spawn. Resolves the run with a
 // tool-phase failure and returns false when the command never reaches a shell.
 async function admitAndSpawn(run, params, { admissionWaitMs, onSaturated }) {
-  const { admission, command, ownerSessionId, abortSignal } = params;
+  const { admission, command, ownerSessionId, abortSignal, elevationApproved } = params;
   try {
     run.resourceLease = await acquireShellLeaseBounded(admission, {
       abortSignal,
@@ -241,7 +241,7 @@ async function admitAndSpawn(run, params, { admissionWaitMs, onSaturated }) {
       label: `[task_id: ${run.foregroundRecordId}] ${String(command || '').slice(0, 120)}`,
       ownerKey: ownerSessionId,
     });
-    const policyErr = await _execPolicyBlockMessage(command);
+    const policyErr = await _execPolicyBlockMessage(command, elevationApproved === true);
     if (policyErr) {
       await releaseResourceLease(run);
       run.resolveResult(failedResult(run, policyErr, 'preflight failed'));
@@ -288,6 +288,7 @@ async function settleQueuedPromotion(jobId) {
 function queueSaturatedAsTask(run, saturation, spec) {
   const queuedAbort = new AbortController();
   const taskId = run.foregroundRecordId;
+  let promotedJobId = null;
   let task;
   try {
     task = startBackgroundTask({
@@ -301,10 +302,15 @@ function queueSaturatedAsTask(run, saturation, spec) {
       input: { command: spec.command, cwd: spec.cwd },
       meta: { task_id: taskId, stdout: null, stderr: null, cwd: spec.cwd, timeoutMs: spec.backgroundDeadlineMs || 0 },
       resultType: 'shell_task_result',
+      // While the command runs in the foreground, its abort handler snapshots
+      // the tree before it kills. A native kill sent here as well would end
+      // the root first: the snapshot then misses the tree and the workspace
+      // stays held as unconfirmed forever. Only a promoted job is killed here.
       cancel: () => {
         queuedAbort.abort();
+        if (!promotedJobId) return;
         try {
-          killShellJob(taskId);
+          killShellJob(promotedJobId);
         } catch {}
       },
       run: async () => {
@@ -313,11 +319,23 @@ function queueSaturatedAsTask(run, saturation, spec) {
           jobId: taskId,
           abortSignal: queuedAbort.signal,
           admissionWaitMs: 0,
-          // The call already returned: nobody renders live progress.
+          // The call already returned: nobody renders live progress, and no
+          // hold remains for user input to end.
+          wakeSignal: null,
           onProgress: null,
           onOutputTail: null,
         });
-        if (result.backgrounded && result.jobId) return settleQueuedPromotion(result.jobId);
+        if (result.backgrounded && result.jobId) {
+          promotedJobId = result.jobId;
+          // Promotion detached the abort handler: a cancel that landed during
+          // the handoff reaches the promoted job here.
+          if (queuedAbort.signal.aborted) {
+            try {
+              killShellJob(promotedJobId);
+            } catch {}
+          }
+          return settleQueuedPromotion(promotedJobId);
+        }
         const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
         if (result.exitCode !== 0) {
           throw new Error(`exit code ${result.exitCode ?? result.signal ?? 'unknown'}${output ? `\n${output}` : ''}`);
@@ -403,15 +421,17 @@ function attachChildExit(run, releasePromotedCapture) {
   child.once('exit', (code, signal) => {
     if (!run.rootExitAtMs) run.rootExitAtMs = Date.now();
     const grace = setTimeout(() => {
-      if (run.settled) return;
+      if (run.settled || run.promotionClose) return;
+      run.partialOutput = true;
       if (run.autoBackgrounded) {
         // A promoted child whose 'close' never arrives (grandchild holding
         // the stdio) would otherwise keep its spill descriptors forever:
-        // 'exit' is the only terminal event this path gets.
+        // 'exit' is the only terminal event this path gets. A promotion that
+        // is still pending and then fails settles the run with it.
+        run.promotionClose = [code == null ? 1 : code, signal];
         releasePromotedCapture();
         return;
       }
-      run.partialOutput = true;
       run.settle(code == null ? 1 : code, signal);
     }, 3000);
     if (grace.unref) grace.unref();
@@ -465,7 +485,27 @@ const promotable = (run, backgroundOnTimeout) =>
   run.child?.exitCode == null &&
   run.child?.signalCode == null;
 
-function armDeadlines(run, { timeoutMs, autoBackgroundMs, backgroundOnTimeout, abortSignal }, fireAutoBackground) {
+// New user input or a queued task notification during the hold moves a
+// still-running command to the background at once (never a kill): the call
+// returns to the agent loop, which delivers it at the next boundary.
+function armInputWake(run, wakeSignal, fireAutoBackground) {
+  if (!wakeSignal) return;
+  const onWake = () => {
+    const reason = wakeSignal.reason === 'notification' ? 'notification' : 'input';
+    if (promotable(run, true)) fireAutoBackground({ reason });
+  };
+  if (wakeSignal.aborted) {
+    onWake();
+    return;
+  }
+  wakeSignal.addEventListener('abort', onWake, { once: true });
+}
+
+function armDeadlines(
+  run,
+  { timeoutMs, autoBackgroundMs, autoBackgroundReason, backgroundOnTimeout, abortSignal },
+  fireAutoBackground
+) {
   if (timeoutMs > 0) {
     run.timer = setTimeout(() => {
       // Promote-on-timeout: if the caller allows backgrounding and the child
@@ -490,7 +530,7 @@ function armDeadlines(run, { timeoutMs, autoBackgroundMs, backgroundOnTimeout, a
     (timeoutMs <= 0 || autoBackgroundMs < timeoutMs)
   ) {
     run.autoBgTimer = setTimeout(() => {
-      fireAutoBackground();
+      fireAutoBackground({ reason: autoBackgroundReason || 'threshold' });
     }, autoBackgroundMs);
     if (run.autoBgTimer.unref) run.autoBgTimer.unref();
   }
@@ -525,7 +565,11 @@ export function execShellCommand(options) {
     cwd,
     timeoutMs,
     abortSignal,
+    // Aborted when new user input should end the hold (task-wait-control).
+    wakeSignal = null,
     autoBackgroundMs,
+    // 'background' for an explicit background start; the hold otherwise.
+    autoBackgroundReason = 'threshold',
     onProgress,
     onOutputTail,
     clientHostPid,
@@ -544,60 +588,70 @@ export function execShellCommand(options) {
     // hands the script to the shell out-of-band — see the POSIX env+eval path in
     // bash-tool.mjs, which keeps the command body out of the child's argv.
     execScript = null,
+    // The user approved this call's elevation 'ask' decision (runtime-set).
+    elevationApproved = false,
   } = options;
-  return new Promise(async (resolve) => {
+  return new Promise((resolve) => {
     const run = createShellRun({ abortSignal, resolve, jobId });
-    // An async executor's throw is NOT routed to this Promise — it becomes an
-    // unhandled rejection of the executor's own promise while the awaiting
-    // caller hangs forever. Every path below therefore has to settle the run
-    // itself, including the unexpected one.
-    try {
-      const spawned = await admitAndSpawn(
-        run,
-        {
-          admission,
-          shell,
-          shellArg,
-          shellArgs,
-          command,
-          env,
-          cwd,
-          abortSignal,
-          directArgv,
-          execScript,
-          ownerSessionId,
-          clientHostPid,
-        },
-        {
-          admissionWaitMs,
-          onSaturated: (err) => backgroundOnTimeout && queueSaturatedAsTask(run, err, options),
-        }
-      );
-      if (!spawned) return;
+    // A throw inside this async body is NOT routed to the Promise — it becomes
+    // an unhandled rejection while the awaiting caller hangs forever. Every
+    // path below therefore has to settle the run itself, including the
+    // unexpected one.
+    void (async () => {
+      try {
+        const spawned = await admitAndSpawn(
+          run,
+          {
+            admission,
+            shell,
+            shellArg,
+            shellArgs,
+            command,
+            env,
+            cwd,
+            abortSignal,
+            directArgv,
+            execScript,
+            elevationApproved,
+            ownerSessionId,
+            clientHostPid,
+          },
+          {
+            admissionWaitMs,
+            onSaturated: (err) => backgroundOnTimeout && queueSaturatedAsTask(run, err, options),
+          }
+        );
+        if (!spawned) return;
 
-      // Pre-aborted signal: kill immediately if the abort already fired
-      // before spawn returned (synchronous reentry from a parent abort), so
-      // the child doesn't run for the full timeoutMs window.
-      if (abortSignal?.aborted) {
-        treeKillForceSettle(run, 'cancellation');
+        // Pre-aborted signal: kill immediately if the abort already fired
+        // before spawn returned (synchronous reentry from a parent abort), so
+        // the child doesn't run for the full timeoutMs window.
+        if (abortSignal?.aborted) {
+          treeKillForceSettle(run, 'cancellation');
+        }
+        attachOutputCapture(run);
+        const releasePromotedCapture = createPromotedCaptureRelease(run);
+        run.settle = createSettle(run, releasePromotedCapture);
+        attachChildExit(run, releasePromotedCapture);
+        const fireAutoBackground = createAutoBackground({
+          run,
+          command,
+          cwd,
+          clientHostPid,
+          ownerSessionId,
+          promotedTimeoutMs,
+          backgroundDeadlineMs,
+        });
+        armDeadlines(
+          run,
+          { timeoutMs, autoBackgroundMs, autoBackgroundReason, backgroundOnTimeout, abortSignal },
+          fireAutoBackground
+        );
+        armInputWake(run, wakeSignal, fireAutoBackground);
+        armProgressTimers(run, { onProgress, onOutputTail });
+      } catch (err) {
+        settleSetupFailure(run, err);
       }
-      attachOutputCapture(run);
-      const releasePromotedCapture = createPromotedCaptureRelease(run);
-      run.settle = createSettle(run, releasePromotedCapture);
-      attachChildExit(run, releasePromotedCapture);
-      const fireAutoBackground = createAutoBackground({
-        run,
-        command,
-        cwd,
-        clientHostPid,
-        ownerSessionId,
-        promotedTimeoutMs,
-        backgroundDeadlineMs,
-      });
-      armDeadlines(run, { timeoutMs, autoBackgroundMs, backgroundOnTimeout, abortSignal }, fireAutoBackground);
-      armProgressTimers(run, { onProgress, onOutputTail });
-    } catch (err) {
-      settleSetupFailure(run, err);
-    }
+    })();
   });
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBrowserFeatureInstalled } from './browser-feature-install';
 import { isSshConnectionWindow } from './desktop-connection';
 import {
@@ -6,6 +6,7 @@ import {
   desktopSidebarDestinationEnabled,
   desktopUtilityDockTabEnabled,
 } from './desktop-feature-config';
+import { OPEN_DOCK_TAB_EVENT, SET_DOCK_OPEN_EVENT, type OpenDockTabDetail } from './open-dock-tab-event';
 import { paneActiveSelection } from './pane-layout';
 import type { UtilityDockTab } from './UtilityDock';
 import { DEFAULT_SIDEBAR_VIEW_ORDER, type SidebarViewGroup } from './sidebar-view-layout';
@@ -16,9 +17,13 @@ import {
   type WorkbenchSideViewId,
 } from './workbench-side-view-layout';
 import { usePaneSideDocks, type PaneSideDockDiff } from './pane-side-dock';
-import { isSessionSidePanelView, sessionSideDockEntryForSession } from './session-side-surface-policy';
+import {
+  isSessionSidePanelView,
+  sessionSideDockEntryForSession,
+  terminalSessionsToRestore,
+} from './session-side-surface-policy';
 import { useStableEvent } from './use-stable-event';
-import { allowVisualizeReveal, suppressVisualizeReveal, useVisualizeAvailable } from './visualize-store';
+import { allowVisualizeReveal, suppressVisualizeReveal } from './visualize-store';
 import type { usePaneWorkspace } from './pane-workspace-state';
 import type { useSessionPaneSurfaces } from './use-session-pane-surfaces';
 
@@ -39,23 +44,28 @@ export function useAppSideDocks({ paneWorkspace, sessionSurfaces, applySidebarOp
     dismissBrowserSurface,
   } = sessionSurfaces;
   const browserFeatureInstalled = useBrowserFeatureInstalled();
-  // The visualize toggle joins the strip once the agent has shown something.
-  const visualizeAvailable = useVisualizeAvailable();
+  // The visualize view always exists: every pane header toggles it in the
+  // Changes slot; a coding pane's phone switch lists it once the agent has
+  // shown something (pane-side-dock).
   const availableSideViews = useMemo<WorkbenchSideViewId[]>(
     () => [
       ...(desktopFeatureEnabled('sessions') ? ['sessions' as const] : []),
       ...DEFAULT_SIDEBAR_VIEW_ORDER.filter((panel) => desktopSidebarDestinationEnabled(panel)),
       // The Ports panel belongs to server windows.
       ...(isSshConnectionWindow() ? ['ports' as const] : []),
+      // Shown only on an agent's home thread (paneRightGroupsFor).
+      'routines' as const,
+      // Shown only on a group room (paneRightGroupsFor).
+      'room' as const,
       'session-diff' as const,
-      ...(visualizeAvailable ? ['visualize' as const] : []),
+      'visualize' as const,
       ...(browserFeatureInstalled ? ['browser' as const] : []),
       'terminal' as const,
       ...(['agents', 'search', 'source-control', 'pull-requests'] as const).filter((panel) =>
         desktopUtilityDockTabEnabled(panel)
       ),
     ],
-    [browserFeatureInstalled, visualizeAvailable]
+    [browserFeatureInstalled]
   );
   const workbenchSideLayout = useWorkbenchSideViewLayout(availableSideViews);
   const sidebarViewGroups = useMemo<readonly SidebarViewGroup[]>(
@@ -77,8 +87,42 @@ export function useAppSideDocks({ paneWorkspace, sessionSurfaces, applySidebarOp
     leafIds: paneWorkspace.leaves.map((leaf) => leaf.id),
     groups: workbenchSideLayout.layout.right,
   });
+  // A reload keeps the pane entry (open, terminal) but not the in-memory session
+  // surface; give the terminal back to the session each pane starts on, once.
+  const restoredTerminals = useRef(false);
+  useEffect(() => {
+    if (restoredTerminals.current) return;
+    restoredTerminals.current = true;
+    const owners = paneWorkspace.leaves.map((leaf) => {
+      const selection = paneActiveSelection(leaf);
+      return { leafId: leaf.id, sessionId: selection?.kind === 'session' ? selection.id : null };
+    });
+    for (const sessionId of terminalSessionsToRestore(owners, paneSideDocks.entryFor)) {
+      setSessionSideSurface(sessionId, 'terminal');
+    }
+  });
+  /** The dock entry the leaf actually shows: the pane's own entry overridden by
+   *  its session's browser/terminal/diff/visualize surface. */
+  const displayedDockEntry = (leafId: string) => {
+    const leaf = paneWorkspace.leaves.find((candidate) => candidate.id === leafId);
+    const selection = leaf ? paneActiveSelection(leaf) : null;
+    const sessionId = selection?.kind === 'session' ? selection.id : '';
+    return {
+      sessionId,
+      entry: sessionSideDockEntryForSession(
+        paneSideDocks.entryFor(leafId),
+        sessionId,
+        sessionSideSurfaces.get(sessionId) ?? null,
+        sessionDiffs.get(sessionId) ?? null,
+        sessionPanelViews.get(sessionId) ?? null
+      ),
+    };
+  };
+  // Session-owned surfaces (visualize, browser, terminal, session diff) open
+  // the dock without touching the pane entry's own `open`, so the back button
+  // must follow what is displayed, not the raw pane entry.
   const focusedPaneDockOpen =
-    paneSideDocks.entryFor(paneWorkspace.focusedLeafId).open && workbenchSideLayout.layout.right.length > 0;
+    displayedDockEntry(paneWorkspace.focusedLeafId).entry.open && workbenchSideLayout.layout.right.length > 0;
   const [sidebarDiff, setSidebarDiff] = useState<{ view: WorkbenchSideViewId; diff: PaneSideDockDiff } | null>(null);
   const closeSidebarDiff = useCallback(() => setSidebarDiff(null), []);
   useEffect(() => {
@@ -97,8 +141,8 @@ export function useAppSideDocks({ paneWorkspace, sessionSurfaces, applySidebarOp
     if (entry.diff?.source === 'session' && sessionId) {
       setSessionDiff(sessionId, null);
     }
-    // Closing the visualize panel is the user's call: agent opens keep
-    // updating its tabs but no longer reveal it for this session.
+    // Closing the visualize panel is the user's call: a reload or a remote
+    // resume leaves it closed (the next agent open or update reveals it).
     if (sessionId && entry.open && entry.surface === '' && entry.view === 'visualize') {
       suppressVisualizeReveal(sessionId);
     }
@@ -150,16 +194,7 @@ export function useAppSideDocks({ paneWorkspace, sessionSurfaces, applySidebarOp
     togglePaneRightRegion(paneWorkspace.focusedLeafId);
   });
   const closePaneRightRegion = useStableEvent((leafId: string) => {
-    const leaf = paneWorkspace.leaves.find((candidate) => candidate.id === leafId);
-    const selection = leaf ? paneActiveSelection(leaf) : null;
-    const sessionId = selection?.kind === 'session' ? selection.id : '';
-    const entry = sessionSideDockEntryForSession(
-      paneSideDocks.entryFor(leafId),
-      sessionId,
-      sessionSideSurfaces.get(sessionId) ?? null,
-      sessionDiffs.get(sessionId) ?? null,
-      sessionPanelViews.get(sessionId) ?? null
-    );
+    const { sessionId, entry } = displayedDockEntry(leafId);
     dismissDockEntry(leafId, sessionId, entry);
   });
   const openDockTab = useStableEvent((tab: UtilityDockTab) => {
@@ -171,6 +206,19 @@ export function useAppSideDocks({ paneWorkspace, sessionSurfaces, applySidebarOp
     }
     paneSideDocks.open(paneWorkspace.focusedLeafId, tab);
   });
+  useEffect(() => {
+    const onOpen = (event: Event) => openDockTab((event as CustomEvent<OpenDockTabDetail>).detail.tab);
+    window.addEventListener(OPEN_DOCK_TAB_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_DOCK_TAB_EVENT, onOpen);
+  }, [openDockTab]);
+  const setFocusedDockOpen = useStableEvent((open: boolean) => {
+    if (open !== focusedPaneDockOpen) toggleDock();
+  });
+  useEffect(() => {
+    const onSet = (event: Event) => setFocusedDockOpen((event as CustomEvent<{ open: boolean }>).detail.open);
+    window.addEventListener(SET_DOCK_OPEN_EVENT, onSet);
+    return () => window.removeEventListener(SET_DOCK_OPEN_EVENT, onSet);
+  }, [setFocusedDockOpen]);
 
   return {
     workbenchSideLayout,

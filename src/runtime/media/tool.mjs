@@ -8,6 +8,7 @@ import { MEDIA_ACTIONS, MEDIA_KINDS } from './tool-defs.mjs';
 import { clean } from '../shared/clean.mjs';
 
 const POLL_MS = 750;
+const DEFAULT_LANE = 'openai-oauth';
 const TIMEOUT_MS = Object.freeze({ image: 180_000, video: 900_000 });
 // OpenAI's image lane takes pixel sizes, not ratios; the placement still speaks in ratios.
 const OPENAI_SIZE = Object.freeze({
@@ -27,6 +28,7 @@ const IMAGE_MIME = Object.freeze({
   '.gif': 'image/gif',
 });
 const MAX_REFERENCE_BYTES = 12 * 1024 * 1024;
+const GATEWAY_IMAGE_LANES = new Set(['openrouter', 'nano-gpt']);
 
 let graph = null;
 async function mediaGraph(deps) {
@@ -36,6 +38,7 @@ async function mediaGraph(deps) {
     jobs: await import('./jobs.mjs'),
     store: await import('./store.mjs'),
     defaults: await import('./defaults.mjs'),
+    accounts: await import('../shared/provider-auth-binding.mjs'),
   };
   return graph;
 }
@@ -130,8 +133,9 @@ export function listMediaCatalog(lanes, { kind = '', model = '' } = {}, remember
 
 /**
  * Lane for a generate: the requested one, else the lane the user last chose
- * for this kind (Studio selection or last generation), else the first
- * signed-in lane. `laneSource` tells the caller which of the three applied.
+ * for this kind (Studio selection or last generation), else the signed-in
+ * ChatGPT-subscription lane, else the first signed-in lane. `laneSource` is
+ * `first` for either default.
  */
 function pickLane(lanes, kind, requested, remembered = null) {
   const available = lanes.filter((lane) => lane.authenticated && lane.kinds.includes(kind));
@@ -153,14 +157,21 @@ function pickLane(lanes, kind, requested, remembered = null) {
     );
   }
   const rememberedLane = remembered?.lane ? available.find((entry) => entry.id === remembered.lane) : null;
-  return rememberedLane
-    ? { lane: rememberedLane, laneSource: 'remembered' }
-    : { lane: available[0], laneSource: 'first' };
+  if (rememberedLane) return { lane: rememberedLane, laneSource: 'remembered' };
+  return { lane: available.find((entry) => entry.id === DEFAULT_LANE) || available[0], laneSource: 'first' };
 }
 
 function readRemembered(defaults, kind) {
   try {
     return defaults?.getMediaDefault?.(kind) || null;
+  } catch {
+    return null;
+  }
+}
+
+function readPin(defaults, kind) {
+  try {
+    return defaults?.getMediaPin?.(kind) || null;
   } catch {
     return null;
   }
@@ -185,9 +196,13 @@ export function buildOptions(
   lane,
   kind,
   controls,
-  { aspect = '', resolution = '', duration = null, quality = '' } = {}
+  { aspect = '', resolution = '', duration = null, quality = '', background = '' } = {}
 ) {
   const options = {};
+  if (background) {
+    validateChoice(controls, 'background', background, 'background');
+    if (background !== 'auto') options.background = background;
+  }
   if (lane.id === 'openai-oauth') {
     if (!allowed(controls, 'size')) {
       if ([aspect, resolution, quality].some((value) => value && value !== 'auto')) {
@@ -214,7 +229,13 @@ export function buildOptions(
     if (resolution) {
       validateChoice(controls, 'resolution', resolution, 'resolution');
       options.resolution = resolution;
-    } else if (kind === 'image' && allowed(controls, 'resolution')?.includes('2k')) {
+    } else if (
+      kind === 'image' &&
+      !GATEWAY_IMAGE_LANES.has(lane.id) &&
+      allowed(controls, 'resolution')?.includes('2k')
+    ) {
+      // Gateway models bill per resolution tier: an omitted resolution keeps
+      // the provider's default there instead of silently upscaling.
       options.resolution = '2k';
     }
     if (quality) {
@@ -291,9 +312,21 @@ async function generate(args, { cwd, signal, deps, sessionId, sourceType }) {
   const requestedPath = clean(args.path);
   if (!requestedPath) throw new MediaToolError('generate requires path: where to write the file');
   const target = fullPath(requestedPath, cwd);
-  const { lanes, jobs, store, defaults } = await mediaGraph(deps);
-  const remembered = readRemembered(defaults, kind);
-  const { lane, laneSource } = pickLane(await lanes.listMediaLanes(), kind, clean(args.lane), remembered);
+  const { lanes, jobs, store, defaults, accounts } = await mediaGraph(deps);
+  // A generator the chat names (lane or model) wins for this call; otherwise
+  // the pinned default for the kind applies, and with none the remembered
+  // choice / ordered default. A pin never falls back: its lane, model and
+  // account errors surface as they are.
+  const pin = clean(args.lane) || clean(args.model) ? null : readPin(defaults, kind);
+  const remembered = pin ? null : readRemembered(defaults, kind);
+  const accountProvider = pin?.account ? lanes.mediaLaneAccountProvider?.(pin.lane) || '' : '';
+  const listLanes = () =>
+    accountProvider
+      ? accounts.withProviderAccount(accountProvider, pin.account, () => lanes.listMediaLanes())
+      : lanes.listMediaLanes();
+  const picked = pickLane(await listLanes(), kind, pin ? pin.lane : clean(args.lane), remembered);
+  const { lane } = picked;
+  const laneSource = pin ? 'pinned' : picked.laneSource;
   const spec = lane[kind];
   // The remembered model only applies on the remembered lane and only while
   // that lane still lists it; otherwise the lane default is the safe choice.
@@ -301,7 +334,7 @@ async function generate(args, { cwd, signal, deps, sessionId, sourceType }) {
     laneSource === 'remembered' && remembered.model && spec.models.some((entry) => entry.id === remembered.model)
       ? remembered.model
       : '';
-  const modelId = clean(args.model) || rememberedModel || spec.defaultModel;
+  const modelId = clean(args.model) || pin?.model || rememberedModel || spec.defaultModel;
   const model = modelControls(lane, kind, modelId);
   if (!model)
     throw new MediaToolError(`model "${modelId}" is not available on ${lane.id} for ${kind}`, {
@@ -312,6 +345,7 @@ async function generate(args, { cwd, signal, deps, sessionId, sourceType }) {
     resolution: clean(args.resolution),
     duration: args.duration ?? null,
     quality: clean(args.quality),
+    background: clean(args.background),
   });
   const references = await readReferences(args.references, cwd, model.controls);
   const started = await jobs.startMediaJob({
@@ -323,6 +357,7 @@ async function generate(args, { cwd, signal, deps, sessionId, sourceType }) {
     references,
     sessionId,
     sourceType,
+    ...(accountProvider ? { account: pin.account } : {}),
   });
   const base = { lane: lane.id, model: modelId, laneSource, options, referenceCount: references.length, prompt };
   if (args.wait === false) {
@@ -396,11 +431,12 @@ export async function executeMediaTool(
         ...listMediaCatalog(
           await lanes.listMediaLanes(),
           { kind, model: clean(args.model) },
-          readRemembered(defaults, kind)
+          readPin(defaults, kind) || readRemembered(defaults, kind)
         ),
       });
     }
-    if (action === 'generate') return mediaToolResult(await generate(args, { cwd, signal, deps, sessionId, sourceType }));
+    if (action === 'generate')
+      return mediaToolResult(await generate(args, { cwd, signal, deps, sessionId, sourceType }));
     if (action === 'status') return mediaToolResult(await status(args, { cwd, deps }));
     return mediaToolResult(await cancel(args, { deps }));
   } catch (error) {

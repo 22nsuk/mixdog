@@ -12,6 +12,7 @@ import { preparePdfTextForProvider } from './media-normalization.mjs';
 import { consumeCompatChatCompletionStream } from './openai-compat-stream.mjs';
 import { retryAfterMsFromError } from './retry-classifier.mjs';
 import { ensureChatToolPairs } from './lib/wire-pairing.mjs';
+import { acceptedWireTools } from './lib/claude-bridge-schema.mjs';
 import { cursorTokenExpiry, exchangeCursorToken, resolveCursorOAuthAccessToken } from './cursor-auth.mjs';
 import {
   canonicalCursorModelId,
@@ -34,7 +35,10 @@ async function loadCursorRuntime() {
 function toCursorMessages(messages, providerName, { nativePdf } = {}) {
   const output = [];
   for (const message of messages || []) {
-    const converted = toOpenAIMessages([message], providerName, { nativePdf });
+    // This is a local envelope over Cursor's execution protocol, not an
+    // OpenAI request. Its pending executions and native capabilities require
+    // the exact original id, including ids longer than OpenAI's 40-char cap.
+    const converted = toOpenAIMessages([message], providerName, { nativePdf, preserveToolCallIds: true });
     if (message?.role !== 'tool') {
       output.push(...converted);
       continue;
@@ -48,6 +52,7 @@ function toCursorMessages(messages, providerName, { nativePdf } = {}) {
       ...toolMessage,
       mixdog_tool_error: message.toolKind === 'error' || message.isError === true,
       ...(media.length ? { mixdog_tool_media: media } : {}),
+      ...(message.readWindow?.lineClipped === true ? { mixdog_read_window: { lineClipped: true } } : {}),
     });
   }
   return output;
@@ -544,6 +549,9 @@ function selectCursorVariant(group, { effort = null, fast = false } = {}) {
 class CursorProviderBase {
   // Cursor's chat wire has no document block: PDFs lower to text.
   nativePdf = false;
+  // Native read results are judged as exact source windows, so the tool
+  // finalizer reports their clipped lines next to the text.
+  consumesReadWindows = true;
 
   static inputExcludesCache = false;
   // The in-place stream retry budget is the whole recovery: a spent budget
@@ -639,6 +647,13 @@ class CursorProviderBase {
       const response = await runtime.handleChatCompletion(body, accessToken, {
         onStageChange: sendOpts.onStageChange,
         getAccessToken: (options) => this._accessToken({ signal, ...options }),
+        // A deliberate history reset must reach Cursor's private parked run,
+        // not just the orchestrator's providerState.
+        resetActiveRun: Boolean(sendOpts.cacheBreakIntent),
+        // Native read/edit capabilities are process-local. An explicit empty
+        // executor (the model-proxy host: tools run in the server daemon)
+        // keeps every call an ordinary Mixdog tool call.
+        ownerSessionId: String(sendOpts.toolExecutionSessionId ?? (sendOpts.sessionId || '')),
       });
       try {
         sendOpts.onStageChange?.('streaming');
@@ -693,10 +708,18 @@ class CursorProviderBase {
     const runtime = await this._runtime();
     let accessToken = await this._accessToken({ signal });
     let cursorSelection = await this._resolveCursorModel(model, sendOpts, runtime, accessToken);
+    // The Cursor run and conversation (checkpoint, pending tool batch) live
+    // under this scope; a forked request keeps its own (transport-scope.mjs).
     const sessionScope = String(
-      sendOpts.sessionId || sendOpts.providerCacheKey || sendOpts.promptCacheKey || `cursor-call:${randomUUID()}`
+      sendOpts.transportScope ||
+        sendOpts.sessionId ||
+        sendOpts.providerCacheKey ||
+        sendOpts.promptCacheKey ||
+        `cursor-call:${randomUUID()}`
     );
-    const openAiTools = tools?.length ? toOpenAITools(tools) : undefined;
+    const openAiTools = tools?.length
+      ? toOpenAITools(acceptedWireTools(tools, 'openai', sendOpts.onToolExcluded, '[cursor] tool'))
+      : undefined;
     const dispatch = async () => {
       noteRequestServiceTier(cursorSelectionIsFast(cursorSelection) ? 'fast' : '');
       // Every attempt (retries included) prepares right before it lowers.

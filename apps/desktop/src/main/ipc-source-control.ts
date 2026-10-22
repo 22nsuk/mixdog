@@ -9,6 +9,7 @@ import {
   requiredGitResetMode,
   requiredGitRevision,
   requiredRepositoryCwd,
+  requiredReviewSource,
 } from './git-contract.mjs';
 import {
   attachmentImageBaseName,
@@ -23,6 +24,8 @@ import {
   requiredGitPatch,
   requiredGitPath,
   requiredGitPaths,
+  requiredGitRequestContextInput,
+  requiredReviewDiffFiles,
   requiredString,
   optionalGithubLoginOptions,
 } from './ipc-validation';
@@ -95,7 +98,8 @@ function registerGitToolingIpc({ handle, operations }: SourceControlRegistration
   handle(DESKTOP_IPC.installGitCli, () => installGitCli());
   handle(DESKTOP_IPC.githubCliStatus, () => githubCliStatus());
   handle(DESKTOP_IPC.installGithubCli, () => installGithubCli());
-  handle(DESKTOP_IPC.githubCliLoginStart, () => githubCliLoginStart());  handle(DESKTOP_IPC.githubCliLoginStatus, (_event, flowId) =>
+  handle(DESKTOP_IPC.githubCliLoginStart, () => githubCliLoginStart());
+  handle(DESKTOP_IPC.githubCliLoginStatus, (_event, flowId) =>
     githubCliLoginStatus(requiredString(flowId, 'flowId', 200))
   );
   handle(DESKTOP_IPC.githubCliLoginOpenBrowser, (_event, flowId, options) =>
@@ -251,6 +255,7 @@ function registerRepositoryHistoryIpc({ handle, operations }: SourceControlRegis
     gitRevertCommit,
     gitReview,
     gitReviewDiff,
+    gitReviewDiffs,
     gitShow,
     gitShowDiff,
     gitShowFile,
@@ -267,6 +272,9 @@ function registerRepositoryHistoryIpc({ handle, operations }: SourceControlRegis
   handle(DESKTOP_IPC.gitShow, (_event, cwd, hash) => gitShow(requiredRepositoryCwd(cwd), requiredCommitHash(hash)));
   handle(DESKTOP_IPC.gitShowDiff, (_event, cwd, hash, path) =>
     gitShowDiff(requiredRepositoryCwd(cwd), requiredCommitHash(hash), requiredGitPath(path))
+  );
+  handle(DESKTOP_IPC.gitRequestContext, (_event, cwd, input) =>
+    operations.gitRequestContext(requiredRepositoryCwd(cwd), requiredGitRequestContextInput(input))
   );
   handle(DESKTOP_IPC.gitShowFile, (_event, cwd, rev, path) =>
     gitShowFile(requiredRepositoryCwd(cwd), requiredGitRevision(rev), requiredGitPath(path))
@@ -293,9 +301,14 @@ function registerRepositoryHistoryIpc({ handle, operations }: SourceControlRegis
   handle(DESKTOP_IPC.gitDeleteTag, (_event, cwd, tag) =>
     gitDeleteTag(requiredRepositoryCwd(cwd), requiredString(tag, 'git tag', 512))
   );
-  handle(DESKTOP_IPC.gitReview, (_event, cwd) => gitReview(requiredRepositoryCwd(cwd)));
-  handle(DESKTOP_IPC.gitReviewDiff, (_event, cwd, path, untracked) =>
-    gitReviewDiff(requiredRepositoryCwd(cwd), requiredGitPath(path), untracked === true)
+  handle(DESKTOP_IPC.gitReview, (_event, cwd, source) =>
+    gitReview(requiredRepositoryCwd(cwd), requiredReviewSource(source))
+  );
+  handle(DESKTOP_IPC.gitReviewDiff, (_event, cwd, path, untracked, source) =>
+    gitReviewDiff(requiredRepositoryCwd(cwd), requiredGitPath(path), untracked === true, requiredReviewSource(source))
+  );
+  handle(DESKTOP_IPC.gitReviewDiffs, (_event, cwd, files, source) =>
+    gitReviewDiffs(requiredRepositoryCwd(cwd), requiredReviewDiffFiles(files), requiredReviewSource(source))
   );
 }
 

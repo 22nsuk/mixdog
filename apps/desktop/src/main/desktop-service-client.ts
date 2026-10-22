@@ -1,5 +1,6 @@
 import type {
   DesktopAbortOptions,
+  DesktopAgentMemoryEntry,
   DesktopAgentPoolRow,
   DesktopSessionContentMatch,
   DesktopCapability,
@@ -72,7 +73,12 @@ export const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
 const DEFAULT_RESTART_BASE_DELAY_MS = 250;
 const DEFAULT_RESTART_MAX_DELAY_MS = 5_000;
 const DEFAULT_RESTART_STABLE_MS = 30_000;
-const DEFAULT_FAILURE_NOTICE_DELAY_MS = 10_000;
+/** Reconnects retry silently (backoff 250 ms -> 5 s, each attempt bounded by the
+ *  15 s startup timeout, backoff reset after 30 s of stable service). Stalls of
+ *  15-30 s recover on their own, so the notice waits twice the longest observed
+ *  stall: by then at least a dozen attempts have failed and the outage is lasting. */
+const DEFAULT_FAILURE_NOTICE_DELAY_MS = 60_000;
+const PROCESS_FAILURE_NOTICE_TEXT = 'The service connection has been lost for a while. Still retrying automatically.';
 const PROCESS_FAILURE_TOAST_ID = 'service-connection-stopped';
 
 /** The daemon lane carries arguments as JSON, which turns an omitted trailing
@@ -109,6 +115,10 @@ function withoutProcessFailureToast(toasts: readonly unknown[]): unknown[] {
   return toasts.filter(
     (toast) => !toast || typeof toast !== 'object' || (toast as Record<string, unknown>).id !== PROCESS_FAILURE_TOAST_ID
   );
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Mixdog session request aborted.');
 }
 
 function responseError(error: { name: string; message: string; code?: string }): Error {
@@ -623,10 +633,7 @@ export class DesktopServiceClient implements DesktopService {
     return { ...previous, toasts } as SessionSnapshot;
   }
 
-  private processFailureSnapshot(
-    snapshot: SessionSnapshot,
-    text = 'The service connection stopped. Retrying automatically.'
-  ): SessionSnapshot {
+  private processFailureSnapshot(snapshot: SessionSnapshot, text = PROCESS_FAILURE_NOTICE_TEXT): SessionSnapshot {
     const previous = snapshot && typeof snapshot === 'object' ? (snapshot as Record<string, unknown>) : {};
     const existingToasts = Array.isArray(previous.toasts) ? previous.toasts : [];
     return {
@@ -647,39 +654,64 @@ export class DesktopServiceClient implements DesktopService {
     } as SessionSnapshot;
   }
 
-  private async invoke<T>(method: DesktopServiceMethod, args: unknown[] = [], timeoutMs?: number): Promise<T> {
+  private async invoke<T>(
+    method: DesktopServiceMethod,
+    args: unknown[] = [],
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ): Promise<T> {
     await this.start();
-    return await this.sendRequest<T>(method, args, timeoutMs);
+    return await this.sendRequest<T>(method, args, timeoutMs, signal);
   }
 
-  private async invokeRead<T>(method: DesktopServiceMethod, args: unknown[] = []): Promise<T> {
+  private async invokeRead<T>(method: DesktopServiceMethod, args: unknown[] = [], signal?: AbortSignal): Promise<T> {
     try {
-      return await this.invoke<T>(method, args);
+      return await this.invoke<T>(method, args, undefined, signal);
     } catch (error) {
       if (!(error instanceof DesktopTransportExitError) || this.disposed || this.disposing) throw error;
-      return await this.invoke<T>(method, args);
+      return await this.invoke<T>(method, args, undefined, signal);
     }
   }
 
   private sendRequest<T>(
     method: DesktopServiceMethod,
     args: unknown[],
-    timeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    timeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+    signal?: AbortSignal
   ): Promise<T> {
     const transport = this.transport;
     if (!transport) {
       return Promise.reject(this.lastExitError ?? new Error('Mixdog service is unavailable.'));
     }
+    if (signal?.aborted) return Promise.reject(abortError(signal));
     const id = this.nextRequestId++;
     return new Promise<T>((resolve, reject) => {
+      // An aborted request leaves no pending entry; the service's late reply
+      // finds none and is dropped.
+      const onAbort = () => {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(abortError(signal!));
+      };
+      const settled = () => signal?.removeEventListener('abort', onAbort);
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Mixdog session request timed out: ${method}.`));
+        settled();
+        // A desktop operation names itself: "invokeDesktopOperation" alone says nothing.
+        const operation = method === 'invokeDesktopOperation' && typeof args[0] === 'string' ? ` (${args[0]})` : '';
+        reject(new Error(`Mixdog session request timed out: ${method}${operation}.`));
       }, timeoutMs);
+      signal?.addEventListener('abort', onAbort, { once: true });
       this.pending.set(id, {
         method,
-        resolve: (value) => resolve(value as T),
-        reject,
+        resolve: (value) => {
+          settled();
+          resolve(value as T);
+        },
+        reject: (error) => {
+          settled();
+          reject(error);
+        },
         timer,
       });
       try {
@@ -687,6 +719,7 @@ export class DesktopServiceClient implements DesktopService {
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
+        settled();
         reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
@@ -802,6 +835,9 @@ export class DesktopServiceClient implements DesktopService {
   stopShellJob(sessionId: string, taskId: string): Promise<{ stopped: boolean; error?: string }> {
     return this.invoke('stopShellJob', [sessionId, taskId]);
   }
+  releaseShellJob(sessionId: string, taskId: string): Promise<{ released: boolean; error?: string }> {
+    return this.invoke('releaseShellJob', [sessionId, taskId]);
+  }
   getQuotaAutoResume(): Promise<boolean> {
     return this.invoke('getQuotaAutoResume', []);
   }
@@ -811,9 +847,18 @@ export class DesktopServiceClient implements DesktopService {
   readAttachmentImage(attachmentRef: string): Promise<string | null> {
     return this.invokeRead('readAttachmentImage', [attachmentRef]);
   }
+  /** The provenance behind attachment opens and file grants: main's IPC
+   *  checks a request against the transcript the service holds. */
+  readSessionTranscript(sessionId: string): Promise<SessionSnapshot> {
+    return this.invokeRead('readSessionTranscript', [sessionId]);
+  }
 
-  readSessionFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null> {
-    return this.invokeRead('readSessionFinalAnswer', [sessionId, startedAt]);
+  readSessionFinalAnswer(
+    sessionId: string,
+    startedAt: number,
+    signal?: AbortSignal
+  ): Promise<SessionFinalAnswer | null> {
+    return this.invokeRead('readSessionFinalAnswer', [sessionId, startedAt], signal);
   }
   setSessionFavorite(sessionId: string, favorite: boolean): Promise<unknown> {
     return this.invoke('setSessionFavorite', [sessionId, favorite]);
@@ -825,6 +870,21 @@ export class DesktopServiceClient implements DesktopService {
 
   setSessionArchived(sessionId: string, archived: boolean): Promise<unknown> {
     return this.invoke('setSessionArchived', [sessionId, archived]);
+  }
+  openAgentHome(agentId: string): Promise<{ sessionId: string }> {
+    return this.invoke('openAgentHome', [agentId]);
+  }
+  resetAgentHome(agentId: string): Promise<{ sessionId: string; archivedSessionId: string | null }> {
+    return this.invoke('resetAgentHome', [agentId]);
+  }
+  listAgentMemory(agentId: string): Promise<DesktopAgentMemoryEntry[]> {
+    return this.invoke('listAgentMemory', [agentId]);
+  }
+  deleteAgentMemory(agentId: string, entry: Pick<DesktopAgentMemoryEntry, 'id' | 'indexRevision'>): Promise<void> {
+    return this.invoke('deleteAgentMemory', [agentId, entry]);
+  }
+  agentRoomAction(action: string, args: unknown[]): Promise<unknown> {
+    return this.invoke('agentRoomAction', [action, args]);
   }
   deleteSession(sessionId: string): Promise<unknown> {
     return this.invoke('deleteSession', [sessionId]);
@@ -880,7 +940,17 @@ export class DesktopServiceClient implements DesktopService {
     return this.invoke('abortSession', [sessionId, options]);
   }
   resolveToolApprovalForSession(sessionId: string, id: string, decision: ToolApprovalDecision): Promise<boolean> {
-    return this.invoke('resolveToolApprovalForSession', [sessionId, id, decision]);
+    // A decision is keyed by its approval id, so sending it again is safe (an
+    // already-settled id answers false). The service restarts itself when a
+    // stalled daemon times its call out; the answer the user gave must wait
+    // for that restart instead of surfacing as a failed, then cancelled, ask.
+    return this.invokeRead('resolveToolApprovalForSession', [sessionId, id, decision]);
+  }
+  getAgentNotificationMute(agentId: string): Promise<boolean> {
+    return this.invoke('getAgentNotificationMute', [agentId]);
+  }
+  setAgentNotificationMute(agentId: string, muted: boolean): Promise<boolean> {
+    return this.invoke('setAgentNotificationMute', [agentId, muted]);
   }
   listProviderModels(options: DesktopModelCatalogOptions = {}): Promise<DesktopModelOption[]> {
     return this.invokeRead('listProviderModels', [options]);

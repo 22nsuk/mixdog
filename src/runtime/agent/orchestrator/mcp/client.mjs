@@ -1,5 +1,6 @@
 import { setMaxListeners } from 'node:events';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
+import { writeFileAtomicSync } from '../../../shared/atomic-file.mjs';
 import { writeFile } from 'node:fs/promises';
 import {
   MAX_ATTACHMENT_BLOB_BYTES,
@@ -14,7 +15,7 @@ import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
-import { buildSmartReadTruncationMarker, smartReadTruncate } from '../tools/builtin/read-formatting.mjs';
+import { smartReadTruncate } from '../tools/builtin/read-formatting.mjs';
 import { shutdownStdioChild, killStdioChildTreeFast } from './child-tree.mjs';
 import { makeToolEnvelope, normalizeToolEnvelope } from '../session/tool-envelope.mjs';
 import { classifyResultKind } from '../session/result-classification.mjs';
@@ -33,11 +34,17 @@ import {
 import { createLazyOutputValidator } from './lazy-output-validator.mjs';
 import { appendMcpStderrTail, createMcpTransport, hasConfiguredMcpAuth } from './client-transport.mjs';
 import { listAllMcpTools, MCP_CONNECT_CANCELLED, runBoundedHandshake } from './client-handshake.mjs';
+import { rememberServerConnector } from './server-connectors.mjs';
+import { mcpOAuthClientFor } from './oauth-client.mjs';
+import { googleMcpService, withGoogleMcp } from '../../../connectors/google-mcp.mjs';
 import {
   clearMcpOAuth,
+  commitMcpOAuthSwitch,
   hasStoredMcpOAuthTokens,
   isMcpOAuthReauthenticationRequired,
   MCP_OAUTH_CALLBACK_NOT_PENDING,
+  startMcpOAuthSwitch,
+  storedMcpOAuthIdentity,
 } from './oauth.mjs';
 export { probeMcpServerAuth } from './oauth-probe.mjs';
 
@@ -67,6 +74,14 @@ const _connectAbortGenerations = new Map();
 const _pendingConnects = new Set();
 // scopeId -> root path advertised by that scope's scope-following servers.
 const _scopeRoots = new Map();
+// One stdio process per server config, shared by every scope that connects
+// the same server with the same resolved config: share key -> connection
+// { key, client, transport, liveness, stderrTail, warnings, tools,
+// capabilities, instructions, users: Set<registryKey> }. Every session
+// runtime has its own scope, so per-scope processes multiplied with the
+// number of retained sessions. A scope's close releases only its own use; the
+// process tree is shut down when its last user releases it.
+const _sharedStdio = new Map();
 let mcpSdkPromise = null;
 // Memo for mcpToolHasField(name, field) — keyed by `${scopeId}|${toolName}|${field}`.
 // The lookup (regex parse + servers Map get + tools.find + schema property
@@ -98,6 +113,24 @@ function scopedServer(scopeId, name) {
 function scopedServerEntries(scopeId) {
   const normalized = normalizeMcpScopeId(scopeId);
   return [...servers.entries()].filter(([, server]) => server?.scopeId === normalized);
+}
+// Share key of a stdio server, or null when its connection must stay private
+// to one scope: remote transports, and servers whose advertised roots follow
+// their scope's cwd.
+function sharedStdioKey(name, cfg) {
+  if (cfg?._mixdogRootsFollowScope === true) return null;
+  try {
+    if (resolveMcpTransportKind(cfg) !== 'stdio') return null;
+  } catch {
+    return null;
+  }
+  return `${String(name || '')}\u0000${JSON.stringify(cfg)}`;
+}
+// A connection that failed a call is never handed to a later connect; scopes
+// still holding it keep it until they release it themselves.
+function retireSharedConnection(server) {
+  const shared = server?.shared;
+  if (shared && _sharedStdio.get(shared.key) === shared) _sharedStdio.delete(shared.key);
 }
 function currentConnectAbortGeneration(scopeId) {
   return _connectAbortGenerations.get(normalizeMcpScopeId(scopeId)) || 0;
@@ -308,7 +341,11 @@ function callAdmissionFor(server) {
   const cfg = server?.cfg || {};
   gate = createOwnerFairGate({
     name: `MCP ${server.name}`,
-    activeMax: positiveInt(cfg.maxConcurrency ?? cfg.max_concurrency ?? process.env.MIXDOG_MCP_MAX_INFLIGHT, 8),
+    // JSON-RPC multiplexes requests by id over one transport, so the client
+    // imposes no in-flight cap of its own; a server that needs one declares
+    // it (maxConcurrency) or the operator sets MIXDOG_MCP_MAX_INFLIGHT.
+    activeMax:
+      positiveInt(cfg.maxConcurrency ?? cfg.max_concurrency ?? process.env.MIXDOG_MCP_MAX_INFLIGHT, null) ?? Infinity,
     queueMax: positiveInt(cfg.maxQueue ?? cfg.max_queue ?? process.env.MIXDOG_MCP_MAX_QUEUE, 256),
     minOwnerQueue: 8,
     waitTimeoutMs: positiveInt(
@@ -407,6 +444,7 @@ async function reconnectMcpServer(scopeId, serverName, failedServer) {
     if (!current || genAtStart !== currentConnectAbortGeneration(scopeId) || current.liveness?.closing) {
       throw new Error(`MCP server "${serverName}" was disconnected`);
     }
+    retireSharedConnection(current);
     await replaceServerConnection(scopeId, serverName, current, failedServer.cfg, genAtStart);
   });
   const replacement = servers.get(registryKey);
@@ -735,9 +773,11 @@ function spillMcpBinary(buffer, extension) {
   const path = join(dir, `mcp-${hash}.${extension}`);
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(path, buffer, { flag: 'wx' });
-  } catch (err) {
-    if (err?.code !== 'EEXIST') return null;
+    // Named by its content hash: whole-file create-if-absent (a crash never
+    // leaves a torn file under the name that would be trusted as the content).
+    writeFileAtomicSync(path, buffer, { createOnly: true });
+  } catch {
+    return null;
   }
   return path;
 }
@@ -1037,7 +1077,7 @@ function capMcpOutputParts(content) {
   const s = typeof content === 'string' ? content : String(content ?? '');
   const bodyBytes = Buffer.byteLength(s, 'utf8');
   const bodyLines = countTextLines(s);
-  const { text, truncated } = smartReadTruncate(s, bodyLines, bodyBytes);
+  const { text, truncated, marker } = smartReadTruncate(s, bodyLines, bodyBytes);
   if (!truncated) return { text, spillNote: '', truncated: false };
   // Spill the full body to a tmp file so the caller can recover content
   // elided by the head/tail cap.
@@ -1056,7 +1096,6 @@ function capMcpOutputParts(content) {
     /* spill best-effort */
   }
   const spillNote = spillPath ? `\n\n... [full output spilled to ${spillPath}] ...` : '';
-  const marker = buildSmartReadTruncationMarker(bodyLines, bodyBytes);
   const split = text.indexOf(`\n${marker}\n`);
   return {
     text,
@@ -1220,22 +1259,52 @@ export function getMcpServerOAuthState(cfg) {
     return null;
   }
   if (!url || hasConfiguredMcpAuth(cfg)) return null;
-  return { signedIn: hasStoredMcpOAuthTokens(url) };
+  const signedIn = hasStoredMcpOAuthTokens(url);
+  if (!signedIn) return { signedIn };
+  // Who it is signed in as (never guessed: empty when the server named nobody)
+  // and whether 계정 바꾸기 can make the provider show its account choice.
+  const who = storedMcpOAuthIdentity(url);
+  return {
+    signedIn,
+    account: typeof who?.account === 'string' ? who.account : '',
+    workspace: typeof who?.workspace === 'string' ? who.workspace : '',
+    forcedAccountChoice: who?.forcedChoice === true,
+  };
+}
+/** 계정 바꾸기 of an HTTP/SSE server: a browser sign-in beside the stored one
+ *  (oauth.mjs startMcpOAuthSwitch); `launch` opens the authorization URL. */
+export function startMcpServerOAuthSwitch(cfg, launch, serverName) {
+  const url = resolveMcpOAuthUrl(cfg);
+  if (!url) throw new Error(`MCP server "${serverName}" does not use OAuth sign-in`);
+  return startMcpOAuthSwitch({
+    url,
+    launch,
+    serverName,
+    oauthClient: mcpOAuthClientFor(cfg, url),
+    ...(googleMcpService(url) ? { fetchImpl: withGoogleMcp() } : {}),
+  });
+}
+/** Store a switch's sign-in for the server's URL; resolves its rollback. */
+export function commitMcpServerOAuthSwitch(cfg, signIn) {
+  return commitMcpOAuthSwitch({ url: resolveMcpOAuthUrl(cfg), signIn });
 }
 /**
  * Log out of an HTTP/SSE server URL: delete the OAuth tokens and client
  * registration stored for it, shared by every server configured with that
- * exact URL, and drop them from live connections.
+ * exact URL, and drop them from live connections. `options.revoke` also
+ * revokes the grant where the authorization server documents how; resolves
+ * `{ revoked }`.
  */
-export async function clearMcpServerOAuth(cfg) {
+export async function clearMcpServerOAuth(cfg, options = {}) {
   let url;
   try {
     url = resolveMcpOAuthUrl(cfg);
   } catch {
     // A config without a valid remote URL never connected, so never logged in.
-    return;
+    return { revoked: false };
   }
-  if (url) await clearMcpOAuth({ url });
+  if (url) return clearMcpOAuth({ url, revoke: options.revoke === true });
+  return { revoked: false };
 }
 /**
  * Close a single server: for stdio transports first shut down the full child
@@ -1245,6 +1314,13 @@ export async function clearMcpServerOAuth(cfg) {
  * only kills the direct child and discards the pid we need to walk the tree.
  */
 async function _closeServer(server) {
+  // A shared stdio connection closes only when its last scope releases it.
+  const shared = server?.shared;
+  if (shared) {
+    shared.users.delete(server.registryKey);
+    if (shared.users.size > 0) return;
+    retireSharedConnection(server);
+  }
   // A deliberate close is not a crash: suppress the unexpected-close report.
   if (server?.liveness) server.liveness.closing = true;
   const transport = server?.transport;
@@ -1262,6 +1338,19 @@ async function _closeServer(server) {
   } catch {
     /* ignore */
   }
+}
+// Register `name` in `scopeId` on the live shared connection for `shareKey`,
+// when there is one. Returns whether it did.
+function adoptSharedConnection(shareKey, name, cfg, scopeId, genAtStart) {
+  const shared = shareKey ? _sharedStdio.get(shareKey) : null;
+  if (!shared || shared.liveness.alive === false || shared.liveness.closing) return false;
+  const registryKey = mcpServerRegistryKey(scopeId, name);
+  const { key: _key, users, ...connection } = shared;
+  users.add(registryKey);
+  rememberServerConnector(name, cfg);
+  servers.set(registryKey, { scopeId, registryKey, name, ...connection, cfg, shared, generation: genAtStart });
+  _invalidateMcpToolFieldMemo();
+  return true;
 }
 // Connects whose handshake has not finished yet: disconnectAll() must be able
 // to see (and tear down) their transports, because `servers` only lists fully
@@ -1282,6 +1371,8 @@ async function connectServer(
     // abort before creating a transport/child at all.
     throw new Error(`MCP server "${name}" connect aborted by shutdown`);
   }
+  const shareKey = sharedStdioKey(name, cfg);
+  if (adoptSharedConnection(shareKey, name, cfg, scopeId, genAtStart)) return;
   const client = createMcpClient(sdk, name, cfg, scopeId);
   const { transport, autoDetectAdvert, stderrTail, warnings } = createMcpTransport({
     name,
@@ -1326,26 +1417,42 @@ async function connectServer(
       }
       throw new Error(`MCP server "${name}" connect aborted by shutdown`);
     }
+    // Another scope finished connecting the same server meanwhile: use its
+    // process and release this one.
+    if (adoptSharedConnection(shareKey, name, cfg, scopeId, genAtStart)) {
+      await _closeServer({ client, transport, liveness });
+      return;
+    }
     const tools = mcpServerTools(name, capabilities, toolsResult.tools, cfg);
     const registryKey = mcpServerRegistryKey(scopeId, name);
-    servers.set(registryKey, {
-      scopeId,
-      registryKey,
-      name,
+    const connection = {
       client,
       transport,
       tools,
-      cfg,
       instructions,
       capabilities,
       liveness,
       stderrTail,
       warnings: warnings || [],
+    };
+    const shared = shareKey ? { ...connection, key: shareKey, users: new Set([registryKey]) } : null;
+    if (shared) _sharedStdio.set(shareKey, shared);
+    rememberServerConnector(name, cfg);
+    servers.set(registryKey, {
+      scopeId,
+      registryKey,
+      name,
+      ...connection,
+      cfg,
+      shared,
       generation: genAtStart,
     });
     if (capabilities?.tools?.listChanged && sdk.ToolListChangedNotificationSchema) {
+      // A shared connection refreshes the tools of every scope using it.
       client.setNotificationHandler(sdk.ToolListChangedNotificationSchema, () =>
-        refreshServerTools(registryKey, client, name, cfg, capabilities)
+        Promise.all(
+          [...(shared?.users ?? [registryKey])].map((key) => refreshServerTools(key, client, name, cfg, capabilities))
+        )
       );
     }
     _invalidateMcpToolFieldMemo();
@@ -1514,6 +1621,8 @@ async function runToolRefresh(registryKey, live, name, cfg, capabilities) {
     }
     if (servers.get(registryKey) !== live) return;
     live.tools = mcpServerTools(name, capabilities, refreshed.tools, cfg);
+    // A scope adopting the connection later starts from the current listing.
+    if (live.shared) live.shared.tools = live.tools;
     _invalidateMcpToolFieldMemo();
   } catch (error) {
     mcpLog(
@@ -1567,6 +1676,7 @@ export function _registerMcpServerForTest(scopeId, name, rawTools = [], options 
     generation: currentConnectAbortGeneration(normalizedScopeId),
   };
   _knownMcpScopes.add(normalizedScopeId);
+  rememberServerConnector(name, server.cfg);
   servers.set(registryKey, server);
   _invalidateMcpToolFieldMemo();
   return server;

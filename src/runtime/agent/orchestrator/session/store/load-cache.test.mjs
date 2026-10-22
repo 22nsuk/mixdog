@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
-import fs, { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import fs, {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
-import { evictIdleLiveSessions, loadSession } from '../store.mjs';
+import { deleteSession, evictIdleLiveSessions, loadSession, loadSessionStatus, saveSession } from '../store.mjs';
 import { forgetSessionLoadCache, sessionLoadCacheStats } from './load-cache.mjs';
 import {
   _clearSessionSaveState,
@@ -140,6 +150,29 @@ for (const kind of ['malformed', 'foreign', 'duplicate-id']) {
   });
 }
 
+test('a NUL-filled session file is absent, can be saved over, and a delete sets it aside', (t) => {
+  const f = fixture(t);
+  f.write('\0'.repeat(64));
+  assert.equal(loadSession(f.id), null);
+  saveSession({ ...f.saved, messages: [{ role: 'user', content: 'recreated' }] });
+  assert.equal(loadSession(f.id).messages[0].content, 'recreated');
+  f.write('\0'.repeat(64));
+  assert.equal(deleteSession(f.id), true);
+  assert.equal(existsSync(f.path), false);
+  const aside = readdirSync(dirname(f.path)).filter((name) => name.startsWith(`${f.id}.json.corrupt-`));
+  assert.equal(aside.length, 1);
+});
+
+test('a session file that is not JSON can still be deleted, its bytes kept aside', (t) => {
+  const f = fixture(t);
+  f.write('{"broken":');
+  assert.equal(loadSession(f.id), null);
+  assert.equal(deleteSession(f.id), true);
+  assert.equal(existsSync(f.path), false);
+  const [aside] = readdirSync(dirname(f.path)).filter((name) => name.startsWith(`${f.id}.json.corrupt-`));
+  assert.equal(readFileSync(join(dirname(f.path), aside), 'utf8'), '{"broken":');
+});
+
 test('failed-save recovery keeps the exact failed snapshot while unrelated corruption remains visible', (t) => {
   const f = fixture(t);
   const failed = { ...f.saved, messages: [{ role: 'assistant', content: 'failed write payload' }] };
@@ -240,6 +273,39 @@ test('more than eight live sessions keep their validation headers and are not re
   }
   assert.equal(reads, 0, 'every file is validated by its header without reading it');
   assert.ok(sessionLoadCacheStats().documents <= 8);
+});
+
+test('loadSessionStatus reuses a settled file answer and never outranks a rewrite or a live copy', (t) => {
+  const f = fixture(t);
+  f.write({ ...f.saved, status: 'error' });
+  // Past the racy-stamp window, so the answer may be kept under the stamp.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 10_000;
+  let reads = 0;
+  const original = fs.readFileSync;
+  fs.readFileSync = function (file, ...rest) {
+    if (String(file).includes(f.id)) reads++;
+    return original.call(this, file, ...rest);
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    Date.now = realNow;
+    fs.readFileSync = original;
+    syncBuiltinESMExports();
+  });
+  forgetSessionLoadCache(f.id);
+  assert.equal(loadSessionStatus(f.id), 'error');
+  const first = reads;
+  forgetSessionLoadCache(f.id);
+  assert.equal(loadSessionStatus(f.id), 'error');
+  assert.equal(reads, first, 'an unchanged settled file is not read again');
+  f.write({ ...f.saved, status: 'idle' });
+  assert.equal(loadSessionStatus(f.id), 'idle');
+  setLiveSession({ ...f.saved, status: 'running' });
+  assert.equal(loadSessionStatus(f.id), 'running');
+  _liveSessions.delete(f.id);
+  f.write('{"id":');
+  assert.equal(loadSessionStatus(f.id), null, 'an unreadable file speaks for no status');
 });
 
 test('a genuinely absent disk record does not discard an unsaved live conversation', (t) => {

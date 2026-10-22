@@ -10,7 +10,14 @@
  * state (getState) is read through a getter so it always reflects the current
  * render.
  */
-import { normalizeModelOptions, buildModelProviderItems, loadProviderDisplayNames } from './model-options.mjs';
+import {
+  normalizeModelOptions,
+  buildCatalogFailureItems,
+  buildModelProviderItems,
+  catalogProviderDisplayNames,
+  loadProviderCatalogFailures,
+  loadProviderDisplayNames,
+} from './model-options.mjs';
 import { createModelCatalog } from './model-picker/catalog-load.mjs';
 import { openProviderModelsPicker, saveSelectedRoute } from './model-picker/provider-models-list.mjs';
 
@@ -77,7 +84,8 @@ export function createModelPicker({
     }
 
     const models = normalizeModelOptions(providerModels);
-    const providerNames = await loadProviderDisplayNames(store);
+    const providerNames = catalogProviderDisplayNames(models, await loadProviderDisplayNames(store));
+    const catalogFailures = await loadProviderCatalogFailures(store);
     const activeRoute = options.currentRoute || {
       provider: state.provider,
       model: state.model,
@@ -116,7 +124,10 @@ export function createModelPicker({
         providerListHighlightProvider = renderOptions.highlightProvider;
       }
       const highlightProvider = renderOptions.highlightProvider || providerListHighlightProvider || null;
-      const providerItems = buildModelProviderItems(models, activeRoute, providerNames);
+      const providerItems = [
+        ...buildModelProviderItems(models, activeRoute, providerNames),
+        ...buildCatalogFailureItems(catalogFailures, models, providerNames),
+      ];
       const providerHighlight = highlightProvider || activeRoute?.provider || null;
       const providerInitialIndex = Math.max(
         0,
@@ -133,6 +144,10 @@ export function createModelPicker({
         pickerKey: `model-picker:providers:${providerHighlight || 'default'}`,
         items: providerItems,
         onSelect: (_value, item) => {
+          if (item?._failure) {
+            store.pushNotice(`${item.label}: ${item._failure}`, 'warn');
+            return;
+          }
           if (!item?._provider) return;
           openProviderModelsPicker({
             view,

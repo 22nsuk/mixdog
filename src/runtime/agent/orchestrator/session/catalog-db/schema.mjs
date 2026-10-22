@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 
 /** Bumped whenever the table layout or a codec changes: the DB is then
  *  dropped and backfilled again from the JSON catalog. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 10;
 /** PRAGMA application_id ('MXSC'): a file without it is not this catalog. */
 export const APPLICATION_ID = 0x4d585343;
 
@@ -27,8 +27,6 @@ const FIELDS = [
   ['lastUsedAt', 'last_used_at', 'real'],
   ['createdAt', 'created_at', 'real'],
   ['lastHeartbeatAt', 'last_heartbeat_at', 'real'],
-  // Always 0 in a stored row: liveness is overlaid from `.hb` sidecars at read.
-  ['heartbeatAt', 'heartbeat_at', 'real'],
   ['closed', 'closed', 'bool'],
   ['status', 'status', 'text'],
   ['owner', 'owner', 'loose'],
@@ -59,6 +57,17 @@ const FIELDS = [
   ['importKey', 'import_key', 'loose'],
   // Source session of an inherited (forked) session (schema 4).
   ['inheritedFromSessionId', 'inherited_from_session_id', 'loose'],
+  // Real human turns (null for a row written before schema 5).
+  ['realTurnCount', 'real_turn_count', 'loose'],
+  // The last conversational message, one line (schema 7).
+  ['lastMessagePreview', 'last_message_preview', 'text'],
+  // That line's routine provenance, or null (schema 8).
+  ['lastMessageRoutine', 'last_message_routine', 'json'],
+  // 'agent' | 'coding' (session/agent-mode.mjs) (schema 9).
+  ['sessionMode', 'session_mode', 'loose'],
+  // Places of the incoming messages with text among the counted ones, for the
+  // unread count of a bot home / room log; absent otherwise (schema 10).
+  ['incomingTail', 'incoming_tail', 'optjson'],
 ];
 
 const COLUMN_TYPES = { text: 'TEXT', real: 'REAL', int: 'INTEGER', bool: 'INTEGER', json: 'TEXT', optjson: 'TEXT' };
@@ -193,16 +202,10 @@ export function rowFromDb(record) {
   return row;
 }
 
-// Overlays a listing adds at read time; never part of the comparison.
-const OVERLAY_KEYS = new Set(['heartbeatAt', 'agentHeartbeatAt']);
-
-/** Comparable JSON of a row's stored fields (overlays excluded). */
+/** Comparable JSON of a row's stored fields. */
 function comparable(row) {
   const out = [];
-  for (const [key] of FIELDS) {
-    if (OVERLAY_KEYS.has(key)) continue;
-    out.push(row[key] === undefined ? null : row[key]);
-  }
+  for (const [key] of FIELDS) out.push(row[key] === undefined ? null : row[key]);
   return JSON.stringify(out);
 }
 

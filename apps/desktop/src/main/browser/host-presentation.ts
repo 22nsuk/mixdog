@@ -32,6 +32,7 @@ import { createBrowserTabs } from './tabs';
 import type { SessionTabStrip } from './tabs-close-result';
 import type { createBrowserUrlAdmission } from './url-admission';
 import type { BrowserUrlPolicy } from './url-policy';
+import { createUserTakesPage } from './user-takes-page';
 
 type Toolkit = ReturnType<typeof createBrowserCommandToolkit>;
 type Lifecycle = ReturnType<typeof createBrowserGuestLifecycle>;
@@ -63,6 +64,11 @@ function createBrowserHostTabs(
   const sessionTabs = createBrowserSessionTabStrip({
     tabs,
     currentGuest: (sessionId) => sessions.currentGuest(sessionId),
+    agentFollow: {
+      isPaused: (sessionId) => sessions.agentPage(sessionId)?.paused === true,
+      pause: (sessionId) => sessions.pauseAgentFollow(sessionId),
+      resume: (sessionId) => sessions.resumeAgentFollow(sessionId),
+    },
     lifecycle,
     pageId: (guest) => state.pageId(guest),
     retainGuest,
@@ -105,7 +111,11 @@ function createBrowserHostRemoteControl(options: {
       options.display.setRemoteViewing(sessionId, active);
       options.sendToRenderer(DESKTOP_IPC.browserRemoteViewerChanged, { sessionId, active });
     },
-    onUserControl: options.retainGuest,
+    onUserControl: createUserTakesPage({
+      sessionIdForGuest: (guest) => options.sessions.sessionIdForGuest(guest),
+      claimPage: options.lifecycle.claimPage,
+      retain: options.retainGuest,
+    }),
     leave,
     assertResolvedUrlAllowed: urls.assertResolvedUrlAllowed,
     dispatchPageInput: createPageInputDispatcher({
@@ -125,7 +135,16 @@ export function createBrowserHostPresentation(options: {
   window: BrowserWindow;
   base: Pick<
     BrowserHostFoundation,
-    'sessions' | 'state' | 'cdp' | 'leave' | 'display' | 'displayTextures' | 'urls' | 'urlPolicy' | 'sendToRenderer'
+    | 'sessions'
+    | 'state'
+    | 'cdp'
+    | 'leave'
+    | 'display'
+    | 'displayTextures'
+    | 'urls'
+    | 'urlPolicy'
+    | 'sendToRenderer'
+    | 'partition'
   >;
   lifecycle: Lifecycle;
   tools: Pick<Toolkit, 'emulation' | 'dispatchInput' | 'dialogs' | 'refActions'>;
@@ -170,6 +189,7 @@ export function createBrowserHostPresentation(options: {
         })),
     controller: (guest) => sessions.sessionIdForGuest(guest),
     leave,
+    permissions: options.base.partition.permissions,
   });
   const remote = createBrowserHostRemoteControl({
     sessionTabs,
@@ -201,6 +221,8 @@ export function createBrowserHostPresentation(options: {
   const pageSurface = createBrowserPageSurface({
     ensureGuest: lifecycle.ensureGuest,
     currentGuest: (sessionId) => sessions.currentGuest(sessionId),
+    agentPage: (sessionId) => sessions.agentPage(sessionId),
+    userTouched: (sessionId, guest) => lifecycle.claimPage(sessionId, guest),
     remoteDriven: (guest) => remoteDrive.driven(guest),
     dialogOwner,
     leave,

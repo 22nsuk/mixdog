@@ -9,6 +9,9 @@ export interface TurnCompletion {
   sourceType?: DesktopSessionSummary['sourceType'];
   /** Notification title — the session's own name. */
   title: string;
+  /** Set when the session is a bot's home chat: the watcher titles it with the
+   *  bot's name (a room is titled by its own name right here). */
+  agentHome?: string;
   /** Filled from the completed turn's assistant answer by the watcher. */
   preview: string;
   startedAt: number;
@@ -96,10 +99,15 @@ export function createTurnCompletionTracker(): TurnCompletionTracker {
         // Archived sessions are hidden from the app; a notification would point
         // at something the user cannot see without restoring it first.
         if (session.archived) continue;
+        // Sub-agent sessions report back to their Lead; only the Lead's own
+        // final answer is worth a notification.
+        if (session.agentSession) continue;
         completions.push({
           sessionId: id,
           sourceType: session.sourceType,
-          title: clip(session.title || session.preview || 'Mixdog', MAX_TITLE_CHARS) || 'Mixdog',
+          title:
+            clip(session.agentRoom?.name || session.title || session.preview || 'Mixdog', MAX_TITLE_CHARS) || 'Mixdog',
+          ...(session.agentHome ? { agentHome: session.agentHome } : {}),
           preview: '',
           startedAt: started.get(id) ?? nowMs,
           at: nowMs,

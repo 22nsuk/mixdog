@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from 'react';
 import { OPEN_CONNECTION_SETTINGS_EVENT } from '../remote-claim-events';
+import { OPEN_CONNECTORS_EVENT } from '../connector-connect';
 import {
   IMPORT_CATALOGS_CHANGED_EVENT,
   OPEN_IMPORTED_SESSION_EVENT,
@@ -9,6 +10,7 @@ import { startImportJobStore } from '../import-job-store';
 import { requestSessionRead } from '../app-snapshot-views';
 import { createProjectActions } from '../app-project-actions';
 import { useAppSessionActions } from '../use-app-session-actions';
+import { closeSessionPaneTabs } from '../session-tab-cleanup';
 import { useAppSessionOpen } from '../app-shell-session-open';
 import { useAppSettingsRouter } from './use-app-settings-router';
 import type { AppWorkspaceShell } from './use-app-workspace-shell';
@@ -31,7 +33,10 @@ export function useAppSessionCommands(
     setExtensionsSection,
     focusedLeafIdRef,
     snapshot,
+    paneLeavesRef,
+    paneWorkspace,
   } = shell;
+  const closePaneTab = paneWorkspace.closeTabByKey;
   const { projects, refreshProjects } = projectCatalog;
   const { releaseDeletedSessionSurfaces } = sessionPaneSurfaces;
   const {
@@ -70,6 +75,11 @@ export function useAppSessionCommands(
       navigationEpoch.current += 1;
     },
   });
+  const closeSessionTabs = useCallback(
+    (sessionId: string) =>
+      closeSessionPaneTabs(sessionId, paneLeavesRef.current, focusedLeafIdRef.current, tabs, closePaneTab),
+    [paneLeavesRef, focusedLeafIdRef, tabs, closePaneTab]
+  );
   const { renameSession, archiveSession, favoriteSession, moveSessionToProject, deleteSession } = useAppSessionActions({
     sessions,
     setSessions,
@@ -85,6 +95,8 @@ export function useAppSessionCommands(
     applySnapshot,
     activateSelection,
     onSessionDeleted: releaseDeletedSessionSurfaces,
+    closeSessionTabs,
+    openSession: (sessionId) => openSessionRef.current(sessionId),
     navigationEpoch,
     setRequestedSessionId,
   });
@@ -97,6 +109,7 @@ export function useAppSessionCommands(
     tabs,
     finishPendingConversationHandoff,
     activateSelection,
+    announceOpen: paneWorkspace.announceOpenInFocused,
   });
   openSessionRef.current = openSession;
   const prefetchSession = useCallback((sessionId: string) => requestSessionRead(sessionId), []);
@@ -115,6 +128,8 @@ export function useAppSessionCommands(
     () => window.mixdogDesktop?.subscribeShowConnectionSettings?.(() => openSettings('connection')),
     [openSettings]
   );
+  // The representative bot overlay's menu asks for Settings → Bots.
+  useEffect(() => window.mixdogDesktop?.subscribeDesktopPetOpenSettings?.(() => openSettings('bots')), [openSettings]);
 
   // The title-bar PC menu and the "a device is asking to connect" notice open
   // the page (with the dialog they asked for).
@@ -122,6 +137,12 @@ export function useAppSessionCommands(
     const open = () => openSettings('connection');
     window.addEventListener(OPEN_CONNECTION_SETTINGS_EVENT, open);
     return () => window.removeEventListener(OPEN_CONNECTION_SETTINGS_EVENT, open);
+  }, [openSettings]);
+  // The Agents pane's 커넥터 pill and a chat connect card open Extensions → 커넥터.
+  useEffect(() => {
+    const open = () => openSettings('mcp');
+    window.addEventListener(OPEN_CONNECTORS_EVENT, open);
+    return () => window.removeEventListener(OPEN_CONNECTORS_EVENT, open);
   }, [openSettings]);
 
   const { setSettingsOpen } = shellPanels;

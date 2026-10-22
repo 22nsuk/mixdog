@@ -6,7 +6,7 @@
  */
 import { contextMeasurementStats } from '../../../../shared/context-measurement.mjs';
 import { toolResultText } from './tool-result-text.mjs';
-import { restoredUserImageRefs, restoredUserText } from './user-text.mjs';
+import { createUserTextRestore } from './user-text.mjs';
 import {
   completionCardFromExecution,
   parseModelVisibleCompletionWrapper,
@@ -37,8 +37,28 @@ import {
   isTranscriptCancelledStatusText,
 } from '../../../../shared/tool-execution-contract.mjs';
 import { toolResultTerminalStatus } from '../../../../shared/tool-status.mjs';
-import { transcriptRouteMetadataFields } from '../../../../shared/transcript-metadata.mjs';
+import { transcriptAttachmentFields, transcriptRouteMetadataFields } from '../../../../shared/transcript-metadata.mjs';
+import { routineTriggerField } from '../../../../shared/routine-trigger.mjs';
 import { isImportedMessage } from '../imported-message.mjs';
+import { isContextAckMessage } from '../compact/user-message-kind.mjs';
+import { isRoutineResultMessage, routineResultNotice } from '../routine-result.mjs';
+import { heldRequestNotice, isHeldRequestMessage } from '../human-gate/held-message.mjs';
+import { isRoomRowMessage, roomRowItem } from '../agent-room.mjs';
+
+/** A failed turn's recorded end: its route, reason and quota stop, the same
+ *  fields the live turndone carries. */
+function restoredFailureFields(value) {
+  if (value.status !== 'failed') return {};
+  const errorKind = value.errorKind && typeof value.errorKind === 'object' ? value.errorKind : null;
+  const quota = value.quota && typeof value.quota === 'object' ? value.quota : null;
+  return {
+    ...transcriptRouteMetadataFields(value),
+    ...(typeof value.detail === 'string' && value.detail ? { detail: value.detail } : {}),
+    ...(typeof value.errorDetails === 'string' && value.errorDetails ? { errorDetails: value.errorDetails } : {}),
+    ...(errorKind && typeof errorKind.kind === 'string' ? { errorKind: { ...errorKind } } : {}),
+    ...(quota && typeof quota.provider === 'string' ? { quota: { ...quota } } : {}),
+  };
+}
 
 function restoredTranscriptMetadata(message) {
   const value = message?.meta?.transcript;
@@ -53,6 +73,10 @@ function restoredTranscriptMetadata(message) {
     if (typeof completionValue.checkpointId === 'string' && completionValue.checkpointId) {
       completion.checkpointId = completionValue.checkpointId;
     }
+    Object.assign(completion, restoredFailureFields(completionValue));
+    const attemptId = completionValue.attemptId || value.attemptId;
+    if (typeof attemptId === 'string' && attemptId) completion.attemptId = attemptId;
+    if (Number.isFinite(Number(completionValue.at))) completion.at = Number(completionValue.at);
   }
   return {
     // The stable message id lets a live view map a compaction's dropped
@@ -62,7 +86,13 @@ function restoredTranscriptMetadata(message) {
     ...transcriptRouteMetadataFields(value),
     ...(typeof value.sender === 'string' && value.sender ? { sender: value.sender } : {}),
     ...(typeof value.device === 'string' && value.device ? { device: value.device } : {}),
+    ...(typeof value.fromAgent === 'string' && value.fromAgent ? { fromAgent: value.fromAgent } : {}),
     ...(typeof value.checkpointId === 'string' && value.checkpointId ? { checkpointId: value.checkpointId } : {}),
+    // The attachments this prompt carried, by content hash: a restored row
+    // opens/downloads them by id from the attachment store.
+    ...transcriptAttachmentFields(value),
+    // A routine fire this turn delivered: painted as its marker row.
+    ...routineTriggerField(value),
     // Skills this user turn explicitly loaded (header selection or `$name`).
     ...(Array.isArray(value.appliedSkills) && value.appliedSkills.length
       ? { appliedSkills: value.appliedSkills.filter((name) => typeof name === 'string' && name) }
@@ -71,21 +101,47 @@ function restoredTranscriptMetadata(message) {
   };
 }
 
+function restoredTurnDoneItem(completion, metadata, nextId, finalAssistantId = '') {
+  const at = Number.isFinite(completion.at) ? completion.at : metadata.at;
+  return {
+    kind: 'turndone',
+    id: nextId(),
+    ...completion,
+    ...(completion.status === 'done' && finalAssistantId ? { finalAssistantId } : {}),
+    ...(Number.isFinite(at) ? { at } : {}),
+    ...(metadata.messageId ? { messageId: metadata.messageId } : {}),
+  };
+}
+
+// A stored message's plain text: string content as is, block content flattened.
+function restoredContentText(message) {
+  return typeof message?.content === 'string' ? message.content : toolResultText(message?.content);
+}
+
 function restoredAssistantTranscriptItems(message, nextId) {
-  const text = (typeof message?.content === 'string' ? message.content : toolResultText(message?.content)).trim();
+  const text = restoredContentText(message).trim();
   if (!text) return [];
   const { completion, ...metadata } = restoredTranscriptMetadata(message);
   const items = [{ kind: 'assistant', id: nextId(), text, ...metadata }];
-  if (completion) {
-    items.push({
-      kind: 'turndone',
-      id: nextId(),
-      ...completion,
-      ...(completion.status === 'done' ? { finalAssistantId: items[0].id } : {}),
-      ...(metadata.at ? { at: metadata.at } : {}),
-      ...(metadata.messageId ? { messageId: metadata.messageId } : {}),
-    });
+  // A failed end follows the message's tool calls (restoreTranscriptRange).
+  if (completion && completion.status !== 'failed') {
+    items.push(restoredTurnDoneItem(completion, metadata, nextId, items[0].id));
   }
+  return items;
+}
+
+/** The failed end recorded on a message that holds no reply text before it:
+ *  the prompt itself, a tool call or a tool result. */
+function restoredFailedTurnItems(message, nextId) {
+  const { completion, ...metadata } = restoredTranscriptMetadata(message);
+  const previous = Array.isArray(message?.meta?.transcript?.previousCompletions)
+    ? message.meta.transcript.previousCompletions
+    : [];
+  const items = previous.flatMap((value) => {
+    const historical = restoredTranscriptMetadata({ meta: { transcript: { completion: value, at: value?.at } } });
+    return historical.completion ? [restoredTurnDoneItem(historical.completion, historical, nextId)] : [];
+  });
+  if (completion?.status === 'failed') items.push(restoredTurnDoneItem(completion, metadata, nextId));
   return items;
 }
 
@@ -148,7 +204,7 @@ function attachRestoredToolResult(message, pendingByCallId) {
   const target = callId ? pendingByCallId.get(callId) : null;
   if (!target) return;
   pendingByCallId.delete(callId);
-  const text = (typeof message?.content === 'string' ? message.content : toolResultText(message?.content)) || '';
+  const text = restoredContentText(message) || '';
   target.result = text;
   assignUiDiffFromMessage(target, message);
   assignToolMetaFromMessage(target, message);
@@ -288,14 +344,20 @@ function mergeRestoredToolItems(items) {
 function restoredMessageItemUpperBound(message) {
   const boundaries =
     (Array.isArray(message?.meta?.sessionInheritances) ? message.meta.sessionInheritances.length : 0) +
-    (Array.isArray(message?.meta?.modelSwitches) ? message.meta.modelSwitches.length : 0);
-  if (message?.role === 'user') return 1 + boundaries;
-  if (message?.role !== 'assistant') return boundaries;
+    (Array.isArray(message?.meta?.modelSwitches) ? message.meta.modelSwitches.length : 0) +
+    (Array.isArray(message?.meta?.workflowSwitches) ? message.meta.workflowSwitches.length : 0) +
+    (Array.isArray(message?.meta?.orchestrationModeSwitches) ? message.meta.orchestrationModeSwitches.length : 0);
+  const completionCount =
+    Number(Boolean(message?.meta?.transcript?.completion)) +
+    (Array.isArray(message?.meta?.transcript?.previousCompletions)
+      ? message.meta.transcript.previousCompletions.length
+      : 0);
+  if (message?.role === 'user') return 1 + completionCount + boundaries;
+  if (message?.role !== 'assistant') return completionCount + boundaries;
   const calls = restoredMessageToolCalls(message);
   const content = message?.content;
   const hasContent = typeof content === 'string' ? content.length > 0 : Array.isArray(content) && content.length > 0;
-  const hasCompletion = Boolean(message?.meta?.transcript?.completion);
-  return Number(hasContent) + Number(hasCompletion) + calls.length + boundaries;
+  return Number(hasContent) + completionCount + calls.length + boundaries;
 }
 
 // One restored tool card for a parsed notification/completion envelope.
@@ -324,17 +386,31 @@ function restoredNotificationToolItem(parsed, text, message, nextId, errorLabel)
   };
 }
 
-function restoredUserTranscriptItems(message, nextId) {
+function restoredUserTranscriptItems(message, nextId, userText) {
   // Injected model-context payloads are model-visible but never user-authored:
   // skill bodies (meta:'skill'), hook/system reminders, and tag-wrapped context
   // blocks must not restore as user bubbles in any client.
   if (message?.meta === 'skill' || message?.meta === 'hook') return [];
+  // A schedule's result in its owner's home thread: a notice row.
+  // A held request of an unattended run (human-gate/held-message.mjs) likewise.
+  if (isRoutineResultMessage(message) || isHeldRequestMessage(message)) {
+    const { messageId, at } = restoredTranscriptMetadata(message);
+    return [
+      {
+        kind: 'notice',
+        id: nextId(),
+        ...(isHeldRequestMessage(message) ? heldRequestNotice(message) : routineResultNotice(message)),
+        ...(messageId ? { messageId } : {}),
+        ...(at ? { at } : {}),
+      },
+    ];
+  }
   // Imported prose renders verbatim: never a control row, card or display rewrite.
   if (isImportedMessage(message)) {
-    const text = (typeof message.content === 'string' ? message.content : toolResultText(message.content)).trim();
+    const text = restoredContentText(message).trim();
     return text ? [{ kind: 'user', id: nextId(), text, ...restoredTranscriptMetadata(message) }] : [];
   }
-  const text = restoredUserText(message?.content).trim();
+  const text = userText.text(message?.content).trim();
   // Persisted async-completion wrappers ("Async shell task ... finished. Result:
   // > ...") are the only durable record of a background completion — the live
   // Response card is an event-time push that does not survive a transcript
@@ -365,7 +441,7 @@ function restoredUserTranscriptItems(message, nextId) {
   }
   const synthetic = parseSyntheticAgentMessage(text);
   if (!synthetic) {
-    const imageRefs = restoredUserImageRefs(message?.content);
+    const imageRefs = userText.imageRefs(message?.content);
     return [
       {
         kind: 'user',
@@ -373,6 +449,8 @@ function restoredUserTranscriptItems(message, nextId) {
         text,
         ...restoredTranscriptMetadata(message),
         ...(imageRefs.length ? { imageRefs } : {}),
+        // Read by the model inside its running turn, as the live row says.
+        ...(message?.meta?.source === 'steering' ? { steered: true } : {}),
       },
     ];
   }
@@ -392,7 +470,37 @@ export function modelSwitchItem(id, boundary) {
   };
 }
 
-function restoreTranscriptRange(messages, start, sessionId) {
+/** The transcript row of a mid-conversation workflow switch (live and
+ *  restored); `unavailable`: the chosen workflow was gone when it was due and
+ *  the conversation kept `from`. */
+export function workflowSwitchItem(id, boundary) {
+  return {
+    kind: 'statusdone',
+    id,
+    status: 'workflow-switched',
+    label: 'Workflow switched',
+    from: boundary.from,
+    to: boundary.to,
+    ...(boundary.unavailable === true ? { unavailable: true } : {}),
+    at: boundary.at,
+  };
+}
+
+/** The transcript row of a mid-conversation orchestration (delegation) mode
+ *  switch (live and restored); `from`/`to` are mode ids. */
+export function orchestrationModeSwitchItem(id, boundary) {
+  return {
+    kind: 'statusdone',
+    id,
+    status: 'orchestration-mode-switched',
+    label: 'Delegation mode switched',
+    from: boundary.from,
+    to: boundary.to,
+    at: boundary.at,
+  };
+}
+
+function restoreTranscriptRange(messages, start, sessionId, userText) {
   const items = [];
   const pendingToolCalls = new Map();
   for (let index = start; index < messages.length; index += 1) {
@@ -402,14 +510,21 @@ function restoreTranscriptRange(messages, start, sessionId) {
     // let a tail-only restore skip the prefix without first counting every old
     // projected item.
     const restoredId = () => `hist_${sessionId}_${index}_${++part}`;
+    // A group room's posted row (agent-room.mjs): one bubble or notice row.
+    if (isRoomRowMessage(message)) {
+      items.push(roomRowItem(message, restoredId()));
+      continue;
+    }
     if (message?.role === 'user') {
-      items.push(...restoredUserTranscriptItems(message, restoredId));
-    } else if (message?.role === 'assistant') {
+      items.push(...restoredUserTranscriptItems(message, restoredId, userText));
+    } else if (message?.role === 'assistant' && !isContextAckMessage(message, messages[index - 1])) {
       items.push(...restoredAssistantTranscriptItems(message, restoredId));
       items.push(...restoredToolCallItems(message, restoredId, pendingToolCalls));
     } else if (message?.role === 'tool') {
       attachRestoredToolResult(message, pendingToolCalls);
     }
+    const eventStart = items.length;
+    items.push(...restoredFailedTurnItems(message, restoredId));
     for (const boundary of Array.isArray(message?.meta?.sessionInheritances) ? message.meta.sessionInheritances : []) {
       if (!boundary?.sessionId || !boundary?.provider || !boundary?.modelId) continue;
       items.push({
@@ -427,15 +542,35 @@ function restoreTranscriptRange(messages, start, sessionId) {
       if (!boundary?.provider || !boundary?.modelId) continue;
       items.push(modelSwitchItem(restoredId(), boundary));
     }
+    for (const boundary of Array.isArray(message?.meta?.workflowSwitches) ? message.meta.workflowSwitches : []) {
+      if (!boundary?.to) continue;
+      items.push(workflowSwitchItem(restoredId(), boundary));
+    }
+    for (const boundary of Array.isArray(message?.meta?.orchestrationModeSwitches)
+      ? message.meta.orchestrationModeSwitches
+      : []) {
+      if (!boundary?.to) continue;
+      items.push(orchestrationModeSwitchItem(restoredId(), boundary));
+    }
+    if (message?.meta?.transcript?.previousCompletions?.length) {
+      const events = items.slice(eventStart);
+      if (events.every((item) => Number.isFinite(item.at))) {
+        events.sort((left, right) => left.at - right.at);
+        items.splice(eventStart, events.length, ...events);
+      }
+    }
   }
   return mergeRestoredToolItems(items);
 }
 
 export function restoreTranscriptItems(messages, { sessionId = 'session', itemLimit = Number.POSITIVE_INFINITY } = {}) {
   const source = Array.isArray(messages) ? messages : [];
+  // One projection per load: a widened range reuses each prompt's parts and
+  // the paste-line reads share one budget.
+  const userText = createUserTextRestore();
   const numericLimit = Number(itemLimit);
   const limited = Number.isFinite(numericLimit) && numericLimit > 0;
-  if (!limited) return restoreTranscriptRange(source, 0, sessionId);
+  if (!limited) return restoreTranscriptRange(source, 0, sessionId, userText);
 
   const limit = Math.max(1, Math.floor(numericLimit));
   // Restore beyond the visible cap so a boundary tool run can merge exactly
@@ -449,7 +584,7 @@ export function restoreTranscriptItems(messages, { sessionId = 'session', itemLi
     upperBound += restoredMessageItemUpperBound(source[start]);
   }
 
-  let restored = restoreTranscriptRange(source, start, sessionId);
+  let restored = restoreTranscriptRange(source, start, sessionId, userText);
   // Hidden/context messages and aggregate tool runs can make the cheap upper
   // bound optimistic. Expand backward exponentially only when necessary.
   let expansionTarget = Math.max(64, limit - restored.length);
@@ -459,7 +594,7 @@ export function restoreTranscriptItems(messages, { sessionId = 'session', itemLi
       start -= 1;
       expansion += restoredMessageItemUpperBound(source[start]);
     }
-    restored = restoreTranscriptRange(source, start, sessionId);
+    restored = restoreTranscriptRange(source, start, sessionId, userText);
     expansionTarget *= 2;
   }
   return restored.length > limit ? restored.slice(-limit) : restored;

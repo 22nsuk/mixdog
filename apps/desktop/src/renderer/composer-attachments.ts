@@ -16,7 +16,6 @@ import { t } from './i18n';
 import { isRemoteBrowserRenderer, isRemoteHostRenderer } from './remote-ui-projection';
 import { learnedRelayUplinkBinaryBytes } from './remote-shim-payload-limit';
 import {
-  LEGACY_OFFICE_REPLACEMENT,
   MAX_PROMPT_IMAGE_BASE64_LENGTH,
   OFFICE_MIME_BY_EXTENSION,
   canonicalPromptFileMimeType,
@@ -54,14 +53,9 @@ export function fileExtension(name: string): string {
   return match ? match[1].toLowerCase() : '';
 }
 
-/** OOXML MIME type for a .docx/.pptx/.xlsx/.xlsm name, else ''. */
+/** Office MIME type for a .docx/.pptx/.xlsx/.xlsm/.doc/.ppt/.xls name, else ''. */
 export function officeMimeForName(name: string): string {
   return OFFICE_MIME_BY_EXTENSION[fileExtension(name)] || '';
-}
-
-/** The OOXML extension to save a legacy .doc/.xls/.ppt as, else ''. */
-export function legacyOfficeReplacement(name: string): string {
-  return LEGACY_OFFICE_REPLACEMENT[fileExtension(name)] || '';
 }
 
 /** True when the file starts with the `%PDF-` signature. */
@@ -111,26 +105,18 @@ export function attachmentPolicyError(
   if (currentAttachments.length >= MAX_COMPOSER_ATTACHMENTS) {
     return `Attach up to ${MAX_COMPOSER_ATTACHMENTS} items at a time.`;
   }
-  const textTotal =
-    currentAttachments.reduce((sum, item) => sum + (item.kind === 'text' ? item.data.length : 0), 0) +
-    (attachment.kind === 'text' ? attachment.data.length : 0);
-  if (textTotal > MAX_INLINE_TEXT_TOTAL) {
+  const dataTotal = (matches: (item: ComposerAttachment) => boolean) =>
+    [...currentAttachments, attachment].reduce((sum, item) => sum + (matches(item) ? item.data.length : 0), 0);
+  if (dataTotal((item) => item.kind === 'text') > MAX_INLINE_TEXT_TOTAL) {
     return 'Inline text attachments are too large together. Keep the total under 850 KB.';
   }
   if (attachment.kind === 'image' && attachment.data.length > MAX_PROMPT_IMAGE_BASE64_LENGTH) {
     return `${attachment.name}: use PNG, JPEG, GIF, or WebP under 12 MB.`;
   }
-  const imageTotal =
-    currentAttachments.reduce((sum, item) => sum + (item.kind === 'image' ? item.data.length : 0), 0) +
-    (attachment.kind === 'image' ? attachment.data.length : 0);
-  if (imageTotal > MAX_INLINE_IMAGE_BASE64_TOTAL) {
+  if (dataTotal((item) => item.kind === 'image') > MAX_INLINE_IMAGE_BASE64_TOTAL) {
     return 'Attached images are too large together. Remove one or use smaller files.';
   }
-  const isFilePart = (item: ComposerAttachment) => item.kind === 'pdf' || item.kind === 'office';
-  const fileTotal =
-    currentAttachments.reduce((sum, item) => sum + (isFilePart(item) ? item.data.length : 0), 0) +
-    (isFilePart(attachment) ? attachment.data.length : 0);
-  if (fileTotal > MAX_INLINE_FILE_BASE64_TOTAL) {
+  if (dataTotal((item) => item.kind === 'pdf' || item.kind === 'office') > MAX_INLINE_FILE_BASE64_TOTAL) {
     return t('Attached PDFs and Office files are too large together. Remove one or use smaller files.');
   }
   return '';
@@ -337,6 +323,8 @@ async function pdfAttachment({
   if (cancelled()) return null;
   const data = await base64Payload(file, `${displayName}: could not read PDF.`);
   if (cancelled()) return null;
+  const pageCount = pdfPageCount(new Uint8Array(await file.arrayBuffer()));
+  if (cancelled()) return null;
   return {
     id,
     name: displayName,
@@ -345,7 +333,51 @@ async function pdfAttachment({
     data,
     token: `[PDF #${id}: ${displayName}]`,
     chipOnly: true,
+    pageCount,
   };
+}
+
+/**
+ * A PDF's page count as its page tree states it: the largest `/Count` of a
+ * `/Type /Pages` node (the root's is the total), else the number of
+ * `/Type /Page` objects. 0 when neither is visible — a PDF that keeps its page
+ * tree in compressed object streams; the runtime counts it exactly at intake.
+ */
+export function pdfPageCount(bytes: Uint8Array): number {
+  let text = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    text += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  let treeCount = 0;
+  for (const match of text.matchAll(
+    /\/Type\s*\/Pages\b[^>]*?\/Count\s+(\d+)|\/Count\s+(\d+)[^>]*?\/Type\s*\/Pages\b/g
+  )) {
+    treeCount = Math.max(treeCount, Number(match[1] || match[2]) || 0);
+  }
+  if (treeCount > 0) return treeCount;
+  return [...text.matchAll(/\/Type\s*\/Page(?![a-zA-Z])/g)].length;
+}
+
+// Matches the runtime: a page reaches a native PDF reader as one image of at
+// most this many tokens, plus the text it carries.
+const PDF_PAGE_IMAGE_TOKENS = 1_568;
+// Above this, the notice explains that the files stay on this computer and
+// the model reads the pages it needs.
+const ATTACHMENT_NOTICE_TOKENS = 60_000;
+
+/**
+ * The notice shown before sending when the attached PDFs are large enough
+ * that they may go by reference (page count and a token estimate), else ''.
+ */
+export function attachmentContextNotice(attachments: ComposerAttachment[]): string {
+  const pdfs = attachments.filter((item) => item.kind === 'pdf');
+  const pages = pdfs.reduce((sum, item) => sum + (item.pageCount || 0), 0);
+  const tokens = pages * PDF_PAGE_IMAGE_TOKENS;
+  if (tokens < ATTACHMENT_NOTICE_TOKENS) return '';
+  return t(
+    'The attached PDFs total about {{pages}} pages (~{{tokens}} tokens). If that is too much for the model, they stay on this computer and the model reads only the pages it needs.',
+    { pages: pages.toLocaleString(), tokens: tokens.toLocaleString() }
+  );
 }
 
 async function officeAttachment(
@@ -421,15 +453,6 @@ export async function attachmentFromFile(
   const input: AttachmentInput = { file, id, displayName, cancelled };
   if (file.size === 0) {
     throw new RejectedComposerFileError(t('{{name}}: the file is empty.', { name: displayName }));
-  }
-  const legacyFormat = legacyOfficeReplacement(displayName);
-  if (legacyFormat) {
-    throw new RejectedComposerFileError(
-      t("{{name}}: legacy Office files can't be attached. Save it as {{format}} and try again.", {
-        name: displayName,
-        format: legacyFormat,
-      })
-    );
   }
   // Windows often reports an empty or octet-stream type; the extension then
   // decides the image type (PDF and Office are already decided by name).

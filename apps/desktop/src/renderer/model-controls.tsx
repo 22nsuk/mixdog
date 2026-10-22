@@ -5,26 +5,29 @@ import type {
   DesktopOrchestrationMode,
   SessionSnapshot,
 } from '../shared/contract';
-import { beginBootSurface, reportBootSurfaceReady, reportBootSurfaceStage } from './boot-metrics';
+import { beginBootSurface, holdBootSurface, reportBootSurfaceReady, reportBootSurfaceStage } from './boot-metrics';
 import { routePreferenceStore } from './app-route-preference';
 import { useModelSelection } from './use-model-selection';
 import type { RecordValue } from './desktop-types';
+import { isDesktopProvidersUnavailableError, useDesktopProvidersRetry } from './desktop-provider-retry';
 import { t } from './i18n';
 import {
   SHARED_MODEL_CATALOG_MAX_AGE_MS,
   readCachedModelCatalog,
   requestModelCatalog,
+  invalidateSharedModelCatalogRequest,
   subscribeModelCatalogInvalidation,
 } from './model-catalog-cache';
-import { customProviderDisplayNames, filterConfiguredModels } from './model-catalog';
+import { catalogProviderNames, customProviderDisplayNames, filterConfiguredModels } from './model-catalog';
 import {
-  EFFORT_FALLBACK_ORDER,
+  effortForModelChoice,
   modelOffersUltrafast,
   preferredModelParameters,
   type RouteSpeed,
   speedRouteFields,
 } from './model-route-utils';
 import { RouteEditor } from './RouteEditor';
+import type { RouteSessionChoice } from './route-editor-panes';
 import { routedExactContextTokens } from './route-editor-context';
 import { hostRouteAutoEffort, routeAutoEffortCapable, useAutoEffortRoute } from './auto-effort-store';
 import { OpenSelect } from './OpenSelect';
@@ -41,27 +44,38 @@ import {
   type WorkflowOption,
 } from './workflow-options-cache';
 
-// @ts-expect-error -- shared TUI source has no declaration file.
-import { normalizeModelOptions as normalizeTuiModelOptions } from '../../../../src/tui/app/model-options.mjs';
+import {
+  applyModelPreferenceToModels,
+  applyModelPreferenceToSetup,
+  listedModels,
+  orderModelsByRecency,
+  requestModelManagementProvider,
+  type ModelPreferenceChange,
+} from './model-visibility';
+import { invalidateCapabilitySettings } from './settings/capability-data';
+import { invalidateSidebarReferenceForMutation } from './sidebar-reference-cache';
 
-// Model-style trigger for changing the active session workflow.
+// Model-style trigger for changing the active session workflow. With a
+// `sessionId` (an existing session's composer) the pick switches that session
+// alone (from its next turn while one runs); the configured default for new
+// sessions stays.
 export const WorkflowSelect = memo(function WorkflowSelect({
   workflow,
   disabled,
   invokeResult,
   applySnapshot,
   onDraftChange,
+  sessionId,
 }: {
   workflow?: RecordValue | null;
   disabled: boolean;
   invokeResult: <T>(action: () => T | Promise<T>) => Promise<T | undefined>;
   applySnapshot: (snapshot: SessionSnapshot | null) => void;
   onDraftChange?: (workflow: { id: string; name: string }) => void;
+  sessionId?: string;
 }) {
-  const [options, setOptions] = useState<WorkflowOption[]>(seededWorkflowOptions);
-  const [optionsSettled, setOptionsSettled] = useState(() => freshWorkflowOptions() !== null);
+  const { options, optionsSettled } = useWorkflowOptions();
   const [switching, setSwitching] = useState(false);
-  const [reloadNonce, setReloadNonce] = useState(0);
   const switchGuard = useRef(false);
   beginBootSurface('workflow-controls', 'catalog');
   // The seeded list already answers whether this control belongs in the row, so
@@ -72,6 +86,68 @@ export const WorkflowSelect = memo(function WorkflowSelect({
     if (!workflowReady) return;
     reportBootSurfaceReady('workflow-controls', 'catalog', 'shell');
   }, [workflowReady]);
+  useEffect(() => {
+    if (!optionsSettled) return;
+    reportBootSurfaceStage('workflow-controls', 'catalog', 'data');
+  }, [optionsSettled]);
+  // A fresh desktop draft intentionally has no workflow override: the engine
+  // will use its configured active workflow. Preserve listWorkflows.active so
+  // the picker names that real inherited value instead of presenting the old
+  // non-existent "Workflow" placeholder as though it were selected.
+  const inherited = options.find((option) => option.active) || options[0];
+  const selectedId = String(workflow?.id || inherited?.value || '');
+  const selected = options.find((option) => option.value === selectedId);
+  const changeWorkflow = async (id: string) => {
+    if (disabled || switchGuard.current || !id || id === selectedId) return;
+    if (onDraftChange) {
+      onDraftChange({
+        id,
+        name: options.find((option) => option.value === id)?.label || id,
+      });
+      return;
+    }
+    switchGuard.current = true;
+    setSwitching(true);
+    try {
+      const result = await invokeResult(() =>
+        window.mixdogDesktop.invokeCapability<string>(
+          sessionId
+            ? { capability: 'setWorkflow', args: [id, { scope: 'session' }], sessionId }
+            : { capability: 'setWorkflow', args: [id] }
+        )
+      );
+      if (result !== undefined) applySnapshot(result.snapshot);
+    } finally {
+      switchGuard.current = false;
+      setSwitching(false);
+    }
+  };
+  // A workspace with one pack has nothing to choose, so the control leaves the
+  // context row entirely instead of opening a menu with a single row. It never
+  // reserves a slot either: appearing and then vanishing would shift the row.
+  if (options.length < 2) return null;
+  return (
+    <div className="composer-route-workflow">
+      <OpenSelect
+        variant="route"
+        className="workflow-context-select"
+        ariaLabel={t('Workflow')}
+        tooltip={t('Select workflow')}
+        disabled={disabled || switching || !optionsSettled}
+        value={selectedId}
+        displayValue={String(workflow?.name || selected?.label || selectedId)}
+        onChange={(value) => void changeWorkflow(value)}
+        options={options}
+      />
+    </div>
+  );
+});
+
+/** The workflow catalog every workflow picker shares (workflow-options-cache). */
+function useWorkflowOptions() {
+  const [options, setOptions] = useState<WorkflowOption[]>(seededWorkflowOptions);
+  const [optionsSettled, setOptionsSettled] = useState(() => freshWorkflowOptions() !== null);
+  const [reloadNonce, setReloadNonce] = useState(0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadNonce is a deliberate trigger that forces the workflow list to reload.
   useEffect(() => {
     const shared = freshWorkflowOptions();
@@ -124,61 +200,82 @@ export const WorkflowSelect = memo(function WorkflowSelect({
       window.removeEventListener('mixdog:remote-reconnected', retry);
     };
   }, []);
-  useEffect(() => {
-    if (!optionsSettled) return;
-    reportBootSurfaceStage('workflow-controls', 'catalog', 'data');
-  }, [optionsSettled]);
-  // A fresh desktop draft intentionally has no workflow override: the engine
-  // will use its configured active workflow. Preserve listWorkflows.active so
-  // the picker names that real inherited value instead of presenting the old
-  // non-existent "Workflow" placeholder as though it were selected.
-  const inherited = options.find((option) => option.active) || options[0];
-  const selectedId = String(workflow?.id || inherited?.value || '');
-  const selected = options.find((option) => option.value === selectedId);
-  const changeWorkflow = async (id: string) => {
-    if (disabled || switchGuard.current || !id || id === selectedId) return;
-    if (onDraftChange) {
-      onDraftChange({
-        id,
-        name: options.find((option) => option.value === id)?.label || id,
-      });
-      return;
-    }
-    switchGuard.current = true;
-    setSwitching(true);
-    try {
-      const result = await invokeResult(() =>
-        window.mixdogDesktop.invokeCapability<string>({
-          capability: 'setWorkflow',
-          args: [id],
-        })
-      );
+  return { options, optionsSettled };
+}
+
+/** The delegation choices, labelled as the New Task chip lists them. */
+function orchestrationModeOptions(): Array<{ value: DesktopOrchestrationMode; label: string; description: string }> {
+  return [
+    { value: 'none', label: t('Solo'), description: t('No delegation') },
+    { value: 'focused', label: t('Assisted'), description: t('Supporting delegation') },
+    { value: 'balanced', label: t('Collaborative'), description: t('Balanced delegation') },
+    { value: 'swarm', label: t('Swarm'), description: t('Maximum delegation') },
+  ];
+}
+
+/**
+ * A conversation's workflow and delegation mode as rows of its route menu.
+ * A pick switches that session alone — at once between turns, from the next
+ * response while one runs (`pending` until it applies, never refused); the
+ * configured defaults for new tasks stay. The workflow row is left out while
+ * only one workflow exists.
+ */
+export function useSessionRouteChoices({
+  sessionId,
+  workflow,
+  mode,
+  pendingWorkflow = false,
+  pendingMode = false,
+  disabled,
+  invokeResult,
+  applySnapshot,
+}: {
+  sessionId: string;
+  workflow?: RecordValue | null;
+  mode?: DesktopOrchestrationMode | null;
+  pendingWorkflow?: boolean;
+  pendingMode?: boolean;
+  disabled: boolean;
+  invokeResult: <T>(action: () => T | Promise<T>) => Promise<T | undefined>;
+  applySnapshot: (snapshot: SessionSnapshot | null) => void;
+}): RouteSessionChoice[] {
+  const { options } = useWorkflowOptions();
+  if (!sessionId) return [];
+  const send = (capability: 'setWorkflow' | 'setOrchestrationMode', value: string) =>
+    void invokeResult(() =>
+      window.mixdogDesktop.invokeCapability({ capability, args: [value, { scope: 'session' }], sessionId })
+    ).then((result) => {
       if (result !== undefined) applySnapshot(result.snapshot);
-    } finally {
-      switchGuard.current = false;
-      setSwitching(false);
-    }
-  };
-  // A workspace with one pack has nothing to choose, so the control leaves the
-  // context row entirely instead of opening a menu with a single row. It never
-  // reserves a slot either: appearing and then vanishing would shift the row.
-  if (options.length < 2) return null;
-  return (
-    <div className="composer-route-workflow">
-      <OpenSelect
-        variant="route"
-        className="workflow-context-select"
-        ariaLabel={t('Workflow')}
-        tooltip={t('Select workflow')}
-        disabled={disabled || switching || !optionsSettled}
-        value={selectedId}
-        displayValue={String(workflow?.name || selected?.label || selectedId)}
-        onChange={(value) => void changeWorkflow(value)}
-        options={options}
-      />
-    </div>
-  );
-});
+    });
+  const choices: RouteSessionChoice[] = [];
+  if (options.length >= 2) {
+    const workflowId = String(workflow?.id || options.find((option) => option.active)?.value || '');
+    choices.push({
+      id: 'workflow',
+      label: t('Workflow'),
+      value: workflowId,
+      valueLabel: String(workflow?.name || options.find((option) => option.value === workflowId)?.label || workflowId),
+      options: options.map((option) => ({ value: option.value, label: option.label })),
+      pending: pendingWorkflow,
+      disabled,
+      onSelect: (value) => send('setWorkflow', value),
+    });
+  }
+  if (mode) {
+    const modes = orchestrationModeOptions();
+    choices.push({
+      id: 'orchestration-mode',
+      label: t('Delegation mode'),
+      value: mode,
+      valueLabel: modes.find((option) => option.value === mode)?.label || mode,
+      options: modes,
+      pending: pendingMode,
+      disabled,
+      onSelect: (value) => send('setOrchestrationMode', value),
+    });
+  }
+  return choices;
+}
 
 export const OrchestrationModeSelect = memo(function OrchestrationModeSelect({
   mode,
@@ -248,28 +345,7 @@ export const OrchestrationModeSelect = memo(function OrchestrationModeSelect({
           disabled={disabled || switching}
           value={selected}
           onChange={(value) => void change(value)}
-          options={[
-            {
-              value: 'none',
-              label: t('Solo'),
-              description: t('No delegation'),
-            },
-            {
-              value: 'focused',
-              label: t('Assisted'),
-              description: t('Supporting delegation'),
-            },
-            {
-              value: 'balanced',
-              label: t('Collaborative'),
-              description: t('Balanced delegation'),
-            },
-            {
-              value: 'swarm',
-              label: t('Swarm'),
-              description: t('Maximum delegation'),
-            },
-          ]}
+          options={orchestrationModeOptions()}
         />
       ) : (
         <InitialSurface variant="control" />
@@ -328,9 +404,15 @@ export const ModelSelector = memo(function ModelSelector({
   onRoutePreferenceApplied,
   sessionId,
   answersModelPickerRequests = false,
+  sheetAlign,
+  sessionChoices,
 }: {
+  /** A conversation's workflow / delegation rows (useSessionRouteChoices). */
+  sessionChoices?: RouteSessionChoice[];
   /** True only for the focused, visible conversation pane. */
   answersModelPickerRequests?: boolean;
+  /** The pill edge its sheet lines up with (RouteEditor `align`). */
+  sheetAlign?: 'start' | 'end';
   provider: string;
   model: string;
   effort: string;
@@ -358,6 +440,8 @@ export const ModelSelector = memo(function ModelSelector({
   const [providerSetup, setProviderSetup] = useState<unknown>(null);
   const [catalogError, setCatalogError] = useState('');
   const [providerSetupError, setProviderSetupError] = useState('');
+  // A server window whose desktop proxy is away retries on the shared cadence.
+  const [desktopProvidersAway, setDesktopProvidersAway] = useState(false);
   const [catalogLoaded, setCatalogLoaded] = useState(cachedCatalog.models.length > 0);
   const [startupCatalogSettled, setStartupCatalogSettled] = useState(cachedCatalog.models.length > 0);
   const [catalogRefreshing, setCatalogRefreshing] = useState(false);
@@ -391,30 +475,25 @@ export const ModelSelector = memo(function ModelSelector({
   const latestRouteToken = useRef(0);
   const modelBootKey = `${provider || 'none'}:${model || 'none'}`;
   beginBootSurface('model-controls', modelBootKey);
+  // A restored session renders its controls before its route is known
+  // (`none:none`), then re-keys on the route: the superseded key must not
+  // hold the boot cover waiting for a ready no render will report.
+  useEffect(() => holdBootSurface('model-controls', modelBootKey), [modelBootKey]);
   // An in-flight write no longer locks the controls. The selection is previewed
   // locally the moment it is clicked, so disabling the picker until the runtime
   // replied only made it look frozen — and swallowed the next click.
   const modelUnavailable = modelDisabled;
   const tuningUnavailable = tuningDisabled;
   const displayedFast = fast;
-  const catalogModels = useMemo(() => {
-    const unique = new Map<string, DesktopModelOption>();
-    for (const option of models) {
-      if (option?.provider && option?.model) unique.set(`${option.provider}:${option.model}`, option);
-    }
-    const normalized = normalizeTuiModelOptions(
-      [...unique.values()].map((option) => ({ ...option, id: option.model }))
-    ) as Array<DesktopModelOption & { id?: string }>;
-    return normalized.map((entry) => {
-      const { id: _id, ...option } = entry;
-      return option as DesktopModelOption;
-    });
-  }, [models]);
+  // The whole catalog, newest first per provider. Which rows /model lists is
+  // Model management's call (selectableModels); a hidden model in use still
+  // names the trigger from here.
+  const catalogModels = useMemo(() => orderModelsByRecency(models), [models]);
   const selected = catalogModels.find((option) => option.provider === provider && option.model === model);
-  // The picker list is trimmed (family limits) and starts empty on a cold
-  // catalog, so a perfectly valid route — a schedule/webhook session opened
-  // right after it ran — could not be named from it (user: 세션 생성 시 쓴
-  // 모델이 그대로 표기되게). The RAW catalog answers those cases.
+  // The catalog starts empty on a cold start, so a perfectly valid route — a
+  // schedule/webhook session opened right after it ran — could not be named
+  // from it (user: 세션 생성 시 쓴 모델이 그대로 표기되게). The RAW catalog
+  // answers those cases.
   const known = selected || models.find((option) => option.provider === provider && option.model === model);
   const awaitingRoute = !known && !startupCatalogSettled;
   const autoEffortRoute = useAutoEffortRoute(known?.autoEffortCapable === true, autoEffort, (enabled) =>
@@ -448,10 +527,18 @@ export const ModelSelector = memo(function ModelSelector({
   const fastControlVisible = shouldShowFastControl(fastCapable, known?.fastCapable);
   const fastAvailable = fastControlVisible && modelFastAvailable(known, effort, selectedModelParameters);
   const selectableModels = useMemo(
-    () => filterConfiguredModels(catalogModels, providerSetup, providerSetupError),
+    () =>
+      listedModels(
+        filterConfiguredModels(catalogModels, providerSetup, providerSetupError),
+        catalogModels,
+        providerSetup
+      ),
     [catalogModels, providerSetup, providerSetupError]
   );
-  const providerNames = useMemo(() => customProviderDisplayNames(providerSetup), [providerSetup]);
+  const providerNames = useMemo(
+    () => catalogProviderNames(catalogModels, customProviderDisplayNames(providerSetup)),
+    [catalogModels, providerSetup]
+  );
   // A route the loaded catalog does not know at all stays "Select model": an
   // unknown/retired persisted id must never read as a selectable model.
   const triggerModel = known ? modelDisplayName(known.model, known.provider, known.display || '') : t('Select model');
@@ -468,7 +555,9 @@ export const ModelSelector = memo(function ModelSelector({
       setCatalogRefreshing(true);
       setCatalogError('');
       setProviderSetupError('');
+      setDesktopProvidersAway(false);
       const shared = requestModelCatalog(api);
+      let fullApplied = false;
       const setupRequest = shared.setup
         .then((setup) => {
           if (shared.isCurrent()) setProviderSetup(setup);
@@ -477,10 +566,12 @@ export const ModelSelector = memo(function ModelSelector({
           if (!shared.isCurrent()) return;
           console.warn('[model-catalog] provider setup refresh failed', reason);
           setProviderSetupError('unavailable');
+          setDesktopProvidersAway(isDesktopProvidersUnavailableError(reason));
         });
       const fullRequest = shared.full
         .then((full) => {
           if (!shared.isCurrent() || !Array.isArray(full)) return;
+          fullApplied = true;
           setModels(full);
           setCatalogError('');
         })
@@ -497,7 +588,9 @@ export const ModelSelector = memo(function ModelSelector({
         });
       try {
         const quick = await shared.quick;
-        if (shared.isCurrent() && Array.isArray(quick) && quick.length > 0) {
+        // A reused shared request may already have resolved both answers.
+        // Its thin quick rows must not overwrite the full catalog above.
+        if (shared.isCurrent() && !fullApplied && Array.isArray(quick) && quick.length > 0) {
           setModels((current) => {
             const merged = new Map(current.map((option) => [`${option.provider}:${option.model}`, option]));
             for (const option of quick) {
@@ -551,6 +644,8 @@ export const ModelSelector = memo(function ModelSelector({
     [loadCatalog]
   );
 
+  useDesktopProvidersRetry(desktopProvidersAway, invalidateSharedModelCatalogRequest);
+
   useEffect(() => {
     if (model && !startupCatalogSettled) return;
     reportBootSurfaceStage('model-controls', modelBootKey, 'data');
@@ -584,13 +679,13 @@ export const ModelSelector = memo(function ModelSelector({
     const values = option.effortOptions.map((entry) => entry.value);
     const sameModel = option.provider === provider && option.model === model;
     const remembered = routePreferenceStore.get(option.provider, option.model);
-    // The first remembered effort the model still offers wins; a model that
-    // offers none of them falls back to its own list.
-    const effortCandidates = [sameModel ? effort : '', remembered?.effort, option.savedEffort];
-    const nextEffort =
-      effortCandidates.find((candidate) => candidate && values.includes(candidate)) ||
-      EFFORT_FALLBACK_ORDER.find((value) => values.includes(value)) ||
-      values[0];
+    const nextEffort = effortForModelChoice({
+      values,
+      sameModel,
+      current: effort,
+      saved: option.savedEffort,
+      remembered: remembered?.effort,
+    });
     let requestedFast: boolean | undefined;
     if (option.fastCapable) {
       if (sameModel) requestedFast = displayedFast;
@@ -631,6 +726,22 @@ export const ModelSelector = memo(function ModelSelector({
       ...(optionMaxWindow > 0 && sameModel ? exactContextField : {}),
     };
     return route(selection, !sameModel);
+  };
+  // The /model row menu saves through Model management's own capability; the
+  // list updates at once and the re-read that follows confirms it.
+  const setModelPreference = async (option: DesktopModelOption, change: Omit<ModelPreferenceChange, 'model'>) => {
+    const api = window.mixdogDesktop;
+    const saved: ModelPreferenceChange = { model: option.model, ...change };
+    setModels((current) => applyModelPreferenceToModels(current, option.provider, saved));
+    setProviderSetup((current: unknown) => applyModelPreferenceToSetup(current, option.provider, saved));
+    try {
+      await api.invokeCapability({ capability: 'setModelPreferences', args: [option.provider, [saved]] });
+      invalidateSidebarReferenceForMutation('setModelPreferences');
+      invalidateCapabilitySettings(api, 'setModelPreferences');
+    } catch (reason) {
+      console.warn('[model-catalog] saving model preference failed', reason);
+      invalidateSharedModelCatalogRequest();
+    }
   };
   const changeFast = async (enabled: boolean) => {
     if (tuningUnavailable) return;
@@ -691,13 +802,16 @@ export const ModelSelector = memo(function ModelSelector({
     const nextFast = fastCapable
       ? modelFastAvailable(known, effort, selectedModelParameters) && displayedFast
       : undefined;
+    // A picked level is explicit: it turns the route's Auto effort off (the
+    // runtime's setEffort does the same), or Auto would replace it next turn.
+    const pickedAutoEffort = hostRouteAutoEffort() ? { autoEffort: false } : {};
     if (onDraftSelection && provider && model) {
       onDraftSelection({
         provider,
         model,
         effort,
         ...(nextFast === undefined ? {} : { fast: nextFast }),
-        ...autoEffortField,
+        ...pickedAutoEffort,
         ...routedParameterFields,
         contextPercent: normalizedContextPercent,
         ...exactContextField,
@@ -710,7 +824,7 @@ export const ModelSelector = memo(function ModelSelector({
         model,
         effort,
         fast: false,
-        ...autoEffortField,
+        ...pickedAutoEffort,
         ...routedParameterFields,
         contextPercent: normalizedContextPercent,
         ...exactContextField,
@@ -722,6 +836,7 @@ export const ModelSelector = memo(function ModelSelector({
       model,
       effort,
       ...(nextFast === undefined ? {} : { fast: nextFast }),
+      ...pickedAutoEffort,
     });
     latestRouteToken.current = token;
     let accepted = false;
@@ -743,7 +858,7 @@ export const ModelSelector = memo(function ModelSelector({
             model,
             effort,
             ...(nextFast === undefined ? {} : { fast: nextFast }),
-            ...autoEffortField,
+            ...pickedAutoEffort,
             ...routedParameterFields,
             contextPercent: normalizedContextPercent,
             ...exactContextField,
@@ -848,11 +963,18 @@ export const ModelSelector = memo(function ModelSelector({
         onChangeContext={(value, tokens) => void changeContext(value, tokens)}
         onChangeModelParameter={(id, value) => void changeModelParameter(id, value)}
         onOpenProviders={() => onOpenSettings('providers')}
+        onOpenModelManagement={(target) => {
+          if (target) requestModelManagementProvider(target);
+          onOpenSettings('model-management');
+        }}
+        onSetModelPreference={setModelPreference}
         onOpenModelPane={() => void loadCatalog()}
         autoEffort={autoEffortRoute.autoEffort}
         onChangeAutoEffort={autoEffortRoute.onChangeAutoEffort}
         onOpenSheet={autoEffortRoute.onOpenSheet}
+        sessionChoices={sessionChoices}
         answersModelPickerRequests={answersModelPickerRequests}
+        align={sheetAlign}
       />
     </div>
   );

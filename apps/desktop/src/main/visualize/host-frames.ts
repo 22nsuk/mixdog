@@ -45,6 +45,36 @@ export async function bodyRectNow(window: BrowserWindow, sessionId: string, tabI
   return (await window.webContents.executeJavaScript(query)) as BodyRect | null;
 }
 
+/** Whether the user can see the displayed tab body: the topmost element at
+ *  one of a few points across it (inside the viewport) is the body or within
+ *  it. False when a dialog, Settings or another overlay covers it, or a
+ *  clipping ancestor hides it; null when the body is not there at all. */
+export async function bodyUncoveredNow(
+  window: BrowserWindow,
+  sessionId: string,
+  tabId: string
+): Promise<boolean | null> {
+  const query = `(() => {
+    for (const node of document.querySelectorAll('[data-visualize-body]')) {
+      if (node.dataset.visualizeSession !== ${JSON.stringify(sessionId)}) continue;
+      if (node.dataset.visualizeTab !== ${JSON.stringify(tabId)}) continue;
+      if (node.closest('[inert], [hidden], [aria-hidden="true"]')) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) continue;
+      for (const [fx, fy] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+        const x = rect.left + rect.width * fx;
+        const y = rect.top + rect.height * fy;
+        if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) continue;
+        const hit = document.elementFromPoint(x, y);
+        if (hit && node.contains(hit)) return true;
+      }
+      return false;
+    }
+    return null;
+  })()`;
+  return (await window.webContents.executeJavaScript(query)) as boolean | null;
+}
+
 /** `http://127.0.0.1:port/<token>/` of a local page URL: every page and asset
  *  of that lease shares it. */
 export function leasePrefix(url: string): string {
@@ -63,22 +93,29 @@ export async function retry<T>(find: () => Promise<T | null> | T | null): Promis
   throw new Error(NOT_ON_SCREEN);
 }
 
-/** The frames showing the tab's HTML panes, with their pane labels. */
-export function htmlFrames(window: BrowserWindow, tab: VisualizeTabView): Array<{ pane: string; frame: WebFrameMain }> {
+/** The frames showing the tab's HTML panes, with their pane labels and
+ *  displayed pane indices. */
+export function htmlFrames(
+  window: BrowserWindow,
+  tab: VisualizeTabView
+): Array<{ pane: string; index: number; frame: WebFrameMain }> {
   const frames = window.webContents.mainFrame.framesInSubtree;
-  const found: Array<{ pane: string; frame: WebFrameMain }> = [];
-  for (const pane of tab.panes) {
-    if (pane.kind !== 'html') continue;
+  const found: Array<{ pane: string; index: number; frame: WebFrameMain }> = [];
+  tab.panes.forEach((pane, index) => {
+    if (pane.kind !== 'html') return;
     const prefix = leasePrefix(pane.url);
     for (const frame of frames) {
-      if (!frame.isDestroyed() && frame.url.startsWith(prefix)) found.push({ pane: pane.label, frame });
+      if (!frame.isDestroyed() && frame.url.startsWith(prefix)) found.push({ pane: pane.label, index, frame });
     }
-  }
+  });
   return found;
 }
 
 /** The panel's own pane frames: not frames nested inside a page. */
-export function paneFrames(window: BrowserWindow, tab: VisualizeTabView): Array<{ pane: string; frame: WebFrameMain }> {
+export function paneFrames(
+  window: BrowserWindow,
+  tab: VisualizeTabView
+): Array<{ pane: string; index: number; frame: WebFrameMain }> {
   return htmlFrames(window, tab).filter(({ frame }) => frame.parent !== null && frame.parent.parent === null);
 }
 
@@ -89,6 +126,24 @@ export async function shownBody(window: BrowserWindow, sessionId: string, tab: V
     throw new Error('the Mixdog window is minimized or hidden; restore it, then retry');
   }
   return retry(() => bodyRectNow(window, sessionId, tab.id));
+}
+
+/** How far the user can see the displayed tab in this window (see
+ *  `VisualizeServiceDeps.onScreen`). */
+export async function desktopScreenState(
+  window: BrowserWindow,
+  sessionId: string,
+  tab: VisualizeTabView
+): Promise<'visible' | 'background' | 'covered' | 'hidden'> {
+  const shown = await shownBody(window, sessionId, tab).then(
+    () => true,
+    () => false
+  );
+  if (!shown) return 'hidden';
+  const uncovered = await bodyUncoveredNow(window, sessionId, tab.id);
+  if (uncovered === null) return 'hidden';
+  if (!uncovered) return 'covered';
+  return window.isFocused() ? 'visible' : 'background';
 }
 
 /** Captures `rect` (CSS px of the window) at the window's zoom. */

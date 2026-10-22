@@ -1,6 +1,7 @@
 // manager/session-crud.mjs
 // Session read + mutate CRUD: lookup (getSession/listSessions/findSessionByScopeKey),
 // message clear (with clear-fork), manual compaction, status update, and metric flush.
+import { createHash } from 'node:crypto';
 import {
   loadSession,
   saveSessionAsync,
@@ -27,8 +28,11 @@ import { isSessionCompactionBlocked, getSessionAbortSignal, _runtimeEntries } fr
 import { mintSessionId } from './session-id.mjs';
 import { hideCompactionArchive } from '../compaction-archive-capture.mjs';
 import { writeStderrBestEffort } from '../../../../shared/best-effort-stderr.mjs';
+import { forgetSideQuestion } from '../side-question-store.mjs';
+import { isAgentHomeSessionId } from '../agent-home.mjs';
+import { messageIdOf } from '../message-ids.mjs';
 
-/** Force-flush session metrics to disk. Used by watchdog terminal-reap (fix B). */
+/** Force-flush session metrics to disk. */
 export async function flushSessionMetrics(sessionId) {
   if (!sessionId) return;
   const session = loadSession(sessionId);
@@ -206,9 +210,12 @@ function clearTokenAccounting(session, messages, keep, beforeMessageTokens) {
 // Fork the outgoing transcript to a separate resumable session BEFORE the wipe,
 // so the conversation about to be discarded stays reachable via /resume under a
 // fresh id. Best-effort: any failure here must never block the clear itself.
-function forkOutgoingTranscript(session, messages, now) {
+// `archiveAs` names the fork (an agent home's "대화 새로 시작": the host
+// archives that id before the clear) and makes it durable first: the returned
+// promise settles once the copy is on disk, and the wipe waits on it.
+function forkOutgoingTranscript(session, messages, now, archiveAs = '') {
   try {
-    const forkId = mintSessionId();
+    const forkId = archiveAs || mintSessionId();
     const fork = {
       ...session,
       id: forkId,
@@ -233,6 +240,15 @@ function forkOutgoingTranscript(session, messages, now) {
       delete fork.compaction.archive;
     }
     setLiveSession(fork);
+    if (archiveAs) {
+      return saveSessionAsync(fork).then(
+        () => evictLiveSession(forkId),
+        (err) => {
+          evictLiveSession(forkId);
+          throw err;
+        }
+      );
+    }
     void saveSessionAsync(fork)
       .then(() => {
         // The fork is a cold snapshot kept for /resume. Once durable on
@@ -246,8 +262,22 @@ function forkOutgoingTranscript(session, messages, now) {
         writeStderrBestEffort(`[session] clear-fork save failed (sess=${forkId}): ${err?.message || err}\n`);
       });
   } catch (err) {
+    if (archiveAs) throw err;
     writeStderrBestEffort(`[session] clear-fork failed (sess=${session.id}): ${err?.message || err}\n`);
   }
+}
+
+const ARCHIVE_ID = /^sess_[A-Za-z0-9_-]{8,200}$/;
+
+/** The fork id a clear was asked to archive under, '' when none. */
+function clearArchiveId(value, sessionId) {
+  if (value === undefined || value === null || value === '') return '';
+  const id = String(value);
+  if (!ARCHIVE_ID.test(id) || id === sessionId || isAgentHomeSessionId(id)) {
+    throw new Error('clear: archiveAs must be a fresh session id');
+  }
+  if (loadSession(id)) throw new Error(`clear: session ${id} already exists`);
+  return id;
 }
 
 export async function clearSessionMessages(sessionId, options = {}) {
@@ -256,7 +286,9 @@ export async function clearSessionMessages(sessionId, options = {}) {
   // Don't resurrect a closed session just to clear its messages.
   if (session.closed === true) return false;
   const clearOptions = options && typeof options === 'object' ? options : {};
-  const compact = clearOptions.compact === true;
+  const archiveAs = clearArchiveId(clearOptions.archiveAs, sessionId);
+  // An archived reset keeps the whole transcript: never compacted first.
+  const compact = clearOptions.compact === true && !archiveAs;
   const currentMessages = Array.isArray(session.messages) ? session.messages : [];
   const beforeMessageTokens = estimateMessagesTokens(currentMessages);
   const { messages, clearCompactError } = compact
@@ -274,13 +306,21 @@ export async function clearSessionMessages(sessionId, options = {}) {
   // content the live session retains via the summary, so the fork duplicated
   // it as a confusing extra Recent row ("Re-attached after compaction…" —
   // user report). Plain /clear (no summary kept) still forks.
+  // `fork: false` (a room member's reset: the room's own log keeps the
+  // conversation) skips the copy; an `archiveAs` clear always keeps one.
   const summaryCarriedForward = keep.some(isCompactSummaryMessage);
-  if (hasUserConversationMessage(messages) && !summaryCarriedForward) forkOutgoingTranscript(session, messages, now);
+  const keepCopy = clearOptions.fork !== false || Boolean(archiveAs);
+  if (keepCopy && hasUserConversationMessage(messages) && !summaryCarriedForward) {
+    const fork = forkOutgoingTranscript(session, messages, now, archiveAs);
+    if (archiveAs) await fork;
+  }
 
   session.messages = keep;
   // Clear truncates the transcript wholesale; drop the provider prefix
-  // snapshot so the next send re-baselines instead of history_shrink.
+  // snapshot so the next send re-baselines instead of history_shrink, and
+  // the request a /btw side question would fork.
   delete session._providerPrefixGuardState;
+  forgetSideQuestion(sessionId);
   resetSessionBp3Environment(session);
   Object.assign(session, clearedTokenAccounting(now));
   session.compaction = {
@@ -374,26 +414,45 @@ export async function updateSessionStatus(id, status) {
 export async function rewindSessionMessagesTo(sessionId, options = {}) {
   const session = loadSession(sessionId);
   if (!session || session.closed === true) return null;
+  const targetId = String(options?.messageId ?? '').trim();
   const target = String(options?.text ?? '').trim();
-  if (!target) return null;
+  if (!targetId && !target) return null;
   const messages = Array.isArray(session.messages) ? session.messages : [];
-  let start = -1;
+  // The stable message id is the identity: the stored prompt is the EXPANDED
+  // text (attachment tokens materialized), so display text cannot find it.
+  // Text is only the fallback for a row that carries no id.
+  const matches = targetId
+    ? (message) => messageIdOf(message) === targetId
+    : (message) => promptContentText(message.content).trim() === target;
+  const found = [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== 'user') continue;
-    if (promptContentText(message.content).trim() !== target) continue;
-    start = index;
-    break;
+    if (messages[index]?.role === 'user' && matches(messages[index])) found.push(index);
   }
-  if (start < 0) return null;
+  // Without an id, text that several prompts repeat cannot say which one the
+  // user picked: refuse rather than rewind the wrong occurrence.
+  if (found.length === 0 || (!targetId && found.length > 1)) return null;
+  const start = found[0];
   const removed = messages.length - start;
+  const rewoundMessage = messages[start];
+  // `dryRun` resolves the target and reports what a rewind would do, changing
+  // nothing: the caller prepares the restore payload first and commits after.
+  // The marker names the exact history the dry run saw (generation alone only
+  // moves on lifecycle changes); the commit passes it back and is refused when
+  // the history differs.
+  const historyMarker = `${session.generation ?? 0}:${messages.length}:${createHash('sha1')
+    .update(JSON.stringify(messages))
+    .digest('hex')}`;
+  if (options?.dryRun === true) return { removed, remaining: start, message: rewoundMessage, historyMarker };
+  if (options?.expectedHistoryMarker != null && options.expectedHistoryMarker !== historyMarker) return null;
   session.messages = messages.slice(0, start);
   // The provider cache is keyed on the exact prefix we just truncated;
-  // the prefix-guard snapshot describes it too and must go with it.
+  // the prefix-guard snapshot and the /btw fork request describe it too and
+  // must go with it.
   session.providerState = undefined;
   delete session._providerPrefixGuardState;
+  forgetSideQuestion(sessionId);
   session.updatedAt = Date.now();
   session.lastUsedAt = Date.now();
   await saveSessionAsync(session, { expectedGeneration: session.generation });
-  return { removed, remaining: session.messages.length };
+  return { removed, remaining: session.messages.length, message: rewoundMessage };
 }

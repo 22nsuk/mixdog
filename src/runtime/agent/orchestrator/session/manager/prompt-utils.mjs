@@ -207,29 +207,46 @@ function bp3SliceAt(text, heading) {
 
 /**
  * Replace the workspace-scoped tail of a BP3 core (composeSystemPrompt order:
- * …, `# Core Memory`, `# Instruction Files`). The instruction-files slice is
- * always last and may itself contain separators, so it is cut by position;
- * the core-memory slice is one separator-free part. `undefined` keeps a slice,
- * an empty string drops it.
+ * …, `# Instruction Files`, `# Core Memory`). Core memory is the last,
+ * separator-free part; the instruction-files slice before it may itself
+ * contain separators, so both are cut by position. A core from before that
+ * order (memory, then instruction files) is read too and written in the
+ * current order. `undefined` keeps a slice, an empty string drops it.
  * @param {string} core
  * @param {{ coreMemoryContext?: string, instructionFilesContext?: string }} slices
  */
 export function replaceWorkspaceCoreSlices(core, { coreMemoryContext, instructionFilesContext } = {}) {
+  let { head, instructionFiles, memory } = splitWorkspaceCoreSlices(core);
+  if (coreMemoryContext !== undefined) {
+    const value = trimmedSlice(coreMemoryContext);
+    memory = value ? `${CORE_MEMORY_HEADING}${value}` : '';
+  }
+  if (instructionFilesContext !== undefined) instructionFiles = trimmedSlice(instructionFilesContext);
+  return [head, instructionFiles, memory].filter((part) => part?.trim()).join(BP3_PART_SEPARATOR);
+}
+
+/** A BP3 core's `{ head, instructionFiles, memory }` (each '' when absent). */
+function splitWorkspaceCoreSlices(core) {
   let head = String(core || '');
+  let memory = '';
+  const memoryAt = bp3SliceAt(head, CORE_MEMORY_HEADING);
+  if (memoryAt) {
+    memory = head.slice(memoryAt.start);
+    head = head.slice(0, memoryAt.cut);
+    const legacy = memory.indexOf(`${BP3_PART_SEPARATOR}${INSTRUCTION_FILES_HEADING}`);
+    if (legacy >= 0) {
+      const instructions = memory.slice(legacy + BP3_PART_SEPARATOR.length);
+      memory = memory.slice(0, legacy);
+      head = head ? `${head}${BP3_PART_SEPARATOR}${instructions}` : instructions;
+    }
+  }
   let instructionFiles = '';
   const instructionAt = bp3SliceAt(head, INSTRUCTION_FILES_HEADING);
   if (instructionAt) {
     instructionFiles = head.slice(instructionAt.start);
     head = head.slice(0, instructionAt.cut);
   }
-  let parts = head ? head.split(BP3_PART_SEPARATOR) : [];
-  if (coreMemoryContext !== undefined) {
-    parts = parts.filter((part) => !part.startsWith(CORE_MEMORY_HEADING));
-    const memory = trimmedSlice(coreMemoryContext);
-    if (memory) parts.push(`${CORE_MEMORY_HEADING}${memory}`);
-  }
-  if (instructionFilesContext !== undefined) instructionFiles = trimmedSlice(instructionFilesContext);
-  return [...parts, instructionFiles].filter((part) => part && part.trim()).join(BP3_PART_SEPARATOR);
+  return { head, instructionFiles, memory };
 }
 
 /**
@@ -243,7 +260,7 @@ export function replaceWorkspaceEnvironment(environmentTail, environmentContext)
   const facts = trimmedSlice(environmentContext);
   if (parts[0]?.startsWith('- ')) parts[0] = facts;
   else parts.unshift(facts);
-  return parts.filter((part) => part && part.trim()).join(BP3_PART_SEPARATOR);
+  return parts.filter((part) => part?.trim()).join(BP3_PART_SEPARATOR);
 }
 
 /**
@@ -286,9 +303,7 @@ function textOf(message) {
  */
 function presentedWorkspace(session) {
   const core = session.bp3EnvSplit === true ? textOf(bp3SystemMessage(session)) : String(session.bp3CoreContext || '');
-  const instructionAt = bp3SliceAt(core, INSTRUCTION_FILES_HEADING);
-  const head = instructionAt ? core.slice(0, instructionAt.cut) : core;
-  const memory = (head ? head.split(BP3_PART_SEPARATOR) : []).find((part) => part.startsWith(CORE_MEMORY_HEADING));
+  const { instructionFiles, memory } = splitWorkspaceCoreSlices(core);
   const tail = typeof session.bp3EnvironmentContext === 'string' ? session.bp3EnvironmentContext : '';
   const facts = tail.split(BP3_PART_SEPARATOR)[0] || '';
   const promptText = [textOf(bpEnvSystemMessage(session)), textOf(bp3SystemMessage(session))].join('\n');
@@ -297,8 +312,57 @@ function presentedWorkspace(session) {
     cwd: cwd ? cwd.trim() : null,
     environmentContext: facts.startsWith('- ') ? facts.trim() : '',
     coreMemoryContext: memory ? memory.slice(CORE_MEMORY_HEADING.length).trim() : '',
-    instructionFilesContext: instructionAt ? core.slice(instructionAt.start).trim() : '',
+    instructionFilesContext: instructionFiles.trim(),
   };
+}
+
+/**
+ * A rebuilt BP3 core head (composed without workspace slices) followed by the
+ * instruction-files and core-memory slices the session's prompt presents now,
+ * so a rebuild of the rest of the core (a mid-conversation workflow switch)
+ * leaves what the model was told about its workspace — and any staged
+ * workspaceReroot — as it was.
+ */
+export function withPresentedWorkspaceSlices(session, nextHead) {
+  const core = session.bp3EnvSplit === true ? textOf(bp3SystemMessage(session)) : String(session.bp3CoreContext || '');
+  const { instructionFiles, memory } = splitWorkspaceCoreSlices(core);
+  return [nextHead, instructionFiles, memory].filter((part) => part?.trim()).join(BP3_PART_SEPARATOR);
+}
+
+const AGENT_CATALOG_HEADING = '# Available Agents';
+// One generated catalog line (workflow/context.mjs agentCatalog):
+// `- <name> (<id>)` with an optional `: <description>`.
+const AGENT_CATALOG_ENTRY = /^- (.+?) \(([^()\s]+)\)(?:: .*)?$/;
+
+/** The entries of a generated agent list slice, or null when `slice` is not
+ *  one (only the exact generated format is evidence). */
+export function agentListEntries(slice) {
+  const text = String(slice || '').trim();
+  if (!text.startsWith(`${AGENT_CATALOG_HEADING}\n\n`)) return null;
+  const entries = [];
+  for (const line of text.slice(AGENT_CATALOG_HEADING.length + 2).split('\n')) {
+    const match = AGENT_CATALOG_ENTRY.exec(line);
+    if (!match) return null;
+    entries.push({ id: match[2], name: match[1], line });
+  }
+  return entries;
+}
+
+/**
+ * The "# Available Agents" slice the session's prompt presents: '' when it
+ * carries none, null when what it carries under that heading is not one
+ * complete generated list (custom text, or more than one). A coding Lead's
+ * rebuilt core keeps a presented list, as it keeps the workspace slices: the
+ * list the model saw first stays the baseline every later agent list
+ * reminder applies to (agent-listing-notice.mjs).
+ */
+export function presentedAgentCatalogSlice(session) {
+  const core = session.bp3EnvSplit === true ? textOf(bp3SystemMessage(session)) : String(session.bp3CoreContext || '');
+  const slices = core
+    .split(BP3_PART_SEPARATOR)
+    .filter((slice) => slice === AGENT_CATALOG_HEADING || slice.startsWith(`${AGENT_CATALOG_HEADING}\n`));
+  if (!slices.length) return '';
+  return slices.length === 1 && agentListEntries(slices[0]) ? slices[0] : null;
 }
 
 const WORKSPACE_SLICES = ['environmentContext', 'coreMemoryContext', 'instructionFilesContext'];
@@ -321,6 +385,10 @@ function stageWorkspaceReroot(session, context) {
   for (const slice of WORKSPACE_SLICES) {
     if (context[slice] !== undefined) target[slice] = trimmedSlice(context[slice]);
   }
+  // The move into a worktree belongs to this change only; a later one drops it.
+  delete target.move;
+  const from = String(context.move?.from || '').trim();
+  if (from) target.move = { from, changes: context.move.changes ?? null };
   session.workspaceReroot = {
     version: 1,
     revision: (Number(prior?.revision) || 0) + 1,
@@ -338,8 +406,11 @@ function stageWorkspaceReroot(session, context) {
  * (stageWorkspaceReroot): the model learns it from the tail notice of its
  * next user turn (snapshotPendingWorkspaceNotice), and the next re-root
  * (applyPendingWorkspaceReroot) rewrites the prompt.
+ * `move` ({ from, changes: 'carried'|'left'|null }: the session left the
+ * project folder `from` for a worktree) adds to the notice what happened to
+ * the uncommitted changes and that paths under `from` now resolve under `cwd`.
  * @param {object} session
- * @param {{ cwd: string, environmentContext?: string, coreMemoryContext?: string, instructionFilesContext?: string }} context
+ * @param {{ cwd: string, environmentContext?: string, coreMemoryContext?: string, instructionFilesContext?: string, move?: { from: string, changes?: 'carried'|'left'|null } }} context
  * @returns {boolean}
  */
 export function refreshSessionWorkspaceContext(session, context = {}) {
@@ -347,6 +418,19 @@ export function refreshSessionWorkspaceContext(session, context = {}) {
   if (hasUserConversationMessage(session.messages)) return stageWorkspaceReroot(session, context);
   applyPendingWorkspaceReroot(session);
   return rerootSessionWorkspace(session, context);
+}
+
+/**
+ * Give `stored` (the canonical transcript) the system prefix of `messages`
+ * (a running turn's working array built on it), message objects included.
+ */
+export function syncSystemPrefix(stored, messages) {
+  const systemCount = (list) => {
+    let count = 0;
+    while (count < list.length && list[count]?.role === 'system') count += 1;
+    return count;
+  };
+  stored.splice(0, systemCount(stored), ...messages.slice(0, systemCount(messages)));
 }
 
 /**
@@ -368,19 +452,28 @@ export function applyPendingWorkspaceReroot(session, messages = session?.message
   } finally {
     if (other) session.messages = stored;
   }
-  if (other && Array.isArray(stored)) {
-    const systemCount = (list) => {
-      let count = 0;
-      while (count < list.length && list[count]?.role === 'system') count += 1;
-      return count;
-    };
-    stored.splice(0, systemCount(stored), ...messages.slice(0, systemCount(messages)));
-  }
+  if (other && Array.isArray(stored)) syncSystemPrefix(stored, messages);
   return true;
 }
 
 function sameWorkspacePath(left, right) {
   return !!left && !!right && samePath(left, right);
+}
+
+/** The lines a move from the project folder into a worktree adds to the notice. */
+function workspaceMoveLines(move, cwd) {
+  if (!move?.from || sameWorkspacePath(move.from, cwd)) return [];
+  let changes = '';
+  if (move.changes === 'carried') {
+    changes =
+      'Uncommitted changes were moved into the worktree; ignored files (dependencies, build output, env files) were not.';
+  } else if (move.changes === 'left') {
+    changes = `Uncommitted changes were left in ${move.from}; they are not present here.`;
+  }
+  return [
+    changes,
+    `For continued work, substitute ${cwd} for the project root ${move.from} in paths mentioned earlier; absolute paths are not remapped automatically. Re-read affected files before editing them.`,
+  ].filter(Boolean);
 }
 
 function workspaceNoticeContent({ seen, target }) {
@@ -390,6 +483,8 @@ function workspaceNoticeContent({ seen, target }) {
     [
       '# Working Folder Changed',
       `The working folder is now ${target.cwd}. This replaces the Cwd and environment facts given earlier in this conversation; relative paths and shell commands resolve here.`,
+      'Keep the conversation goals and decisions, but treat earlier file contents, search results and Git observations as historical, not as evidence of this checkout. Check the target project instructions and Git status, and re-read the files needed for the next edit before continuing. A folder change alone does not transfer uncommitted changes.',
+      ...workspaceMoveLines(target.move, target.cwd),
       changed('environmentContext') ? target.environmentContext : '',
     ]
       .filter(Boolean)
@@ -424,6 +519,25 @@ export function snapshotPendingWorkspaceNotice(session) {
   if (!pending) return null;
   const content = workspaceNoticeContent(pending);
   return content ? { revision: pending.revision, content } : null;
+}
+
+/**
+ * The report of a new worktree's preparation (session.pendingSetupNotice, set
+ * by the first turn's workspace gate) for this turn, or null. Acknowledged
+ * when the provider accepted the turn, like the workspace notice.
+ * @returns {{ revision: number, content: string } | null}
+ */
+export function snapshotPendingSetupNotice(session) {
+  const pending = session?.pendingSetupNotice;
+  return typeof pending?.content === 'string' && pending.content
+    ? { revision: pending.revision, content: pending.content }
+    : null;
+}
+
+export function acknowledgePendingSetupNotice(session, revision) {
+  if (session?.pendingSetupNotice?.revision !== revision) return false;
+  delete session.pendingSetupNotice;
+  return true;
 }
 
 /** The notice of `revision` reached the model: what it was told is now the target. */

@@ -2,13 +2,19 @@ import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 
 const secrets = new Map();
+const deleted = [];
+let deleteFailure = null;
 const original = await import('../../runtime/shared/config.mjs');
 mock.module('../../runtime/shared/config.mjs', {
   namedExports: {
     ...original,
     saveSecret: (account, value) => secrets.set(account, value),
     saveSecretAsync: async (account, value) => secrets.set(account, value),
-    deleteSecretAsync: async (account) => secrets.delete(account),
+    deleteSecretAsync: async (account) => {
+      deleted.push(account);
+      if (deleteFailure) throw deleteFailure;
+      secrets.delete(account);
+    },
     hasStoredSecret: (account) => secrets.has(account),
     getAgentApiKey: (id) => secrets.get(`agent.${id}.apiKey`) || null,
   },
@@ -143,6 +149,55 @@ test('remove deletes config and secret, and only custom providers', async () => 
   await assert.rejects(() => admin.removeCustomProvider(cfg, id), /unknown custom provider/);
 });
 
+test('removing a keyless provider succeeds and drops its settings and routes', async () => {
+  const cfg = makeCfg();
+  const { id } = await admin.saveCustomProvider(cfg, { ...input, auth: 'none', apiKey: undefined });
+  assert.equal(secrets.has(`agent.${id}.apiKey`), false);
+  cfg.saveConfig({
+    ...cfg.loadConfig(),
+    modelSettings: { [`${id}/m1`]: { fast: true }, 'openai/gpt': { fast: true } },
+    agents: { worker: { provider: id, model: 'm1' }, other: { provider: 'openai', model: 'gpt' } },
+    webSearchRoute: { provider: id, model: 'm1' },
+    presets: [
+      { id: 'mine', provider: id, model: 'm1' },
+      { id: 'keep', provider: 'openai', model: 'gpt' },
+    ],
+    default: 'mine',
+  });
+  deleted.length = 0;
+  await admin.removeCustomProvider(cfg, id);
+  assert.deepEqual(deleted, [`agent.${id}.apiKey`]);
+  assert.deepEqual(cfg.peek(), {
+    providers: { openai: { enabled: true } },
+    modelSettings: { 'openai/gpt': { fast: true } },
+    agents: { other: { provider: 'openai', model: 'gpt' } },
+    presets: [{ id: 'keep', provider: 'openai', model: 'gpt' }],
+  });
+});
+
+test('removing a keyed provider deletes its secret', async () => {
+  const cfg = makeCfg();
+  const { id } = await admin.saveCustomProvider(cfg, input);
+  assert.equal(secrets.has(`agent.${id}.apiKey`), true);
+  await admin.removeCustomProvider(cfg, id);
+  assert.equal(secrets.has(`agent.${id}.apiKey`), false);
+  assert.equal(cfg.peek().providers[id], undefined);
+});
+
+test('a keychain failure on removal is reported and keeps the provider for retry', async () => {
+  const cfg = makeCfg();
+  const { id } = await admin.saveCustomProvider(cfg, input);
+  deleteFailure = new Error('[keychain] the keyring is locked');
+  try {
+    await assert.rejects(() => admin.removeCustomProvider(cfg, id), /keyring is locked/);
+  } finally {
+    deleteFailure = null;
+  }
+  assert.ok(cfg.peek().providers[id]);
+  await admin.removeCustomProvider(cfg, id);
+  assert.equal(cfg.peek().providers[id], undefined);
+});
+
 test('failed config edits restore the previous API key', async () => {
   const cfg = makeCfg();
   const { id } = await admin.saveCustomProvider(cfg, input);
@@ -243,7 +298,7 @@ test('discovery returns normalized models and errors truthfully', async () => {
 
 test('discovery failure categories use HTTP status, not error text', async () => {
   const cfg = makeCfg();
-  for (const [status, kind] of [
+  for (const [status, kind, code] of [
     [404, 'unavailable'],
     [405, 'unavailable'],
     [401, 'authentication'],
@@ -251,10 +306,11 @@ test('discovery failure categories use HTTP status, not error text', async () =>
     [429, 'request'],
     [500, 'request'],
     [undefined, 'request'],
+    [undefined, 'timeout', 'EPROVIDERTIMEOUT'],
   ]) {
     behavior = {
       listModels: async () => {
-        throw Object.assign(new Error('404 may appear in a URL or network error'), { status });
+        throw Object.assign(new Error('404 may appear in a URL or network error'), { status, code });
       },
       send: async () => {
         assert.fail('Discovery failure must not be reported as a successful model call');
@@ -517,4 +573,39 @@ test('discovery returns hidden rows with reasoning fields and a sanitized error 
   assert.deepEqual(failed.models, []);
   assert.equal(failed.error.kind, 'authentication');
   assert.equal(failed.error.message.includes(v2Input.apiKey), false);
+});
+
+test('model preferences: built-in visibility and favorites land in modelSettings beside saved tuning', async () => {
+  const cfg = makeCfg();
+  const full = cfg.loadConfig();
+  cfg.saveConfig({ ...full, modelSettings: { 'openai/gpt-5.4': { effort: 'high' } } });
+  admin.saveModelPreferences(cfg, 'openai', [
+    { model: 'gpt-5.4', hidden: true, favorite: true },
+    { model: 'gpt-4o', hidden: false },
+  ]);
+  assert.deepEqual(cfg.peek().modelSettings, {
+    'openai/gpt-5.4': { effort: 'high', hidden: true, favorite: true },
+    'openai/gpt-4o': { hidden: false },
+  });
+  admin.saveModelPreferences(cfg, 'openai', [{ model: 'gpt-5.4', favorite: false }]);
+  assert.deepEqual(cfg.peek().modelSettings['openai/gpt-5.4'], { effort: 'high', hidden: true });
+  assert.throws(() => admin.saveModelPreferences(cfg, 'nope', []), /unknown provider/);
+  assert.throws(() => admin.saveModelPreferences(cfg, 'openai', [{ model: 'm', bogus: 1 }]), /unsupported/);
+  assert.throws(() => admin.saveModelPreferences(cfg, 'openai', [{ model: 'm', hidden: 'yes' }]), /hidden/);
+});
+
+test("model preferences: a custom provider's visibility stays in its own hidden overrides", async () => {
+  const cfg = makeCfg();
+  const { id } = await admin.saveCustomProvider(cfg, v2Input);
+  const before = structuredClone(cfg.peek().providers[id].modelOverrides);
+  const result = admin.saveModelPreferences(cfg, id, [
+    { model: 'vendor/m', hidden: true, favorite: true },
+    { model: 'found', hidden: false },
+  ]);
+  assert.equal(result.customCatalogChanged, true);
+  const overrides = cfg.peek().providers[id].modelOverrides;
+  assert.deepEqual(overrides['vendor/m'], { ...before['vendor/m'], hidden: true });
+  assert.deepEqual(overrides.found, { hidden: false });
+  // The favorite is shared per-model state; visibility is not duplicated there.
+  assert.deepEqual(cfg.peek().modelSettings, { [`${id}/vendor/m`]: { favorite: true } });
 });

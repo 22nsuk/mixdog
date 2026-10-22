@@ -4,7 +4,7 @@ import test from 'node:test';
 import { listLeadSessions } from '../lifecycle/session-catalog.mjs';
 import { sessionOptions } from './session-options.mjs';
 
-function optionsFor(toolProfile) {
+function optionsFor(toolProfile, sessionProfile = null) {
   return sessionOptions(
     {
       rt: {
@@ -12,15 +12,33 @@ function optionsFor(toolProfile) {
         config: {},
         mode: 'full',
         toolProfile,
+        sessionProfile,
         currentCwd: process.cwd(),
       },
       cfgMod: { getPluginData: () => process.cwd() },
-      activeWorkflowContext: () => ({ summary: null, context: '', packContext: '', orchestrationMode: 'none' }),
+      activeWorkflowContext: () => ({
+        summary: null,
+        context: '',
+        packContext: '',
+        leadPromptParts: () => ({}),
+        orchestrationMode: 'none',
+      }),
       featureDisallowedTools: () => [],
     },
     null
   );
 }
+
+test('agent profile fallback routes reach the shared session creator unchanged', () => {
+  const routeFallbacks = [
+    { provider: 'anthropic', model: 'second', contextTokens: 48000 },
+    { provider: 'gemini', model: 'third', effort: 'low' },
+  ];
+  const opts = optionsFor('interactive', { owner: 'agent', agent: 'worker', routeFallbacks });
+  assert.equal(opts.agent, 'worker');
+  assert.deepEqual(opts.routeFallbacks, routeFallbacks);
+  assert.equal(Object.hasOwn(optionsFor('interactive'), 'routeFallbacks'), false);
+});
 
 test('headless exec sessions get their own source and stay out of the Lead catalog', () => {
   assert.equal(optionsFor('headless').sourceType, 'exec');

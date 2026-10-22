@@ -20,7 +20,7 @@ const dashboard = {
         { label: 'W', usedPct: 41 },
       ],
     },
-    { id: 'opencode-go', authenticated: true, windows: [{ label: 'M', usedPct: 10 }] },
+    { id: 'opencode-go-oauth', authenticated: true, windows: [{ label: 'M', usedPct: 10 }] },
   ],
 };
 
@@ -71,13 +71,32 @@ async function waitFor(check) {
 const brand = (key) => document.querySelector(`[data-usage-pin="${key}"]`);
 const meters = (key) => [...brand(key).querySelectorAll(':scope > i')];
 
+// The flyout body loads asynchronously: open it and wait for its menu.
+async function openFlyout() {
+  await press(document.querySelector('.sidebar-usage-toggle'));
+  await waitFor(() => document.querySelector('.sidebar-usage-menu'));
+  return document.querySelector('.sidebar-usage-menu');
+}
+
+// The module may already be loaded when the press settles (a fast runner, or
+// another test warmed it): until the menu exists the placeholder must hold its
+// place, and it is gone once the menu is up.
+test('a flyout opened before its module is ready shows the loading placeholder until the menu', async (t) => {
+  await mountRail(t);
+  await press(document.querySelector('.sidebar-usage-toggle'));
+  if (!document.querySelector('.sidebar-usage-menu')) {
+    assert.ok(document.querySelector('.initial-surface[aria-busy="true"]'), 'placeholder while loading');
+  }
+  await waitFor(() => document.querySelector('.sidebar-usage-menu'));
+  assert.equal(document.querySelector('.initial-surface[aria-busy="true"]'), null);
+});
+
 test('the rail draws one bar per brand by default and saves the chosen two-bar mode in settings', async (t) => {
   const { root, props, stored } = await mountRail(t);
   assert.equal(meters('claude').length, 1);
   assert.equal(brand('claude').querySelector('small').textContent, '41%');
 
-  await press(document.querySelector('.sidebar-usage-toggle'));
-  const menuButton = document.querySelector('.sidebar-usage-menu');
+  const menuButton = await openFlyout();
   assert.ok(menuButton);
   await press(menuButton);
   await press(document.querySelector('[role="menuitemradio"][data-rail-bars="short-long"]'));
@@ -100,7 +119,7 @@ test('the rail draws one bar per brand by default and saves the chosen two-bar m
   assert.equal(brand('claude').className.includes('tone-danger'), true);
   assert.equal(brand('claude').querySelector('small').textContent, '99%');
   // A single-window provider never gets a placeholder bar.
-  assert.equal(meters('opencode-go').length, 1);
+  assert.equal(meters('opencode-go-oauth').length, 1);
   assert.match(brand('claude').getAttribute('data-tooltip'), /^Claude · 5-hour 99% · weekly 41%$/);
 
   // A fresh mount restores the stored mode.
@@ -114,8 +133,8 @@ test('the rail draws one bar per brand by default and saves the chosen two-bar m
 
 test('the pin switch in the portaled menu survives a real pointer press and saves the pin', async (t) => {
   const { stored } = await mountRail(t);
-  await press(document.querySelector('.sidebar-usage-toggle'));
-  await press(document.querySelector('.sidebar-usage-menu'));
+  await press(await openFlyout());
+  await waitFor(() => document.querySelector('[role="menuitemcheckbox"]'));
   await press(document.querySelector('[role="menuitemcheckbox"]'));
   assert.ok(document.querySelector('.usage-menu'), 'the menu survives its own press');
   await waitFor(() => stored.usagePinned === false);

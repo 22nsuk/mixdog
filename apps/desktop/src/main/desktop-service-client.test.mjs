@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
 import { DesktopServiceClient } from './desktop-service-client.ts';
+import { DESKTOP_SERVICE_METHODS } from './desktop-service-contract.ts';
+import { readSessionAttachment } from './session-attachments.ts';
 import { RemoteBootstrapError } from './ssh/remote-bootstrap.ts';
 
 class TestTransport extends EventEmitter {
@@ -61,6 +64,76 @@ class ControlledTransport extends EventEmitter {
 
   async close() {}
 }
+
+test('an aborted final-answer read rejects with the abort reason and drops the late reply', async () => {
+  const transport = new ControlledTransport();
+  const client = new DesktopServiceClient({
+    connect: () => transport,
+    sessionOptions: () => ({
+      userDataPath: 'C:/tmp/mixdog',
+      packaged: true,
+      resourcesPath: 'C:/tmp/resources',
+      appPath: 'C:/tmp/resources/app.asar',
+    }),
+    startupTimeoutMs: 1_000,
+  });
+  try {
+    const controller = new AbortController();
+    const read = client.readSessionFinalAnswer('session_a', 1_000, controller.signal);
+    while (!transport.requests.length) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(transport.requests[0].args, ['session_a', 1_000]);
+    const reason = new Error('read deadline');
+    controller.abort(reason);
+    await assert.rejects(read, (error) => error === reason);
+    assert.equal(client.pending.size, 0);
+    transport.respond(transport.requests[0], null);
+    await assert.rejects(
+      client.readSessionFinalAnswer('session_a', 1_000, controller.signal),
+      (error) => error === reason
+    );
+    assert.equal(transport.requests.length, 1, 'an already-aborted read is never sent');
+  } finally {
+    await client.dispose();
+  }
+});
+
+test('a window opens a sent attachment: the client reads the transcript the service holds', async () => {
+  const bytes = Buffer.from('png bytes');
+  const id = createHash('sha256').update(bytes).digest('hex');
+  const transport = new ControlledTransport();
+  const client = new DesktopServiceClient({
+    connect: () => transport,
+    sessionOptions: () => ({ userDataPath: 'C:/tmp/mixdog', packaged: false }),
+    startupTimeoutMs: 1_000,
+  });
+  const answers = {
+    readSessionTranscript: {
+      items: [{ id: 'u1', kind: 'user', text: '', images: [{ id: 1, name: 'shot.png', attachmentRef: id }] }],
+    },
+    readAttachmentImage: bytes.toString('base64'),
+  };
+  const served = (async () => {
+    for (let answered = 0; answered < 2; ) {
+      const request = transport.requests[answered];
+      if (!request) {
+        await new Promise((resolve) => setImmediate(resolve));
+        continue;
+      }
+      transport.respond(request, answers[request.method]);
+      answered += 1;
+    }
+  })();
+  try {
+    assert.ok(DESKTOP_SERVICE_METHODS.includes('readSessionTranscript'));
+    const { meta, bytes: read } = await readSessionAttachment(client, 'session_a', id);
+    await served;
+    assert.equal(meta.name, 'shot.png');
+    assert.deepEqual(read, bytes);
+    assert.deepEqual(transport.requests[0].args, ['session_a']);
+  } finally {
+    await client.dispose();
+  }
+});
 
 test('an immediate mutation stays queued across a pre-ready daemon handoff', async () => {
   const transports = [];
@@ -323,6 +396,31 @@ test('overlapping desktop registrations carry increasing versions before either 
   }
 });
 
+test('a timed-out desktop operation names the operation, not just the transport method', async () => {
+  const transport = new ControlledTransport();
+  const client = new DesktopServiceClient({
+    connect: () => transport,
+    sessionOptions: () => ({
+      userDataPath: 'C:/tmp/mixdog',
+      packaged: true,
+      resourcesPath: 'C:/tmp/resources',
+      appPath: 'C:/tmp/resources/app.asar',
+    }),
+    requestTimeoutMs: 20,
+    startupTimeoutMs: 1_000,
+    failureNoticeDelayMs: 1_000,
+  });
+  try {
+    await client.start();
+    await assert.rejects(
+      client.invokeDesktopOperation('gitReview', ['C:/tmp/project', 'uncommitted']),
+      /timed out: invokeDesktopOperation \(gitReview\)\./
+    );
+  } finally {
+    await client.dispose();
+  }
+});
+
 test('Local Provider asset installs outlive the ordinary desktop request deadline', async () => {
   const transport = new ControlledTransport();
   const client = new DesktopServiceClient({
@@ -447,6 +545,82 @@ test('an omitted trailing argument never reaches the JSON daemon lane as null', 
     transport.respond(write, { mtimeMs: 1 });
     transport.respond(operation, { mtimeMs: 2 });
     assert.deepEqual(await Promise.all([save, granted]), [{ mtimeMs: 1 }, { mtimeMs: 2 }]);
+  } finally {
+    await client.dispose();
+  }
+});
+
+test('a short outage reconnects silently; only a lasting one shows the localizable notice', async (t) => {
+  let live = 0;
+  const transports = [];
+  const client = new DesktopServiceClient({
+    connect() {
+      live += 1;
+      const transport = new TestTransport(
+        live === 1 ? (current) => current.emit('message', { kind: 'ready' }) : () => {}
+      );
+      transports.push(transport);
+      return transport;
+    },
+    sessionOptions: () => ({ userDataPath: 'C:/tmp/mixdog', packaged: true, resourcesPath: 'C:/tmp/resources' }),
+    restartBaseDelayMs: 1,
+    restartMaxDelayMs: 1,
+    startupTimeoutMs: 120_000,
+  });
+  const working = { sessionId: 's', items: [], busy: true, queued: [{ id: 'q1' }], toasts: [] };
+  try {
+    await client.start();
+    client.cachedSnapshot = working;
+    const seen = [];
+    client.subscribe((snapshot) => seen.push(snapshot));
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    transports[0].emit('exit', 1);
+    t.mock.timers.tick(59_000);
+    assert.equal(seen.length, 0, 'a stall shorter than a minute publishes nothing');
+    assert.equal(client.getSnapshot().busy, true, 'busy survives the silent outage');
+    assert.equal(client.getSnapshot().queued.length, 1, 'queued survives the silent outage');
+    t.mock.timers.tick(1_000);
+    const lasting = seen.at(-1);
+    assert.equal(lasting.busy, false);
+    assert.deepEqual(lasting.queued, []);
+    assert.equal(
+      lasting.toasts.at(-1).text,
+      'The service connection has been lost for a while. Still retrying automatically.'
+    );
+  } finally {
+    t.mock.timers.reset();
+    await client.dispose();
+  }
+});
+
+test('a decision in flight when the service transport restarts is sent again, not lost as an error', async () => {
+  const transports = [];
+  const client = new DesktopServiceClient({
+    connect() {
+      const transport = new ControlledTransport();
+      transports.push(transport);
+      return transport;
+    },
+    sessionOptions: () => ({ userDataPath: 'C:/tmp/mixdog', packaged: true, resourcesPath: 'C:/tmp/resources' }),
+    restartBaseDelayMs: 1,
+    restartMaxDelayMs: 1,
+    startupTimeoutMs: 1_000,
+    failureNoticeDelayMs: 60_000,
+  });
+  const waitFor = async (ready) => {
+    while (!ready()) await new Promise((resolve) => setImmediate(resolve));
+  };
+  try {
+    const decision = { approved: true, answers: [{ question: 'q', answer: 'a' }] };
+    const answer = client.resolveToolApprovalForSession('session_a', 'approval_1', decision);
+    await waitFor(() => transports[0]?.requests.length === 1);
+    // The daemon stalled: the service process gave up on its own call and exited.
+    transports[0].emit('exit', 1, new Error('session timeout: POST /client/register'));
+    await waitFor(() => transports[1]?.requests.length === 1);
+    assert.equal(transports[1].requests[0].method, 'resolveToolApprovalForSession');
+    assert.deepEqual(transports[1].requests[0].args, ['session_a', 'approval_1', decision]);
+    transports[1].respond(transports[1].requests[0], true);
+    assert.equal(await answer, true, 'the answer the user gave is recorded once the service is back');
   } finally {
     await client.dispose();
   }

@@ -32,52 +32,23 @@ import { useUsageResetVerification } from './use-usage-reset-verification';
 import { ProviderAccountPicker } from './ProviderAccountPicker';
 import { focusQuotaUsage } from './usage-surface-mode';
 import { prefetchQuotaUsage } from './quota-usage-cache';
-import { SUBSCRIPTIONS, type Subscription } from './subscription-providers';
+import { SUBSCRIPTIONS } from './subscription-providers';
+import {
+  quotaWindows,
+  subscriptionRow,
+  usageNumber as number,
+  usageRows as rows,
+  usageAccountName,
+  usedPercent,
+  type UsageRailBars,
+  type UsageRailSlots,
+} from './usage-pin-entries';
+import { expandableAccounts, useUsageAccountPools, type UsageAccount } from './usage-account-pools';
+
+export { usagePinEntries, type UsageRailBars, type UsageRailSlots } from './usage-pin-entries';
 
 const SIDEBAR_CODEX_RESET_ATTEMPT_KEY = 'mixdog.desktop.codex-reset-attempt.v1';
 const SIDEBAR_CODEX_RESET_TIMEOUT_MS = 90_000;
-
-function rows(value: unknown): UsageRecord[] {
-  const dashboard = record(value);
-  return Array.isArray(dashboard.rows) ? dashboard.rows.map(record) : [];
-}
-
-function number(value: unknown): number | null {
-  const parsed = Number(value);
-  return value === null || value === undefined || value === '' || !Number.isFinite(parsed) ? null : parsed;
-}
-
-/** Subscriptions matched by row id or label whatever the row's group. */
-const ROW_MATCHERS: Record<string, (id: string, label: string) => boolean> = {
-  'opencode-go': (id, label) => id === 'opencode-go' || label.includes('opencode go'),
-  cursor: (id, label) => id === 'cursor-oauth' || label.includes('cursor oauth'),
-  antigravity: (id, label) => id === 'antigravity-oauth' || label.includes('antigravity'),
-};
-
-/** Subscriptions matched inside the `oauth` group by id/label text. */
-const OAUTH_ROW_PATTERNS: Record<string, RegExp> = {
-  codex: /openai|codex/,
-  claude: /anthropic|claude/,
-  grok: /grok|xai/,
-};
-
-function subscriptionRow(dashboard: unknown, subscription: Subscription): UsageRecord {
-  return (
-    rows(dashboard).find((row) => {
-      const id = String(row.id || '').toLowerCase();
-      const label = String(row.label || '').toLowerCase();
-      const matcher = ROW_MATCHERS[subscription.key];
-      if (matcher) return matcher(id, label);
-      if (String(row.group || '').toLowerCase() !== 'oauth') return false;
-      const pattern = OAUTH_ROW_PATTERNS[subscription.key];
-      return pattern ? pattern.test(`${id} ${label}`) : id === subscription.provider;
-    }) || {}
-  );
-}
-
-function quotaWindows(row: UsageRecord): UsageRecord[] {
-  return Array.isArray(row.windows) ? row.windows.map(record) : [];
-}
 
 function quotaWindowKey(window: UsageRecord, index: number): string {
   return String(window.id || window.window || window.period || window.label || `window:${index}`);
@@ -93,141 +64,6 @@ function resetCreditKey(credit: UsageRecord, index: number): string {
 
 function subscriptionConnected(row: UsageRecord): boolean {
   return row.authenticated === true || quotaWindows(row).length > 0;
-}
-
-function usedPercent(window: UsageRecord): number | null {
-  const value = number(window.usedPct);
-  return value === null ? null : Math.max(0, Math.min(100, value));
-}
-
-/** Which quota bars a pinned brand draws on the rail. */
-export type UsageRailBars = 'long' | 'short-long';
-
-interface UsagePinWindow {
-  label: string;
-  percent: number;
-  resetAt: number | null;
-}
-
-interface UsagePinEntry {
-  key: string;
-  label: string;
-  provider: string;
-  /** The figure shown under the bars: the higher of the drawn bars. */
-  percent: number;
-  /** Drawn bars, short window first. */
-  bars: UsagePinWindow[];
-  /** Every window the tooltip names (short window first when there is one). */
-  windows: UsagePinWindow[];
-  /** Index in `bars` of the bar that drives the figure and the tone. */
-  hot: number;
-  /** Rail hover text naming the provider and every window. */
-  tooltip: string;
-}
-
-const PIN_WINDOW_PRIORITY = [
-  /^(?:M|MO|MON|MONTH|MONTHLY)$/i,
-  /^(?:7D|W|WK|WEEK|WEEKLY)$/i,
-  /^(?:\d+H|\d+D|D|DAY|DAILY)$/i,
-];
-
-/** Window length in hours from its label; null for non-duration labels. */
-function windowHours(label: string): number | null {
-  const text = label.trim();
-  const hours = /^(\d+)H$/i.exec(text);
-  if (hours) return Number(hours[1]);
-  const days = /^(\d+)D$/i.exec(text);
-  if (days) return Number(days[1]) * 24;
-  if (/^(?:D|DAY|DAILY)$/i.test(text)) return 24;
-  if (/^(?:W|WK|WEEK|WEEKLY)$/i.test(text)) return 168;
-  if (/^(?:M|MO|MON|MONTH|MONTHLY)$/i.test(text)) return 720;
-  return null;
-}
-
-function pinWindows(
-  windows: UsageRecord[],
-  provider: string
-): { long: UsagePinWindow; short: UsagePinWindow | null } | null {
-  const candidates = windows.flatMap((window): UsagePinWindow[] => {
-    const percent = usedPercent(window);
-    return percent === null
-      ? []
-      : [{ label: String(window.label || '').trim(), percent, resetAt: timestamp(window.resetAt) }];
-  });
-  if (!candidates.length) return null;
-  let long: UsagePinWindow | undefined;
-  const preferredLabel = provider === 'cursor-oauth' ? 'Basic' : '';
-  if (preferredLabel) {
-    long = candidates.find((candidate) => candidate.label.toLowerCase() === preferredLabel.toLowerCase());
-  }
-  for (const pattern of PIN_WINDOW_PRIORITY) {
-    if (long) break;
-    long = candidates.find((candidate) => pattern.test(candidate.label));
-  }
-  long ||= candidates[candidates.length - 1];
-  const longHours = windowHours(long.label);
-  let short: UsagePinWindow | null = null;
-  let shortHours = Number.POSITIVE_INFINITY;
-  for (const candidate of candidates) {
-    const hours = windowHours(candidate.label);
-    if (candidate === long || hours === null || (longHours !== null && hours >= longHours)) continue;
-    if (hours < shortHours) {
-      short = candidate;
-      shortHours = hours;
-    }
-  }
-  return { long, short };
-}
-
-/** Rail pin mode: one entry per brand that has quota data —
- *  its icon plus the final quota window's usage, picked by longest period:
- *  monthly (M) → weekly (7D/W) → daily/hourly. Unknown windows fall back to
- *  the provider's final entry. In `short-long` mode the shortest-duration
- *  window joins as a second bar (none for a provider without one) and the
- *  figure/tone follow the higher of the two. */
-export function usagePinEntries(dashboard: unknown, mode: UsageRailBars = 'long'): UsagePinEntry[] {
-  return SUBSCRIPTIONS.flatMap((subscription) => {
-    const picked = pinWindows(quotaWindows(subscriptionRow(dashboard, subscription)), subscription.provider);
-    if (!picked) return [];
-    const windows = picked.short ? [picked.short, picked.long] : [picked.long];
-    const bars = mode === 'short-long' ? windows : [picked.long];
-    let hot = 0;
-    bars.forEach((bar, index) => {
-      if (bar.percent >= bars[hot].percent) hot = index;
-    });
-    return [
-      {
-        key: subscription.key,
-        label: subscription.label,
-        provider: subscription.provider,
-        percent: bars[hot].percent,
-        bars,
-        windows,
-        hot,
-        tooltip: usagePinTooltip(subscription.label, windows),
-      },
-    ];
-  });
-}
-
-function pinWindowName(label: string): string {
-  const hours = windowHours(label);
-  if (hours === 168) return t('weekly');
-  if (hours === 720) return t('monthly');
-  if (hours === 24) return t('daily');
-  const count = /^(\d+)([HD])$/i.exec(label.trim());
-  if (count) return t(count[2].toUpperCase() === 'H' ? '{{n}}-hour' : '{{n}}-day', { n: count[1] });
-  return label;
-}
-
-/** Rail hover text: the provider plus every window's usage and reset time. */
-function usagePinTooltip(label: string, windows: UsagePinWindow[]): string {
-  const parts = windows.map((window) => {
-    const schedule = resetSchedule(window.resetAt);
-    const reset = schedule.state === 'in' ? ` (${t('resets in {{time}}', { time: schedule.time })})` : '';
-    return `${pinWindowName(window.label)} ${displayUsagePercent(window.percent)}%${reset}`;
-  });
-  return [label, ...parts].join(' · ');
 }
 
 function resetExpiryText(value: unknown): string {
@@ -374,6 +210,10 @@ export function SidebarUsage({
   onTogglePin,
   railBars = 'long',
   onRailBarsChange,
+  accountsExpanded = false,
+  onAccountsExpandedChange,
+  railSlots = '5',
+  onRailSlotsChange,
   onOpenStats,
   onAddProviders,
 }: {
@@ -386,6 +226,12 @@ export function SidebarUsage({
   /** Which bars the pinned rail draws per brand. */
   railBars?: UsageRailBars;
   onRailBarsChange?(next: UsageRailBars): void;
+  /** Lists every account of a multi-account provider, here and on the rail. */
+  accountsExpanded?: boolean;
+  onAccountsExpandedChange?(next: boolean): void;
+  /** Most slots the rail shows while accounts are expanded. */
+  railSlots?: UsageRailSlots;
+  onRailSlotsChange?(next: UsageRailSlots): void;
   /** Opens the usage surface: this panel answers what is LEFT, that one how
    *  it was spent — in tokens, or on a subscription's own meter. */
   onOpenStats?(): void;
@@ -414,6 +260,14 @@ export function SidebarUsage({
   // very first request is still outstanding claimed an answer nobody has yet.
   // Cached rows always win: revalidation never downgrades them to Loading.
   const awaitingFirstUsage = !rowsPresent && (snapshot.status === 'idle' || snapshot.status === 'loading');
+  const accountPools = useUsageAccountPools(
+    api,
+    SUBSCRIPTIONS.filter(
+      (subscription) =>
+        subscription.provider.endsWith('-oauth') && subscriptionConnected(subscriptionRow(dashboard, subscription))
+    ).map((subscription) => subscription.provider),
+    sidebarOpen
+  );
   const [resetConfirming, setResetConfirming] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
   const [resetNotice, setResetNotice] = useState('');
@@ -424,14 +278,14 @@ export function SidebarUsage({
 
   // A provider name or meter opens its own subscription usage: the name with
   // that provider's first window, a meter with its window selected.
-  const quotaTrigger = (provider: string, window = '') => {
+  const quotaTrigger = (provider: string, window = '', account = '') => {
     if (!onOpenStats) return {};
     const open = () => {
-      focusQuotaUsage({ provider, window });
+      focusQuotaUsage({ provider, window, account });
       onOpenStats();
     };
     // What the click opens is read while the pointer is still on its way.
-    const readAhead = () => prefetchQuotaUsage(api, { provider, window });
+    const readAhead = () => prefetchQuotaUsage(api, { provider, window, account });
     return {
       role: 'button',
       tabIndex: 0,
@@ -444,6 +298,67 @@ export function SidebarUsage({
         open();
       },
     };
+  };
+
+  // A registered account's name opens that account's own usage chart; it is a
+  // real button, so only the click and hover read-ahead come from the trigger.
+  const accountTrigger = (provider: string, account: string) => {
+    const { onMouseEnter, onFocus, onClick } = quotaTrigger(provider, '', account) as {
+      onMouseEnter?(): void;
+      onFocus?(): void;
+      onClick?(): void;
+    };
+    return { onMouseEnter, onFocus, onClick };
+  };
+
+  // The quota windows of one provider row or one of its accounts.
+  const renderMeters = (windows: UsageRecord[], provider: string, account = '') =>
+    windows.map((window, index) => {
+      const percent = usedPercent(window);
+      const resetAt = timestamp(window.resetAt);
+      const resetPresentation = usageResetPresentation({
+        percent,
+        resetAt,
+        refreshedAt: snapshot.refreshedAt,
+        verificationFailed: resetAt !== null && failedResetAts.has(resetAt),
+      });
+      const effectivePercent = resetPresentation.percent;
+      const displayedPercent = displayUsagePercent(effectivePercent);
+      const tone = usageToneClass(effectivePercent);
+      const resetSentence = resetPresentation.resetTextOverride === null ? resetText(window.resetAt) : '';
+      return (
+        <span
+          className={`sidebar-usage-meter${tone}`}
+          key={quotaWindowKey(window, index)}
+          {...quotaTrigger(provider, String(window.label || ''), account)}
+        >
+          <small title={windowLabel(window)}>{windowLabel(window)}</small>
+          <i>
+            <i style={{ width: `${effectivePercent ?? 0}%` }} />
+          </i>
+          <b>{displayedPercent === null ? '—' : `${displayedPercent}%`}</b>
+          <em title={resetSentence || undefined}>
+            {resetPresentation.resetTextOverride ?? resetShortText(window.resetAt)}
+          </em>
+        </span>
+      );
+    });
+
+  // "Resets in X" for an account the runtime holds under a limit; empty when it
+  // has none (a credit-enabled account at 100% reports no limit). The reset is
+  // the block's end, else the soonest still-pending reset of an exhausted window.
+  const accountLimitText = (account: UsageAccount): string => {
+    if (!account.limited) return '';
+    const now = Date.now();
+    const pending = [
+      account.blockedUntil,
+      ...account.windows
+        .filter((window) => (usedPercent(window) ?? 0) >= 100)
+        .map((window) => timestamp(window.resetAt)),
+    ].filter((at): at is number => at !== null && at > now);
+    return pending.length
+      ? resetText(account.blockedUntil && account.blockedUntil > now ? account.blockedUntil : Math.min(...pending))
+      : '';
   };
 
   // Opening revalidates a stale snapshot only (fresh data inside the TTL paints
@@ -590,15 +505,6 @@ export function SidebarUsage({
       <header className="sidebar-usage-heading session-panel-header">
         <span className="session-panel-title">{t('Providers')}</span>
         <div className="session-panel-header-actions">
-          {/* Nothing to pin without a connected subscription. */}
-          {onTogglePin && anyConnected && (
-            <SidebarUsageMenu
-              pinned={pinned}
-              onTogglePin={onTogglePin}
-              railBars={railBars}
-              onRailBarsChange={onRailBarsChange}
-            />
-          )}
           {onOpenStats && (
             <button
               type="button"
@@ -609,6 +515,19 @@ export function SidebarUsage({
             >
               <Info size={16} aria-hidden="true" />
             </button>
+          )}
+          {/* Nothing to pin without a connected subscription. */}
+          {onTogglePin && anyConnected && (
+            <SidebarUsageMenu
+              pinned={pinned}
+              onTogglePin={onTogglePin}
+              railBars={railBars}
+              onRailBarsChange={onRailBarsChange}
+              accountsExpanded={accountsExpanded}
+              onAccountsExpandedChange={onAccountsExpandedChange}
+              railSlots={railSlots}
+              onRailSlotsChange={onRailSlotsChange}
+            />
           )}
           <button
             type="button"
@@ -632,6 +551,8 @@ export function SidebarUsage({
               const windows = quotaWindows(row);
               const credits = creditsOf(row);
               const checking = row.status === 'checking';
+              const pool = accountPools.get(subscription.provider);
+              const listedAccounts = expandableAccounts(pool);
               // Only connected providers are listed, so a row here always
               // reads as connected and never as a first-load placeholder.
               if (!subscriptionConnected(row)) return null;
@@ -647,49 +568,63 @@ export function SidebarUsage({
                       <ProviderIcon provider={subscription.provider} />
                     </span>
                     <b {...quotaTrigger(subscription.provider)}>{subscription.label}</b>
+                    {listedAccounts.length > 0 && !accountsExpanded && (
+                      <small className="sidebar-usage-account-count">
+                        {t('{{n}} accounts', { n: listedAccounts.length })}
+                      </small>
+                    )}
                     {subscription.provider.endsWith('-oauth') && (
                       <ProviderAccountPicker api={api} provider={subscription.provider} />
                     )}
                     {windows.length === 0 && !checking && <small>{t('Connected')}</small>}
                   </span>
-                  <span className="sidebar-usage-meters">
-                    {windows.map((window, index) => {
-                      const percent = usedPercent(window);
-                      const resetAt = timestamp(window.resetAt);
-                      const resetPresentation = usageResetPresentation({
-                        percent,
-                        resetAt,
-                        refreshedAt: snapshot.refreshedAt,
-                        verificationFailed: resetAt !== null && failedResetAts.has(resetAt),
-                      });
-                      const effectivePercent = resetPresentation.percent;
-                      const displayedPercent = displayUsagePercent(effectivePercent);
-                      const tone = usageToneClass(effectivePercent);
-                      const resetSentence =
-                        resetPresentation.resetTextOverride === null ? resetText(window.resetAt) : '';
+                  {listedAccounts.length > 0 && accountsExpanded ? (
+                    listedAccounts.map((account, accountIndex) => {
+                      const limitText = accountLimitText(account);
                       return (
-                        <span
-                          className={`sidebar-usage-meter${tone}`}
-                          key={quotaWindowKey(window, index)}
-                          {...quotaTrigger(subscription.provider, String(window.label || ''))}
+                        <div
+                          className="sidebar-usage-account"
+                          key={account.id}
+                          data-usage-account={account.id}
+                          data-account-index={accountIndex + 1}
                         >
-                          <small title={windowLabel(window)}>{windowLabel(window)}</small>
-                          <i>
-                            <i style={{ width: `${effectivePercent ?? 0}%` }} />
-                          </i>
-                          <b>{displayedPercent === null ? '—' : `${displayedPercent}%`}</b>
-                          <em title={resetSentence || undefined}>
-                            {resetPresentation.resetTextOverride ?? resetShortText(window.resetAt)}
-                          </em>
-                        </span>
+                          <span className="sidebar-usage-account-line">
+                            <span className="sidebar-usage-account-index">{accountIndex + 1}</span>
+                            <button
+                              type="button"
+                              className="sidebar-usage-account-name"
+                              title={t('Open usage for {{name}}', { name: usageAccountName(account) })}
+                              disabled={!onOpenStats}
+                              {...accountTrigger(subscription.provider, account.id)}
+                            >
+                              {usageAccountName(account)}
+                            </button>
+                            {account.id === pool?.selectedId && (
+                              <span className="sidebar-usage-account-inuse">{t('In use')}</span>
+                            )}
+                            {limitText && <small className="sidebar-usage-account-limit">{limitText}</small>}
+                          </span>
+                          <span className="sidebar-usage-meters">
+                            {renderMeters(account.windows, subscription.provider, account.id)}
+                            {account.windows.length === 0 && (
+                              <span className="sidebar-usage-meter sidebar-usage-meter-empty">
+                                <small>{t('No current quota window')}</small>
+                              </span>
+                            )}
+                          </span>
+                        </div>
                       );
-                    })}
-                    {windows.length === 0 && (
-                      <span className="sidebar-usage-meter sidebar-usage-meter-empty">
-                        <small>{checking ? t('Loading usage…') : t('No current quota window')}</small>
-                      </span>
-                    )}
-                  </span>
+                    })
+                  ) : (
+                    <span className="sidebar-usage-meters">
+                      {renderMeters(windows, subscription.provider)}
+                      {windows.length === 0 && (
+                        <span className="sidebar-usage-meter sidebar-usage-meter-empty">
+                          <small>{checking ? t('Loading usage…') : t('No current quota window')}</small>
+                        </span>
+                      )}
+                    </span>
+                  )}
                   {credits && (
                     <CreditLine
                       credits={credits}

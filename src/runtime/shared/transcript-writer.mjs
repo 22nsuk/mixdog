@@ -21,6 +21,7 @@ import { formatUtcTimestamp } from './time-format.mjs';
 import { createRotationTracker } from './transcript-writer/rotation.mjs';
 import { conversationText, createTranscriptFile, cwdToProjectSlug } from './transcript-writer/transcript-file.mjs';
 import { createFailureLog, createSessionRecord } from './transcript-writer/session-record.mjs';
+import { isSessionTranscriptPurged, noteSessionTranscript } from './transcript-writer/purge.mjs';
 
 // A user prompt with pasted images arrives as a content block array; only its
 // text reaches the transcript (String(array) would store "[object Object]").
@@ -29,7 +30,7 @@ const textOrEmpty = (text) => {
   return text == null ? '' : String(text);
 };
 
-export function createTranscriptWriter({ mixdogHome, sessionId, cwd, pid } = {}) {
+export function createTranscriptWriter({ mixdogHome, sessionId, cwd, pid, memoryEligible = true } = {}) {
   if (!mixdogHome) throw new Error('transcript-writer: mixdogHome is required');
   if (!sessionId) throw new Error('transcript-writer: sessionId is required');
   if (!cwd) throw new Error('transcript-writer: cwd is required');
@@ -41,10 +42,22 @@ export function createTranscriptWriter({ mixdogHome, sessionId, cwd, pid } = {})
 
   const logOnce = createFailureLog();
   const rotation = createRotationTracker({ transcriptPath, logOnce });
-  const file = createTranscriptFile({ projectDir, transcriptPath, sessionId, resolvedCwd, logOnce, rotation });
+  const file = createTranscriptFile({
+    projectDir,
+    transcriptPath,
+    sessionId,
+    resolvedCwd,
+    logOnce,
+    rotation,
+    memoryEligible,
+  });
   const record = createSessionRecord({ sessionRecordPath, sessionId, resolvedCwd, transcriptPath, logOnce });
 
+  noteSessionTranscript(sessionId, transcriptPath);
+
   function appendLine(entry) {
+    // A deleted session's own writer must not bring its transcript back.
+    if (isSessionTranscriptPurged(sessionId)) return;
     file.ensureProjectDir();
     rotation.rotateIfNeeded();
     try {
@@ -54,6 +67,7 @@ export function createTranscriptWriter({ mixdogHome, sessionId, cwd, pid } = {})
         entry?.timestamp != null || entry?.ts != null
           ? { ...entry, cwd: resolvedCwd }
           : { ...entry, cwd: resolvedCwd, timestamp: formatUtcTimestamp() };
+      if (!memoryEligible) stampedEntry.memoryEligible = false;
       const line = `${JSON.stringify(stampedEntry)}\n`;
       appendBuffered(transcriptPath, line);
       rotation.noteAppended(Buffer.byteLength(line));
@@ -90,12 +104,16 @@ export function createTranscriptWriter({ mixdogHome, sessionId, cwd, pid } = {})
   return {
     transcriptPath,
     sessionRecordPath,
-    writeSessionRecord: record.write,
-    ensureConversationBackfill: file.ensureConversationBackfill,
-    ensureTranscriptFile: file.ensureTranscriptFile,
+    // Agent runtimes can share a PID with their parent; never replace its discovery record.
+    writeSessionRecord: memoryEligible ? record.write : () => {},
+    ensureConversationBackfill: (messages) =>
+      isSessionTranscriptPurged(sessionId) ? false : file.ensureConversationBackfill(messages),
+    ensureTranscriptFile: () => {
+      if (!isSessionTranscriptPurged(sessionId)) file.ensureTranscriptFile();
+    },
     // Refresh only the session record's updatedAt so discovery keeps ranking
     // this session as live across long-lived remote sessions.
-    refresh: record.write,
+    refresh: memoryEligible ? record.write : () => {},
     appendAssistant: (text) => appendText('assistant', text),
     // User prompt row. It exists so the memory transcript watcher ingests BOTH
     // sides of the conversation (user rows were previously never written,

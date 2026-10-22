@@ -1,5 +1,6 @@
 import type {
   DesktopAbortOptions,
+  DesktopAgentMemoryEntry,
   DesktopAgentPoolRow,
   DesktopSessionContentMatch,
   DesktopCapability,
@@ -52,7 +53,13 @@ export interface DesktopService {
   projectEntryPath(projectPath: string, relPath: string): Promise<string>;
   codeGraphQuery(projectPath: string, mode: 'find_symbol' | 'references' | 'symbols', query: string): unknown;
   listSessions(): Promise<DesktopSessionSummary[]>;
-  readSessionFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null>;
+  /** `signal` stops the read when aborted (rejects with the signal's reason);
+   *  it is local to the caller and never travels over the service IPC. */
+  readSessionFinalAnswer(
+    sessionId: string,
+    startedAt: number,
+    signal?: AbortSignal
+  ): Promise<SessionFinalAnswer | null>;
   /** Base64 of a stored attachment blob; null when it is permanently unreadable. */
   readAttachmentImage(attachmentRef: string): Promise<string | null>;
   /** The session's transcript as this host holds it (the window its views
@@ -67,9 +74,18 @@ export interface DesktopService {
   scheduleQuotaResume(sessionId: string): Promise<boolean>;
   cancelQuotaResume(sessionId: string): Promise<boolean>;
   stopShellJob(sessionId: string, taskId: string): Promise<{ stopped: boolean; error?: string }>;
+  releaseShellJob(sessionId: string, taskId: string): Promise<{ released: boolean; error?: string }>;
   getQuotaAutoResume(): Promise<boolean>;
   setQuotaAutoResume(enabled: boolean): Promise<boolean>;
   setSessionArchived(sessionId: string, archived: boolean): unknown;
+  /** The agent contact's one home thread (agent-home-sessions.ts). */
+  openAgentHome(agentId: string): Promise<{ sessionId: string }>;
+  resetAgentHome(agentId: string): Promise<{ sessionId: string; archivedSessionId: string | null }>;
+  /** An agent's own memory pool for its profile (agent-memory.ts). */
+  listAgentMemory(agentId: string): Promise<DesktopAgentMemoryEntry[]>;
+  deleteAgentMemory(agentId: string, entry: Pick<DesktopAgentMemoryEntry, 'id' | 'indexRevision'>): Promise<void>;
+  /** Group rooms (agent-rooms.ts): create, update, continue, leave, remove. */
+  agentRoomAction(action: string, args: unknown[]): Promise<unknown>;
   setSessionFavorite(sessionId: string, favorite: boolean): unknown;
   setSessionProject(sessionId: string, projectPath: string): unknown;
   deleteSession(sessionId: string): unknown;
@@ -113,6 +129,12 @@ export interface DesktopService {
     id: string,
     decision: ToolApprovalDecision
   ): boolean | Promise<boolean>;
+  /** Per-agent push mute: every phone/desktop push of that agent is silenced;
+   *  unread counts, attention marks and held-request cards are untouched. */
+  getAgentNotificationMute(agentId: string): Promise<boolean>;
+  setAgentNotificationMute(agentId: string, muted: boolean): Promise<boolean>;
+  /** In-process only (the relay's push notifier); not an RPC method. */
+  isSessionNotificationMuted?(sessionId: string): boolean;
   listProviderModels(options?: DesktopModelCatalogOptions): Promise<DesktopModelOption[]>;
   /** Optional sessionId targets a pane; omitted routes through the control
    *  session for settings that are not owned by a conversation. */
@@ -156,6 +178,7 @@ export const DESKTOP_SERVICE_METHODS = [
   'listSessions',
   'readSessionFinalAnswer',
   'readAttachmentImage',
+  'readSessionTranscript',
   'markSessionRead',
   'listAgentPool',
   'searchSessionContent',
@@ -164,9 +187,15 @@ export const DESKTOP_SERVICE_METHODS = [
   'scheduleQuotaResume',
   'cancelQuotaResume',
   'stopShellJob',
+  'releaseShellJob',
   'getQuotaAutoResume',
   'setQuotaAutoResume',
   'setSessionArchived',
+  'openAgentHome',
+  'resetAgentHome',
+  'listAgentMemory',
+  'deleteAgentMemory',
+  'agentRoomAction',
   'setSessionFavorite',
   'setSessionProject',
   'deleteSession',
@@ -178,6 +207,8 @@ export const DESKTOP_SERVICE_METHODS = [
   'submitToSession',
   'abortSession',
   'resolveToolApprovalForSession',
+  'getAgentNotificationMute',
+  'setAgentNotificationMute',
   'listProviderModels',
   'setModelRoute',
   'setFast',

@@ -12,6 +12,7 @@ import {
   markFired,
   markDone,
   markScheduleFailure,
+  markScheduleSkipped,
   markScheduleSuccess,
   setDeferred,
   setNextFire,
@@ -25,6 +26,19 @@ const SCHEDULE_LOG = join(DATA_DIR, 'schedule.log');
 // here. The channels worker owns shutdown sequencing (drain queues, persist
 // baselines, release the scheduler lock, etc.) and a library-level exit(0)
 // preempts that drain. The buffered appender drains pending log lines on exit.
+function skipReasonText(outcome) {
+  switch (outcome.reason) {
+    case 'backoff':
+      return 'backing off after failures';
+    case 'paused':
+      return 'switched off';
+    case 'owner':
+      return `paused: ${outcome.message}`;
+    default:
+      return 'previous run still in progress';
+  }
+}
+
 function logSchedule(msg) {
   msg = msg.replace(/\n$/, '');
   process.stderr.write(`mixdog scheduler: ${msg}\n`);
@@ -60,6 +74,11 @@ function isCronExpression(time) {
   } catch {
     return false;
   }
+}
+// True when this fire (started at `since`) ended in an overlap skip.
+function skippedSince(schedule, since) {
+  const at = schedule.lastSkippedAt ? new Date(schedule.lastSkippedAt).getTime() : 0;
+  return at >= since.getTime();
 }
 // Records a one-shot fire that did not complete; the entry stays pending.
 async function markOneShotFailed(schedule) {
@@ -407,6 +426,8 @@ ${prompt}`;
       schedule.lastFiredAt = startedAt.toISOString();
       this.lastFired.set(schedule.name, startedAt.toISOString());
       const fired = await this.fireTimed(schedule, type, { awaitDispatch: true });
+      // An overlap skip is recorded as a skip, never as a failed run.
+      if (!fired && skippedSince(schedule, startedAt)) return;
       if (!fired) {
         schedule.lastFailedAt = new Date().toISOString();
         await markScheduleFailure(schedule.name, new Date());
@@ -498,7 +519,7 @@ ${prompt}`;
       return;
     }
     // Mark done ONLY after a successful fire. A false/throwing fireTimed
-    // (missing prompt/model, running guard, dispatch error) must leave the
+    // (missing prompt, running guard, paused owner, dispatch error) must leave the
     // one-shot pending so a reload/restart can retry it — never retire it.
     try {
       // awaitDispatch: for a one-shot we must wait for the actual LLM/relay
@@ -506,6 +527,10 @@ ${prompt}`;
       // contract) would retire the entry even when schedulerLlm() later
       // rejects. Only a resolved dispatch counts as a real fire here.
       const fired = await this.fireTimed(schedule, type, { awaitDispatch: true });
+      if (!fired && skippedSince(schedule, now)) {
+        logSchedule(`one-shot "${schedule.name}" skipped (previous run in progress) — leaving pending for retry\n`);
+        return;
+      }
       if (!fired) {
         await markOneShotFailed(schedule);
         logSchedule(`one-shot "${schedule.name}" did not fire (skipped/guarded) — leaving pending for retry\n`);
@@ -625,20 +650,11 @@ ${prompt}`;
   async fireTimedPrompt(schedule, type, prompt, { awaitDispatch = false } = {}) {
     logSchedule(`firing ${schedule.name} (${type})\n`);
     if (this.running.has(schedule.name)) {
-      // Not silent anymore: overlap skips were invisible and read as the
-      // scheduler "ignoring" a fire.
-      logSchedule(`${schedule.name}: skipped — previous run still in progress\n`);
+      this.recordSkip(schedule);
       return false;
     }
     if (type === 'interactive' && this.injectIntoLead(schedule, type, prompt)) return true;
     this.running.add(schedule.name);
-    const presetId = schedule.model;
-    if (!presetId) {
-      this.running.delete(schedule.name);
-      logSchedule(`${schedule.name}: missing required "model" in schedule config — dispatch rejected\n`);
-      this.notifyFailure(schedule, 'missing "model" in schedule config — dispatch rejected');
-      return false;
-    }
     // Cron (recurring) keeps the fire-and-forget contract: return truthy now
     // and swallow async failures. A one-shot (awaitDispatch) instead awaits
     // the dispatch so a rejected run propagates and the caller leaves the
@@ -676,8 +692,16 @@ ${prompt}`;
       ? this.scheduleRunner(schedule, { prompt })
       : Promise.reject(new Error('schedule runner not configured'));
     return run
-      .then(({ result }) => {
+      .then((outcome) => {
         this.running.delete(schedule.name);
+        // The run path found this schedule's previous run still going (a
+        // "run now" from the app) or backing off after failures in a row; it
+        // already persisted the skip.
+        if (outcome?.skipped) {
+          schedule.lastSkippedAt = new Date().toISOString();
+          logSchedule(`${schedule.name}: skipped — ${skipReasonText(outcome)}\n`);
+          return false;
+        }
         logSchedule(`${schedule.name} done\n`);
         return true;
       })
@@ -693,6 +717,17 @@ ${prompt}`;
       });
   }
   // ── Helpers ─────────────────────────────────────────────────────────
+  /** Overlap skip: the previous run of this schedule is still in progress.
+   *  Logged and persisted (last_skipped_at) so a skipped fire is never
+   *  invisible; `persistSkip` is injectable for tests. */
+  recordSkip(schedule) {
+    const at = new Date();
+    schedule.lastSkippedAt = at.toISOString();
+    logSchedule(`${schedule.name}: skipped — previous run still in progress\n`);
+    void Promise.resolve()
+      .then(() => (this.persistSkip ?? markScheduleSkipped)(schedule.name, at))
+      .catch((err) => process.stderr.write(`mixdog scheduler: ${schedule.name} skip record failed: ${err}\n`));
+  }
   /** Failure notice: logged so scheduled fires never fail silently. */
   notifyFailure(schedule, reason) {
     logSchedule(`schedule "${schedule?.name}": ${reason}\n`);

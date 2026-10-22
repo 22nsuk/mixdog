@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 import {
   assessChunkQuality,
   buildCycle1ChunkPrompt,
@@ -67,6 +68,37 @@ test('invalid indexes and malformed extra lines cannot silently lose source memb
   }
   assert.equal(validateCycle1Grouping(parseCycle1LineFormat(`${answer('1')}\nmalformed`), [row(1)]).accepted.length, 1);
   assert.equal(parseCycle1LineFormat(answer('1', 'literal a|b')).at(0).summary, 'literal a|b');
+});
+
+test('ascending index ranges expand; reversed or overlapping ranges stay invalid', () => {
+  const rows = Array.from({ length: 8 }, (_, i) => row(i + 1));
+  const parsed = parseCycle1LineFormat(`${answer('1-3,5')}\n${answer('4')}\n${answer('6 - 8')}`);
+  assert.deepEqual(parsed.map((chunk) => chunk._idxList), [[1, 2, 3, 5], [4], [6, 7, 8]]);
+  assert.equal(validateCycle1Grouping(parsed, rows).valid, true);
+  for (const text of [answer('3-1'), answer('1-'), answer('-2'), answer('1-2-3')]) {
+    assert.equal(validateCycle1Grouping(parseCycle1LineFormat(text), [row(1), row(2), row(3)]).accepted.length, 0);
+  }
+  assert.equal(validateCycle1Grouping(parseCycle1LineFormat(`${answer('1-2')}\n${answer('2-3')}`), rows.slice(0, 3)).valid, false);
+});
+
+test('indexes past the safe-integer range are rejected without hanging the parser', () => {
+  // The parser is synchronous: a time limit turns a never-ending expansion into a failure.
+  const parse = (raw) => runInNewContext('parse(raw)', { parse: parseCycle1LineFormat, raw }, { timeout: 1000 });
+  for (const indexes of [
+    '9007199254740992',
+    '9007199254740991-9007199254740992',
+    '1'.repeat(400),
+    '1,9007199254740992',
+  ]) {
+    const result = validateCycle1Grouping(parse(answer(indexes)), [row(1)]);
+    assert.equal(result.accepted.length, 0);
+    assert.equal(result.invalid[0].reason, 'out_of_range_idx');
+  }
+  const mixed = validateCycle1Grouping(parse(`${answer('9007199254740992')}\n${answer('1')}`), [row(1)]);
+  assert.deepEqual(
+    mixed.accepted.map((chunk) => chunk._idxList),
+    [[1]]
+  );
 });
 
 test('any omission, duplicate, mixed session or incomplete field fails the entire partition', () => {

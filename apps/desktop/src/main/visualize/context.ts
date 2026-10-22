@@ -16,6 +16,7 @@ import type { SessionState } from './tab-state';
 import type { TabLifecycle } from './tabs';
 import type { TabVersionRecords } from './tab-versions';
 import type { Thumbnails } from './thumbnails';
+import type { TurnHold } from './turn-hold';
 import type { VersionRestore } from './version-restore';
 import type { VersionSelection } from './version-select';
 import type { VisualizeVersionStore } from './versions';
@@ -42,8 +43,18 @@ export interface VisualizeServiceContext {
   pendingReloads: Set<Promise<void>>;
   /** The next start order of an open or file reload (`TabState.loadedStamp`). */
   nextLoadStamp(): number;
-  /** Push the session's state to the renderer and the remote mirror. */
-  publish(sessionId: string, reveal?: boolean): void;
+  /** Sessions whose agent turn is running (turn-hold.ts): what the turn
+   *  opens and changes is kept from the panel until the turn ends. */
+  holds: Map<string, TurnHold>;
+  /** The side panel's content size (CSS px) the renderer last measured; null
+   *  until it reports one. Off-screen `inspect` / `check` lay pages out at it. */
+  panelSize: { current: { width: number; height: number } | null };
+  /** Push the session's state to the renderer and the remote mirror;
+   *  `revealTab`: an agent open or a content update of that tab, which the
+   *  renderer brings up by the panel's open policy (visualize-store).
+   *  `updatedTab`: a file-change reload of that tab, updated in place (no
+   *  reveal, no activation; the renderer marks it when it is not the active one). */
+  publish(sessionId: string, revealTab?: string, updatedTab?: string): void;
   views: SessionViews;
   thumbnails: Thumbnails;
   problems: ProblemTracker;

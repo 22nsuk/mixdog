@@ -9,6 +9,8 @@ import {
   invalidateSidebarReferenceForMutation,
   resetSidebarReferenceCache,
   subscribeProviderModelsSync,
+  loadSidebarReferences,
+  readSidebarReference,
 } from './sidebar-reference-cache.ts';
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -95,3 +97,75 @@ test('relay notifications reach the paired client and notify uses the remote met
     assert.deepEqual(received, [{ origin: 'a' }]);
   });
 });
+
+
+test('a local window provider invalidation re-reads references without forcing them', async () => {
+  resetSidebarReferenceCache();
+  const previous = globalThis.window;
+  globalThis.window = new EventTarget();
+  const calls = [];
+  const api = {
+    invokeCapability: async ({ capability, args }) => {
+      calls.push({ capability, args });
+      return { value: { oauth: [{ id: 'openai-oauth', authenticated: true }] } };
+    },
+    listProviderModels: async (options) => {
+      calls.push({ models: options });
+      return [{ provider: 'openai-oauth', model: 'local-model' }];
+    },
+  };
+  const unsubscribe = subscribeProviderModelsSync(api);
+  try {
+    await loadSidebarReferences(api, ['providerSetup', 'quickProviderModels']);
+    globalThis.window.dispatchEvent(new Event('mixdog:remote-reconnected'));
+    await tick();
+    await loadSidebarReferences(api, ['providerSetup', 'quickProviderModels']);
+    assert.equal(calls.filter((call) => call.capability === 'getProviderSetup').length, 2);
+    assert.ok(!calls.some((call) => call.args?.[0]?.force || call.models?.force));
+  } finally {
+    unsubscribe();
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+    resetSidebarReferenceCache();
+  }
+});
+
+for (const event of ['mixdog:remote-reconnected', 'mixdog:remote-state-gap']) {
+  test(`sidebar provider references recover their offline snapshot on ${event}`, async () => {
+    resetSidebarReferenceCache();
+    const previous = globalThis.window;
+    globalThis.window = Object.assign(new EventTarget(), { mixdogDesktop: { connection: { kind: 'ssh' } } });
+    let connected = false;
+    const calls = [];
+    const api = {
+      invokeCapability: async ({ capability, args }) => {
+        calls.push({ capability, args });
+        return { value: { managedByClient: true, unavailable: !connected,
+          oauth: connected ? [{ id: 'openai-oauth', usable: true }] : [] } };
+      },
+      listProviderModels: async (options) => {
+        calls.push({ models: options });
+        return connected ? [{ provider: 'openai-oauth', model: 'new-model' }] : [];
+      },
+    };
+    const unsubscribe = subscribeProviderModelsSync(api);
+    try {
+      const offline = await loadSidebarReferences(api, ['providerSetup', 'quickProviderModels']);
+      assert.equal(offline.error, 'Desktop model providers are unavailable');
+      assert.equal(readSidebarReference('providerSetup'), undefined);
+      connected = true;
+      globalThis.window.dispatchEvent(new Event(event));
+      await tick();
+      await loadSidebarReferences(api, ['providerSetup', 'quickProviderModels']);
+      assert.equal(readSidebarReference('providerSetup').oauth[0].usable, true);
+      assert.equal(readSidebarReference('quickProviderModels')[0].model, 'new-model');
+      assert.ok(calls.some((call) => call.capability === 'getProviderSetup' && call.args[0]?.force));
+      assert.ok(calls.some((call) => call.models?.force));
+    } finally {
+      unsubscribe();
+      if (previous === undefined) delete globalThis.window;
+      else globalThis.window = previous;
+      resetSidebarReferenceCache();
+    }
+  });
+}

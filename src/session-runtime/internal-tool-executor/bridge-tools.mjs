@@ -6,6 +6,8 @@ import { executeTerminalTool } from '../../runtime/terminal-bridge/client.mjs';
 import { executeVisualizeTool } from '../../runtime/visualize-bridge/client.mjs';
 import { featureEnvOverride, moduleEnabled } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { createCallerContextResolvers } from './caller-context.mjs';
+import { unattendedApprovalPort } from '../../runtime/agent/orchestrator/session/human-gate/unattended-port.mjs';
+import { isGrantedRun } from '../../runtime/agent/orchestrator/session/human-gate/run-policy.mjs';
 
 export function createBridgeToolHandlers({ rt }) {
   const { sessionIdFor, signalFor } = createCallerContextResolvers(rt);
@@ -19,9 +21,16 @@ export function createBridgeToolHandlers({ rt }) {
     if (environmentDisabled(callerCtx, 'MIXDOG_FEATURE_BROWSER')) {
       throw new Error('the browser tool is disabled in this environment');
     }
+    const sessionId = sessionIdFor(callerCtx);
+    const run = unattendedApprovalPort()?.runOf?.(sessionId);
     return await executeBrowserTool(args, {
       tool: name,
-      sessionId: sessionIdFor(callerCtx),
+      sessionId,
+      // A schedule/webhook run never asks for form submits, posts or uploads;
+      // the bot that owns the run comes from the run's record, so its `block`
+      // applies whatever the display metadata says.
+      unattendedRun: isGrantedRun(run),
+      unattendedAgent: run?.agentId || '',
       turnId: callerCtx?.turnId || rt.session?.usageMetricsTurnId,
       signal: signalFor(callerCtx),
     });
@@ -40,13 +49,15 @@ export function createBridgeToolHandlers({ rt }) {
     });
   };
 
-  // Read-only: no approval hook, no working directory.
+  // `run` is gated by the exec policy; the elevation approval comes from the
+  // runtime's gate (callerCtx), never from the model's args.
   const terminal = async (args, { callerCtx }) => {
     if (environmentDisabled(callerCtx, 'MIXDOG_FEATURE_TERMINAL')) {
       throw new Error('the terminal tool is disabled in this environment');
     }
     return await executeTerminalTool(args, {
       sessionId: sessionIdFor(callerCtx),
+      elevationApproved: callerCtx?.elevationApproved === true,
       signal: signalFor(callerCtx),
     });
   };

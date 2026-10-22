@@ -4,9 +4,10 @@ import { createPortal } from 'react-dom';
 
 import { commitImmediateOverlay, useImmediateOverlayClickGuard } from './immediate-overlay';
 import { t } from './i18n';
+import { useMenuDismiss } from './menu-dismiss';
 import { useMobileBack } from './mobile-back';
-import { captureRowMenuAnchor, positionRowMenu } from './row-menu-geometry';
-import type { UsageRailBars } from './SidebarUsage';
+import { captureRowMenuAnchor, positionRowMenu, useRowMenuClamp } from './row-menu-geometry';
+import type { UsageRailBars, UsageRailSlots } from './SidebarUsage';
 
 const ENABLED_ITEM = "[role='menuitemcheckbox']:not(:disabled), [role='menuitemradio']:not(:disabled)";
 
@@ -18,11 +19,19 @@ export function SidebarUsageMenu({
   onTogglePin,
   railBars,
   onRailBarsChange,
+  accountsExpanded = false,
+  onAccountsExpandedChange,
+  railSlots = '5',
+  onRailSlotsChange,
 }: {
   pinned: boolean;
   onTogglePin(): void;
   railBars: UsageRailBars;
   onRailBarsChange?(next: UsageRailBars): void;
+  accountsExpanded?: boolean;
+  onAccountsExpandedChange?(next: boolean): void;
+  railSlots?: UsageRailSlots;
+  onRailSlotsChange?(next: UsageRailSlots): void;
 }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -31,29 +40,17 @@ export function SidebarUsageMenu({
   const clickGuard = useImmediateOverlayClickGuard();
   useMobileBack(open, () => setOpen(false));
 
+  useMenuDismiss({ open, close: () => setOpen(false), trigger, panels: () => [panel.current] });
   useEffect(() => {
     if (!open) {
       anchorBounds.current = null;
       return undefined;
     }
     queueMicrotask(() => panel.current?.querySelector<HTMLButtonElement>(ENABLED_ITEM)?.focus());
-    const dismiss = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (!panel.current?.contains(target) && !trigger.current?.contains(target)) setOpen(false);
-    };
-    const keydown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      setOpen(false);
-      trigger.current?.focus();
-    };
     const close = () => setOpen(false);
-    document.addEventListener('pointerdown', dismiss, true);
-    document.addEventListener('keydown', keydown, true);
     window.addEventListener('resize', close);
     window.addEventListener('scroll', close, true);
     return () => {
-      document.removeEventListener('pointerdown', dismiss, true);
-      document.removeEventListener('keydown', keydown, true);
       window.removeEventListener('resize', close);
       window.removeEventListener('scroll', close, true);
     };
@@ -68,10 +65,6 @@ export function SidebarUsageMenu({
   };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const entries = [...(panel.current?.querySelectorAll<HTMLButtonElement>(ENABLED_ITEM) ?? [])];
-    if (event.key === 'Tab') {
-      setOpen(false);
-      return;
-    }
     if (!entries.length) return;
     const current = Math.max(0, entries.indexOf(document.activeElement as HTMLButtonElement));
     let next: number;
@@ -101,7 +94,24 @@ export function SidebarUsageMenu({
     </button>
   );
 
+  const slotsRadio = (value: UsageRailSlots, label: string) => (
+    <button
+      type="button"
+      role="menuitemradio"
+      aria-checked={railSlots === value}
+      disabled={!pinned}
+      data-rail-slots={value}
+      onClick={() => onRailSlotsChange?.(value)}
+    >
+      <span className="row-overflow-check" aria-hidden="true">
+        {railSlots === value && <Check size={14} />}
+      </span>
+      <span className="row-overflow-label">{label}</span>
+    </button>
+  );
+
   const placement = positionRowMenu(open ? anchorBounds.current : null, 8, 1, window.innerWidth, window.innerHeight);
+  useRowMenuClamp(open, panel);
   return (
     <>
       <button
@@ -140,9 +150,24 @@ export function SidebarUsageMenu({
             style={placement}
           >
             <button type="button" role="menuitemcheckbox" aria-checked={pinned} onClick={onTogglePin}>
-              <span className="row-overflow-check" aria-hidden="true">{pinned && <Check size={14} />}</span>
+              <span className="row-overflow-check" aria-hidden="true">
+                {pinned && <Check size={14} />}
+              </span>
               <span className="row-overflow-label">{t('Pin to rail')}</span>
             </button>
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={accountsExpanded}
+              data-usage-accounts-expand
+              onClick={() => onAccountsExpandedChange?.(!accountsExpanded)}
+            >
+              <span className="row-overflow-check" aria-hidden="true">
+                {accountsExpanded && <Check size={14} />}
+              </span>
+              <span className="row-overflow-label">{t('Expand all accounts')}</span>
+            </button>
+            {/* biome-ignore lint/a11y/useSemanticElements: <hr> default border/margin would change the styling. */}
             <div className="usage-menu-separator" role="separator" />
             <div className="usage-menu-group" role="presentation">
               {t('Rail bars')}
@@ -153,6 +178,14 @@ export function SidebarUsageMenu({
               t('5-hour + longest period'),
               t('5-hour and weekly as two bars; the number shows the higher')
             )}
+            {/* biome-ignore lint/a11y/useSemanticElements: <hr> default border/margin would change the styling. */}
+            <div className="usage-menu-separator" role="separator" />
+            <div className="usage-menu-group" role="presentation">
+              {t('Rail slots')}
+            </div>
+            {slotsRadio('3', t('{{n}} slots', { n: 3 }))}
+            {slotsRadio('5', t('{{n}} slots', { n: 5 }))}
+            {slotsRadio('all', t('All slots'))}
           </div>,
           document.body
         )}

@@ -1,6 +1,8 @@
 /**
  * The ordinary session catalog engine: summary index (base + delta log),
- * session-file reconcile, `.hb` liveness and the background verification.
+ * session-file reconcile and the background verification. Turn liveness is
+ * not part of it: the daemon overlays its in-memory runtime state on the rows
+ * it serves.
  *
  * Leaf by design (no store.mjs, no config, no workers): the cold reader
  * (store-summary-reader.mjs) runs one instance on its own thread for the JSON
@@ -10,22 +12,29 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 // Leaf helpers only: the three-way present/absent/unreadable classification
 // and the strict record parser the authoritative store uses, so the catalog
 // cannot disagree with it.
-import { probePath, readTextFile, PROBE_PRESENT, PROBE_ABSENT } from './store/fs-probe.mjs';
-import { readTopLevelLifecycleRecord, isLifecycleUnreadable } from './lifecycle-scan.mjs';
+import { probePath, readBytesFile, readTextFile, PROBE_PRESENT, PROBE_ABSENT } from './store/fs-probe.mjs';
+import { isLifecycleUnreadable } from './lifecycle-scan.mjs';
+import { readStrictRecordFields } from './store-record-strict-scan.mjs';
 import { isAgentOnlySession, isRootLeadSession, sessionVisibility } from './store-summary-visibility.mjs';
 import { applySummaryLogText, summaryLogPath } from './store-summary-log.mjs';
 import { dataDir } from './store-summary-locations.mjs';
+import { normalizeRoutineProvenance } from './routine-result.mjs';
+import { lastMessageLine, lastMessageSummary, normalizedIncomingTail } from './store-summary-last-message.mjs';
 import {
   desktopSession,
   importKey,
   inheritedFromSessionId,
   isStoredSessionId,
   positiveNumber,
+  realTurnCount,
   workspaceSummary,
 } from './store-summary-fields.mjs';
+import { isRealTurnMessage } from './compact/user-message-kind.mjs';
+import { sessionModeOf } from './agent-mode.mjs';
 import { byActivityThenId } from './catalog-db/schema.mjs';
 import {
   sessionStampOf,
@@ -39,7 +48,7 @@ export const STAMP_ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
 /** The one catalog order of every listing path (JSON and DB): newest
  *  conversation activity first (see normalizedRow's lastUsedAt note), ties by
  *  id, so a fallback and the DB never disagree on equal activity times. */
-export const byCatalogOrder = byActivityThenId;
+const byCatalogOrder = byActivityThenId;
 
 // ── Stamp-keyed strict derivations ──────────────────────────────────────────
 // Session metadata and catalog rows are small values derived from a strict
@@ -48,8 +57,20 @@ export const byCatalogOrder = byActivityThenId;
 // proven to come from (stat → read → stat) and that stamp is past the racy
 // window. Any other file — changed, replaced by another writer, unreadable —
 // is read and strictly parsed again.
+// Bounded by count and by serialized size: nothing tells this map a session
+// file went away, so a churning host fills it with dead paths until LRU
+// eviction (`delete` + `set` on a hit keeps Map order least recent first).
 const STAMPED_DERIVATION_LIMIT = 2048;
-const stampedDerivations = new Map(); // `${kind}|${path}` → { stamp, value }
+const STAMPED_DERIVATION_MAX_BYTES = 8 * 1024 * 1024;
+const stampedDerivations = new Map(); // `${kind}|${path}` → { stamp, value, bytes }
+let stampedDerivationBytes = 0;
+
+function dropStampedDerivation(key) {
+  const entry = stampedDerivations.get(key);
+  if (!entry) return;
+  stampedDerivations.delete(key);
+  stampedDerivationBytes -= entry.bytes;
+}
 
 export function observeStamp(path) {
   try {
@@ -60,24 +81,35 @@ export function observeStamp(path) {
 }
 
 /** `{ state, value }`: `derive(text)` for the record at `path`, or its cached
- *  result while the file is provably unchanged. */
-export function stampedDerivation(kind, path, derive) {
+ *  result while the file is provably unchanged. `bytes`: `derive` gets the
+ *  raw Buffer instead of text. `stamp`: the caller's own stat of `path`,
+ *  taken just before, stands for the pre-read stat (one stat fewer). */
+export function stampedDerivation(kind, path, derive, { bytes = false, stamp } = {}) {
   const key = `${kind}|${path}`;
-  const before = observeStamp(path);
+  const before = stamp === undefined ? observeStamp(path) : stamp;
   const cached = stampedDerivations.get(key);
   if (before && cached && sameSessionStamp(cached.stamp, before)) {
     stampedDerivations.delete(key);
     stampedDerivations.set(key, cached);
     return { state: PROBE_PRESENT, value: cached.value };
   }
-  stampedDerivations.delete(key);
-  const read = readTextFile(path);
+  dropStampedDerivation(key);
+  const read = bytes ? readBytesFile(path) : readTextFile(path);
   if (read.state !== PROBE_PRESENT) return { state: read.state, value: null };
-  const value = derive(read.text);
+  const value = derive(bytes ? read.bytes : read.text);
   if (isSettledSessionStamp(before) && sameSessionStamp(before, observeStamp(path))) {
-    stampedDerivations.set(key, { stamp: before, value });
-    if (stampedDerivations.size > STAMPED_DERIVATION_LIMIT) {
-      stampedDerivations.delete(stampedDerivations.keys().next().value);
+    // UTF-16 code units of the key and the serialized value approximate the
+    // retained bytes; the strict parse just above dwarfs this stringify.
+    const size = 2 * (key.length + (JSON.stringify(value)?.length ?? 0));
+    if (size <= STAMPED_DERIVATION_MAX_BYTES) {
+      stampedDerivations.set(key, { stamp: before, value, bytes: size });
+      stampedDerivationBytes += size;
+      while (
+        stampedDerivations.size > STAMPED_DERIVATION_LIMIT ||
+        stampedDerivationBytes > STAMPED_DERIVATION_MAX_BYTES
+      ) {
+        dropStampedDerivation(stampedDerivations.keys().next().value);
+      }
     }
   }
   return { state: PROBE_PRESENT, value };
@@ -85,18 +117,18 @@ export function stampedDerivation(kind, path, derive) {
 
 const SESSION_SUMMARY_INDEX_VERSION = 2;
 
-// Mirror of lifecycle-api.mjs listLeadSessions visibility: the cold catalog
-// must never surface worker/agent dispatches (memory ingest chunks, judges,
-// spawned agents) — the authoritative engine excludes them, so a click on
-// such a row dead-ends in "Session is not available." (user report).
+// Catalog visibility: Agent sessions are listed like any other session (the
+// desktop sidebar filters to Leads itself), while internal dispatches the
+// engine cannot open (memory ingest chunks, judges, exec runs) stay out — a
+// click on such a row dead-ends in "Session is not available." (user report).
 const LEAD_OWNERS = new Set(['cli', 'user', 'mixdog']);
 
 export function isLeadVisibleRow(row) {
   const owner = String(row.owner || 'user')
     .trim()
     .toLowerCase();
-  if (isAgentOnlySession(row)) return false;
-  if (!isRootLeadSession(row) && owner && !LEAD_OWNERS.has(owner)) return false;
+  const agentSession = isAgentOnlySession(row) || owner === 'agent';
+  if (!agentSession && !isRootLeadSession(row) && owner && !LEAD_OWNERS.has(owner)) return false;
   // Mirror listLeadSessions: a previewless zero-message row is an unusable
   // scratch (desktop boot leftovers, crashed first turns) — resuming it
   // shows an empty conversation, so the catalog hides it.
@@ -113,6 +145,7 @@ export function isLeadVisibleRow(row) {
     .trim()
     .toLowerCase();
   return (
+    agentSession ||
     agent === 'lead' ||
     sourceType === 'lead' ||
     sourceType === 'cli' ||
@@ -147,7 +180,7 @@ function messageText(content) {
     .join(' ');
 }
 
-export function normalizedRow(row, heartbeatAt = 0) {
+export function normalizedRow(row) {
   if (!row || typeof row.id !== 'string' || !isStoredSessionId(row.id)) return null;
   return {
     id: row.id,
@@ -158,14 +191,11 @@ export function normalizedRow(row, heartbeatAt = 0) {
     lastUsedAt: positiveNumber(row.lastUsedAt, 0),
     createdAt: positiveNumber(row.createdAt, 0),
     lastHeartbeatAt: positiveNumber(row.lastHeartbeatAt, 0),
-    // Liveness comes from the .hb sidecar mtime alone: stored row fields
-    // (summary index / final session save) survive completion and must not
-    // keep the desktop working indicator on after the sidecar is deleted.
-    heartbeatAt: positiveNumber(heartbeatAt, 0),
     closed: row.closed === true,
     status: String(row.status || (row.closed === true ? 'closed' : 'idle')),
     owner: row.owner || 'user',
     agent: row.agent || null,
+    sessionMode: sessionModeOf(row),
     sourceType: row.sourceType || null,
     sourceName: row.sourceName || null,
     scopeKey: row.scopeKey || null,
@@ -182,8 +212,16 @@ export function normalizedRow(row, heartbeatAt = 0) {
     permission: row.permission || null,
     toolPermission: row.toolPermission || null,
     messageCount: Math.max(0, Math.floor(Number(row.messageCount) || 0)),
+    // Absent from a row read off a session file: its assistant text is not
+    // decoded there, so the unread count falls back until the next save.
+    ...(Array.isArray(row.incomingTail) ? { incomingTail: normalizedIncomingTail(row.incomingTail) } : {}),
+    realTurnCount: realTurnCount(row),
     title: cleanText(row.title, 100),
     preview: cleanText(row.preview),
+    lastMessagePreview: cleanText(row.lastMessagePreview),
+    // Null for any line that is not a routine result, and on rows written
+    // before the marker existed (they show their plain text).
+    lastMessageRoutine: normalizeRoutineProvenance(row.lastMessageRoutine),
     generation: typeof row.generation === 'number' ? row.generation : 0,
     storageMtimeMs: positiveNumber(row.storageMtimeMs, 0),
     storageSize: positiveNumber(row.storageSize, 0),
@@ -193,35 +231,31 @@ export function normalizedRow(row, heartbeatAt = 0) {
   };
 }
 
-/** Newest heartbeat of each Lead's live agents, from rows carrying `heartbeatAt`. */
-export function agentHeartbeatsByOwner(rows) {
-  const agentHeartbeatByOwner = new Map();
-  for (const row of rows) {
-    const heartbeatAt = positiveNumber(row?.heartbeatAt, 0);
-    const ownerSessionId = String(row?.ownerSessionId || '').trim();
-    const owner = String(row?.owner || '')
-      .trim()
-      .toLowerCase();
-    const agent = String(row?.agent || '')
-      .trim()
-      .toLowerCase();
-    if (!heartbeatAt || !ownerSessionId || (owner !== 'agent' && (!agent || agent === 'lead'))) continue;
-    agentHeartbeatByOwner.set(ownerSessionId, Math.max(agentHeartbeatByOwner.get(ownerSessionId) || 0, heartbeatAt));
-  }
-  return agentHeartbeatByOwner;
+function leadRows(rows) {
+  return rows.filter((row) => row && isLeadVisibleRow(row));
 }
 
-function leadRowsWithAgentHeartbeat(rows) {
-  const agentHeartbeatByOwner = agentHeartbeatsByOwner(rows);
-  return rows
-    .filter((row) => row && isLeadVisibleRow(row))
-    .map((row) => {
-      const agentHeartbeatAt = agentHeartbeatByOwner.get(row.id) || 0;
-      return agentHeartbeatAt > 0 ? { ...row, agentHeartbeatAt } : row;
-    });
-}
+// What a row derivation decodes of a record (store-record-strict-scan.mjs):
+// rowFromSession reads its user messages whole, the newest messages back to
+// the one with a last-message line whole too, only the role of the rest, and
+// never these top-level fields — together ~10% of a record, mostly tool
+// catalogs. Every other top-level field is decoded, so a field a row starts
+// to read is there without touching this list.
+const CATALOG_RECORD_READ = {
+  skip: new Set([
+    'tools',
+    'deferredToolCatalog',
+    'deferredLateToolCatalog',
+    'bp3CoreContext',
+    'bp3EnvironmentContext',
+    'compaction',
+    'pendingDeferredToolDelta',
+  ]),
+  fullMessageRoles: new Set(['user']),
+  fullTailUntil: (message) => Boolean(lastMessageLine(message)),
+};
 
-function rowFromSession(session, heartbeatAt = 0) {
+function rowFromSession(session) {
   const messages = Array.isArray(session?.messages) ? session.messages : [];
   const preview =
     messages
@@ -236,14 +270,16 @@ function rowFromSession(session, heartbeatAt = 0) {
       )
       .map((message) => cleanText(messageText(message.content)))
       .find(Boolean) || '';
-  return normalizedRow(
-    {
-      ...session,
-      messageCount: messages.filter((message) => message?.role === 'user' || message?.role === 'assistant').length,
-      preview,
-    },
-    heartbeatAt
-  );
+  // The last-message line comes from the transcript like the summary index
+  // derives it; without it a session saved after the index was written lost
+  // its contact-row preview whenever its row came from this file read.
+  return normalizedRow({
+    ...session,
+    messageCount: messages.filter((message) => message?.role === 'user' || message?.role === 'assistant').length,
+    realTurnCount: messages.filter(isRealTurnMessage).length,
+    preview,
+    ...lastMessageSummary(messages),
+  });
 }
 
 // ── Session file reconcile ──────────────────────────────────────────────────
@@ -283,14 +319,21 @@ function reconcileSessionFile(directory, storageId, retained, forceRead) {
     return { kind: 'indexed', ...fingerprint };
   }
   // A file the index does not describe (never saved by the store, or
-  // saved after the index was written) is parsed once per full stamp.
-  const read = stampedDerivation('row', path, (text) => {
-    // Same strict authority as the store: a duplicate/ambiguous top-level
-    // record or a foreign identity is not this file's session.
-    const record = readTopLevelLifecycleRecord(text);
-    if (isLifecycleUnreadable(record) || record.id !== storageId) return null;
-    return rowFromSession(record.doc, 0);
-  });
+  // saved after the index was written) is read once per full stamp; the
+  // stat above is the read's pre-read stat.
+  const read = stampedDerivation(
+    'row',
+    path,
+    (bytes) => {
+      // Same strict authority as the store: a duplicate/ambiguous top-level
+      // record or a foreign identity is not this file's session. Only what a
+      // row is made of is decoded (see CATALOG_RECORD_READ).
+      const record = readStrictRecordFields(bytes, CATALOG_RECORD_READ);
+      if (isLifecycleUnreadable(record) || record.id !== storageId) return null;
+      return rowFromSession(record.doc);
+    },
+    { bytes: true, stamp }
+  );
   if (read.state === PROBE_ABSENT) return null;
   // Exists and could not be read (EACCES/EIO): retain the last known row
   // rather than let a transient IO error delete it from view.
@@ -317,53 +360,106 @@ function deepFreeze(value) {
   return value;
 }
 
-/** The session ids (`<id>.json`) and live sidecar ids (`<id>.hb`) of
- *  `directory`, or null when it cannot be enumerated. */
-function listSessionNames(directory) {
+/** The session ids (`<id>.json`) of `directory`, or null when it cannot be
+ *  enumerated. */
+function listSessionIds(directory) {
   let names;
   try {
     names = readdirSync(directory);
   } catch {
     return null;
   }
-  const sessionIds = [];
-  const heartbeatIds = [];
-  for (const filename of names) {
-    if (filename.endsWith('.json')) sessionIds.push(filename.slice(0, -5));
-    else if (filename.endsWith('.hb') && isStoredSessionId(filename.slice(0, -3))) {
-      heartbeatIds.push(filename.slice(0, -3));
-    }
-  }
-  return { sessionIds, heartbeatIds };
+  return names.filter((filename) => filename.endsWith('.json')).map((filename) => filename.slice(0, -5));
 }
 
-/** Every `.json` entry and `.hb` sidecar id of an enumerable `directory`, or
- *  null when it cannot be enumerated. */
+/** Every `.json` entry of an enumerable `directory`, or null when it cannot
+ *  be enumerated. */
 function scanSessionEntries(directory, indexRowsById, forceRead) {
-  const names = listSessionNames(directory);
-  if (!names) return null;
+  const sessionIds = listSessionIds(directory);
+  if (!sessionIds) return null;
   const entries = new Map();
-  for (const storageId of names.sessionIds) {
+  for (const storageId of sessionIds) {
     const entry = reconcileSessionFile(directory, storageId, indexRowsById.get(storageId), forceRead);
     if (entry) entries.set(storageId, entry);
   }
-  return { entries, heartbeatIds: names.heartbeatIds };
+  return { entries };
 }
 
-/** The row an entry contributes (before liveness overlays), or null. */
+// The async rescan yields a turn once a slice of reconciles has run this long:
+// a full authoritative rescan strict-reads every session file (≈4 s for 1.8k
+// files / 1.3 GB), which must not hold the daemon loop in one piece.
+let scanSliceMs = 25;
+
+/** Test seam: the async rescan's slice budget (0 yields after every file). */
+export function _setCatalogScanSliceMsForTest(ms) {
+  scanSliceMs = Math.max(0, Number(ms) || 0);
+}
+
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+/** The entry a file still has: `entry` when the file's stamp is unchanged
+ *  since it was reconciled, else a fresh reconcile (null once it is gone). */
+function settledEntry(directory, storageId, entry, retained, forceRead) {
+  if (entry?.stamp) {
+    let stamp = null;
+    try {
+      stamp = statSessionStamp(join(directory, `${storageId}.json`));
+    } catch {
+      // Gone or unstatable: the reconcile below decides which.
+    }
+    if (stamp && sameSessionStamp(entry.stamp, stamp)) return entry;
+  }
+  return reconcileSessionFile(directory, storageId, retained, forceRead);
+}
+
+/** scanSessionEntries in slices, yielding the loop between them. Files can
+ *  change while it yields, so the answer is settled in one synchronous pass at
+ *  the end: the directory is listed again, a file whose stamp moved since its
+ *  read (or that appeared) is reconciled again, and a file that is no longer
+ *  listed is dropped — the entries match storage when they are returned, as
+ *  the one-piece scan's do. That pass is a stat per file (≈20 ms for 1.5k). */
+async function scanSessionEntriesAsync(directory, indexRowsById, forceRead, onSettle) {
+  const sessionIds = listSessionIds(directory);
+  if (!sessionIds) {
+    onSettle?.();
+    return null;
+  }
+  const scanned = new Map();
+  let sliceStart = performance.now();
+  for (const storageId of sessionIds) {
+    if (performance.now() - sliceStart >= scanSliceMs) {
+      await nextTurn();
+      sliceStart = performance.now();
+    }
+    const entry = reconcileSessionFile(directory, storageId, indexRowsById.get(storageId), forceRead);
+    if (entry) scanned.set(storageId, entry);
+  }
+  onSettle?.();
+  const settledIds = listSessionIds(directory);
+  if (!settledIds) return null;
+  const entries = new Map();
+  for (const storageId of settledIds) {
+    const entry = settledEntry(directory, storageId, scanned.get(storageId), indexRowsById.get(storageId), forceRead);
+    if (entry) entries.set(storageId, entry);
+  }
+  return { entries };
+}
+
+/** The row an entry contributes, or null. */
 function entryRow(entry, id, indexRowsById) {
   if (!entry || entry.kind === 'none') return null;
   return (entry.kind === 'row' ? entry.row : indexRowsById.get(id)) || null;
 }
 
 /** Catalog rows of reconciled `entries`, in catalog order. */
-function assembleCatalog(entries, indexRowsById, heartbeatMtimes) {
+function assembleCatalog(entries, indexRowsById) {
   const rows = [];
   for (const [id, entry] of entries) {
     const row = entryRow(entry, id, indexRowsById);
-    if (row) rows.push({ ...row, heartbeatAt: positiveNumber(heartbeatMtimes.get(id), 0) });
+    // A copy: the cached entry rows are frozen and shared.
+    if (row) rows.push({ ...row });
   }
-  return leadRowsWithAgentHeartbeat(rows).sort(byCatalogOrder);
+  return leadRows(rows).sort(byCatalogOrder);
 }
 
 /**
@@ -375,23 +471,33 @@ function assembleCatalog(entries, indexRowsById, heartbeatMtimes) {
  * durable summary and a single UNREADABLE file retains its last known row
  * instead of vanishing.
  */
-export function scanSessionFiles(heartbeatMtimes, indexRowsById, forceRead) {
+export function scanSessionFiles(indexRowsById, forceRead) {
   const directory = join(dataDir(), 'sessions');
   const dirProbe = probePath(directory);
   if (dirProbe.state === PROBE_ABSENT) return [];
   if (dirProbe.state !== PROBE_PRESENT) return null;
   const scan = scanSessionEntries(directory, indexRowsById, forceRead);
-  return scan && assembleCatalog(scan.entries, indexRowsById, heartbeatMtimes);
+  return scan && assembleCatalog(scan.entries, indexRowsById);
+}
+
+/** scanSessionFiles with the same answer, its file reconciles run in slices
+ *  that yield the event loop (the daemon's session.list storage refresh).
+ *  `onSettle` runs once, when the answer's final synchronous part begins: from
+ *  then on storage changes are no longer seen by this scan. */
+export async function scanSessionFilesAsync(indexRowsById, forceRead, { onSettle } = {}) {
+  const directory = join(dataDir(), 'sessions');
+  const dirProbe = probePath(directory);
+  if (dirProbe.state !== PROBE_PRESENT) {
+    onSettle?.();
+    return dirProbe.state === PROBE_ABSENT ? [] : null;
+  }
+  const scan = await scanSessionEntriesAsync(directory, indexRowsById, forceRead, onSettle);
+  return scan && assembleCatalog(scan.entries, indexRowsById);
 }
 
 /** Listing from the index rows alone, or null without a valid index. */
-export function indexListing(index, heartbeatMtimes) {
-  return (
-    index.rows &&
-    leadRowsWithAgentHeartbeat(
-      index.rows.map((row) => ({ ...row, heartbeatAt: positiveNumber(heartbeatMtimes.get(row.id), 0) }))
-    ).sort(byCatalogOrder)
-  );
+export function indexListing(index) {
+  return index.rows && leadRows(index.rows.map((row) => ({ ...row }))).sort(byCatalogOrder);
 }
 
 // ── Summary index ───────────────────────────────────────────────────────────
@@ -475,7 +581,7 @@ function readSummaryIndex(cached) {
       }
       // Same semantics as applySummaryLogText: last writer wins per id.
       if (op?.u && typeof op.u.id === 'string') {
-        const row = normalizedRow(op.u, 0);
+        const row = normalizedRow(op.u);
         if (row) rowsById.set(row.id, deepFreeze(row));
         else rowsById.delete(op.u.id);
         touched.add(op.u.id);
@@ -509,7 +615,7 @@ function readSummaryIndex(cached) {
     }
   }
   const rows = applySummaryLogText({ rows: baseRows ?? [] }, index.logBytes.toString('utf8'))
-    .rows.map((row) => normalizedRow(row, 0))
+    .rows.map((row) => normalizedRow(row))
     .filter(Boolean)
     .map(deepFreeze);
   for (const row of rows) index.signatures.set(row.id, JSON.stringify(row));
@@ -535,16 +641,10 @@ function changedIndexIds(previous, next) {
   return ids;
 }
 
-function sameMtimes(left, right) {
-  if (!right || left.size !== right.size) return false;
-  for (const [id, mtimeMs] of left) if (right.get(id) !== mtimeMs) return false;
-  return true;
-}
-
 // ── Ordinary catalog ────────────────────────────────────────────────────────
 // The ordinary listing keeps its last reconcile and answers an unchanged call
-// from cheap stamps alone: the index pair (above), the sessions DIRECTORY and
-// the handful of live `.hb` sidecars — no per-session-file filesystem work.
+// from cheap stamps alone: the index pair (above) and the sessions DIRECTORY —
+// no per-session-file filesystem work.
 //
 // The directory stamp changes on every create, delete and rename in it
 // (including a temp-file + rename replace), and NOT on an in-place write
@@ -577,8 +677,6 @@ function newSessionCatalog(directory, dirStamp, index, scan) {
     dirSettled: isSettledSessionStamp(dirStamp),
     index,
     entries: scan.entries,
-    heartbeatIds: scan.heartbeatIds,
-    heartbeatMtimes: null,
     rows: null,
     dirty: new Set(),
     verifiedAt: Date.now(),
@@ -606,17 +704,16 @@ function reconcileKnownCatalog(catalog, directory, dirStamp, index, hinted) {
     changed = true;
   }
   if (!catalog.dirSettled || !sameSessionStamp(catalog.dirStamp, dirStamp)) {
-    const names = listSessionNames(directory);
-    if (!names) return null;
-    const present = new Set(names.sessionIds);
+    const sessionIds = listSessionIds(directory);
+    if (!sessionIds) return null;
+    const present = new Set(sessionIds);
     for (const id of catalog.entries.keys()) {
       if (present.has(id)) continue;
       catalog.entries.delete(id);
       changedIds.add(id);
       changed = true;
     }
-    for (const id of names.sessionIds) if (!catalog.entries.has(id)) ids.add(id);
-    catalog.heartbeatIds = names.heartbeatIds;
+    for (const id of sessionIds) if (!catalog.entries.has(id)) ids.add(id);
     catalog.dirStamp = dirStamp;
     catalog.dirSettled = isSettledSessionStamp(dirStamp);
   }
@@ -628,20 +725,6 @@ function reconcileKnownCatalog(catalog, directory, dirStamp, index, hinted) {
     changed = true;
   }
   return { changed, changedIds };
-}
-
-/** Liveness: `.hb` sidecars are rewritten in place, so their mtimes are
- *  probed every call (absent or unreadable contributes nothing). True when
- *  they differ from the previous probe. */
-function refreshHeartbeatMtimes(catalog, directory) {
-  const heartbeatMtimes = new Map();
-  for (const id of catalog.heartbeatIds) {
-    const probe = probePath(join(directory, `${id}.hb`));
-    if (probe.state === PROBE_PRESENT && probe.mtimeMs > 0) heartbeatMtimes.set(id, probe.mtimeMs);
-  }
-  const differs = !sameMtimes(heartbeatMtimes, catalog.heartbeatMtimes);
-  catalog.heartbeatMtimes = heartbeatMtimes;
-  return differs;
 }
 
 /** Marks every entry of `snapshot` whose file no longer has the full stamp it
@@ -725,7 +808,6 @@ export function createOrdinaryCatalog() {
       }
       ({ changed, changedIds } = reconciled);
     }
-    if (refreshHeartbeatMtimes(catalog, directory)) changed = true;
     if (changed) catalog.rows = null;
     if (assemble) rowsOf(catalog);
     armCatalogVerify(catalog);
@@ -735,9 +817,7 @@ export function createOrdinaryCatalog() {
 
   /** The (frozen) listing of a reconciled catalog, assembled on demand. */
   function rowsOf(catalog) {
-    catalog.rows ||= assembleCatalog(catalog.entries, catalog.index.rowsById, catalog.heartbeatMtimes).map(
-      Object.freeze
-    );
+    catalog.rows ||= assembleCatalog(catalog.entries, catalog.index.rowsById).map(Object.freeze);
     return catalog.rows;
   }
 
@@ -791,7 +871,7 @@ export function createOrdinaryCatalog() {
     loadIndex,
     refresh,
     rowsOf,
-    /** The row `id` contributes to the current catalog (before overlays). */
+    /** The row `id` contributes to the current catalog. */
     entryRow: (catalog, id) => entryRow(catalog.entries.get(id), id, catalog.index.rowsById),
     current: () => sessionCatalog,
     /** `listener()` runs when a background pass finds a session file that

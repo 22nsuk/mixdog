@@ -59,16 +59,19 @@ test('Studio listing and generation validation use the same refreshed provider c
   });
   const rows = await catalog.listMediaLanes();
   const lane = rows.find((row) => row.id === 'openai-oauth');
-  assert.equal(lane.image.defaultModel, 'chatgpt-image-auto');
-  assert.equal(lane.image.models[0].label, 'ChatGPT Image · Auto');
+  assert.equal(lane.image.defaultModel, 'gpt-image-2');
+  assert.equal(lane.image.models[0].label, 'GPT Image 2');
   assert.equal(lane.image.models[0].requestModel, 'gpt-6-astra');
   const request = await catalog.resolveMediaRequest({ lane: lane.id, kind: 'image' });
   assert.equal(request.model, lane.image.defaultModel);
   assert.deepEqual(request.spec, lane.image);
-  assert.deepEqual(request.spec.models[0].controls, { maxReferences: 5 });
+  assert.deepEqual(request.spec.models[0].controls, {
+    maxReferences: 5,
+    background: ['auto', 'transparent', 'opaque'],
+  });
 
   models = [{ id: 'gpt-7-mainline' }];
-  const fresh = await catalog.resolveMediaRequest({ lane: lane.id, kind: 'image', model: 'chatgpt-image-auto' });
+  const fresh = await catalog.resolveMediaRequest({ lane: lane.id, kind: 'image', model: 'gpt-image-2' });
   assert.equal(
     fresh.spec.models[0].requestModel,
     'gpt-7-mainline',
@@ -170,7 +173,7 @@ test('Studio recognizes selected-account login and logout immediately without re
   auth.writeTokens(path);
   const request = await auth.resolve();
   assert.equal(request.lane.authenticated, true);
-  assert.equal(request.model, 'chatgpt-image-auto');
+  assert.equal(request.model, 'gpt-image-2');
   unlinkSync(path);
   await assert.rejects(auth.resolve(), { code: 'MEDIA_LANE_UNAUTHENTICATED' });
 });
@@ -254,4 +257,167 @@ test('Studio fails closed on incomplete or unreadable selected credentials and r
   auth.writeTokens(path);
   assert.equal(oauthCredentialProbeState('openai-oauth'), 'present');
   assert.equal((await auth.resolve()).lane.authenticated, true);
+});
+
+test('gateway image lanes sign in from the OpenRouter key and a keyed NanoGPT custom provider', async (t) => {
+  const { randomUUID } = await import('node:crypto');
+  const { invalidateConfigReadCache } = await import('../shared/config.mjs');
+  const { resolveImageApiAuth } = await import('./auth.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-studio-gateway-'));
+  const keys = ['MIXDOG_DATA_DIR', 'MIXDOG_SKIP_USER_DATA_BACKUP', 'OPENROUTER_API_KEY', 'MIXDOG_TEST_NANO_KEY'];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    invalidateConfigReadCache();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.MIXDOG_DATA_DIR = dir;
+  // The config read snapshots a fresh data dir under the user's home otherwise.
+  process.env.MIXDOG_SKIP_USER_DATA_BACKUP = '1';
+  delete process.env.MIXDOG_TEST_NANO_KEY;
+  const id = `custom-${randomUUID()}`;
+  const nano = (patch = {}) => ({
+    type: 'custom',
+    name: 'NanoGPT',
+    protocol: 'openai',
+    baseURL: 'https://nano-gpt.com/api/v1',
+    enabled: true,
+    auth: 'key',
+    apiKeyEnv: 'MIXDOG_TEST_NANO_KEY',
+    ...patch,
+  });
+  const configure = (providers) => {
+    writeFileSync(join(dir, 'mixdog-config.json'), JSON.stringify({ agent: { providers } }));
+    invalidateConfigReadCache();
+  };
+  const queried = [];
+  const catalog = createMediaLaneCatalog({
+    loadModels: async (lane) => {
+      queried.push(lane);
+      return [
+        {
+          id: 'openai/gpt-image-2.5/sunburst/text-to-image',
+          name: 'GPT Image 2.5 Sunburst',
+          architecture: { input_modalities: ['text'], output_modalities: ['image'] },
+          supported_parameters: { quality: { type: 'enum', values: ['high', 'max'] } },
+        },
+      ];
+    },
+  });
+  const nanoLane = async () => (await catalog.listMediaLanes()).find((row) => row.id === 'nano-gpt');
+
+  configure({});
+  assert.equal((await nanoLane()).authenticated, false, 'no NanoGPT provider is connected');
+  configure({ [id]: nano() });
+  assert.equal((await nanoLane()).authenticated, false, 'its key variable is unset');
+  process.env.MIXDOG_TEST_NANO_KEY = 'nano-test-key';
+  for (const other of [nano({ baseURL: 'https://api.example.com/v1' }), nano({ enabled: false })]) {
+    configure({ [id]: other });
+    assert.equal((await nanoLane()).authenticated, false);
+  }
+  assert.equal(queried.includes('nano-gpt'), false, 'a signed-out lane never discovers models');
+
+  configure({ [id]: nano({ baseURL: 'https://api.nano-gpt.com/v1' }) });
+  process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
+  const lanes = await catalog.listMediaLanes();
+  const ready = lanes.find((row) => row.id === 'nano-gpt');
+  assert.equal(ready.authenticated, true);
+  assert.equal(ready.authType, 'api-key');
+  assert.deepEqual(ready.kinds, ['image']);
+  assert.deepEqual(ready.image.models[0], {
+    id: 'openai/gpt-image-2.5/sunburst/text-to-image',
+    label: 'GPT Image 2.5 Sunburst',
+    controls: { quality: ['high', 'max'], maxReferences: 0 },
+  });
+  assert.equal(lanes.find((row) => row.id === 'openrouter').authenticated, true);
+  assert.deepEqual(resolveImageApiAuth('nano-gpt'), {
+    baseURL: 'https://api.nano-gpt.com/api/v1',
+    token: 'nano-test-key',
+  });
+  assert.deepEqual(resolveImageApiAuth('openrouter'), {
+    baseURL: 'https://openrouter.ai/api/v1',
+    token: 'openrouter-test-key',
+  });
+
+  const listed = listMediaCatalog(lanes, { kind: 'image' });
+  assert.deepEqual(
+    listed.lanes.filter((row) => ['openrouter', 'nano-gpt'].includes(row.id)).map((row) => [row.id, row.models]),
+    [
+      ['openrouter', ['openai/gpt-image-2.5/sunburst/text-to-image']],
+      ['nano-gpt', ['openai/gpt-image-2.5/sunburst/text-to-image']],
+    ]
+  );
+  const request = await catalog.resolveMediaRequest({ lane: 'nano-gpt', kind: 'image' });
+  assert.equal(request.model, 'openai/gpt-image-2.5/sunburst/text-to-image');
+});
+
+test('a slow catalog lists as pending within the listing budget, then joins the same fetch', async () => {
+  let settle;
+  const slow = new Promise((resolve, reject) => {
+    settle = { resolve, reject };
+  });
+  const row = {
+    id: 'hidream',
+    name: 'HiDream',
+    architecture: { input_modalities: ['text'], output_modalities: ['image'] },
+    supported_parameters: {},
+  };
+  const catalog = createMediaLaneCatalog({
+    authenticated: (lane) => lane.id === 'nano-gpt' || lane.id === 'openrouter',
+    // One shared request, like the loader's singleflight: later reads join it.
+    loadModels: async (lane) => (lane === 'nano-gpt' ? slow : [row]),
+  });
+  const first = await catalog.listMediaLanes({ budgetMs: 20 });
+  const pending = first.find((lane) => lane.id === 'nano-gpt');
+  assert.equal(pending.catalogPending, true);
+  assert.deepEqual(pending.kinds, []);
+  assert.equal(pending.catalogError, undefined);
+  assert.deepEqual(first.find((lane) => lane.id === 'openrouter').kinds, ['image'], 'a fast lane is not held back');
+
+  const unbounded = catalog.listMediaLanes();
+  settle.resolve([row]);
+  const ready = (await unbounded).find((lane) => lane.id === 'nano-gpt');
+  assert.equal(ready.catalogPending, undefined, 'no budget waits for the catalog');
+  assert.deepEqual(
+    ready.image.models.map((model) => model.id),
+    ['hidream']
+  );
+  const again = (await catalog.listMediaLanes({ budgetMs: 20 })).find((lane) => lane.id === 'nano-gpt');
+  assert.deepEqual(again.kinds, ['image']);
+});
+
+test('a slow catalog that then fails reports the failure, not an empty lane', async () => {
+  const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  let fail;
+  const slow = new Promise((_, reject) => {
+    fail = () => reject(timeout);
+  });
+  const catalog = createMediaLaneCatalog({
+    authenticated: (lane) => lane.id === 'nano-gpt',
+    loadModels: async () => slow,
+  });
+  assert.equal(
+    (await catalog.listMediaLanes({ budgetMs: 10 })).find((lane) => lane.id === 'nano-gpt').catalogPending,
+    true
+  );
+  fail();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const failed = (await catalog.listMediaLanes({ budgetMs: 10 })).find((lane) => lane.id === 'nano-gpt');
+  assert.equal(failed.catalogPending, undefined);
+  assert.equal(failed.catalogErrorCode, 'MEDIA_CATALOG_TIMEOUT');
+  assert.match(failed.catalogError, /^NanoGPT \(API key\): Model catalog request timed out/);
+});
+
+test('the ChatGPT lane advertises background but no size, quality, resolution, or aspect control', async () => {
+  const catalog = createMediaLaneCatalog({
+    authenticated: (lane) => lane.id === 'openai-oauth',
+    loadModels: async () => [{ id: 'gpt-6-astra', display: 'GPT-6 Astra' }],
+  });
+  const lane = (await catalog.listMediaLanes()).find((row) => row.id === 'openai-oauth');
+  for (const controls of [lane.image.controls, lane.image.models[0].controls]) {
+    assert.deepEqual(Object.keys(controls), ['maxReferences', 'background']);
+  }
 });

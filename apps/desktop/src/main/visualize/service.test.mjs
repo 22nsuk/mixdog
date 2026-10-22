@@ -27,7 +27,12 @@ import {
   recordProblem,
 } from './page-problems.ts';
 import { MAX_VISUALIZE_PROBLEMS, remoteVisualizeState, VISUALIZE_THUMBNAIL_MAX_BYTES } from '../../shared/visualize.ts';
-import { parseVisualizeRequest, resolveCaptureOutput, resolveVisualizeTarget, visualizeKindForPath } from './targets.ts';
+import {
+  parseVisualizeRequest,
+  resolveCaptureOutput,
+  resolveVisualizeTarget,
+  visualizeKindForPath,
+} from './targets.ts';
 import { visualizeOverlayScript } from './overlay-script.ts';
 
 function workspace() {
@@ -60,10 +65,22 @@ function fakeDeps(overrides = {}) {
       watched.set(path, onChange);
       return () => watched.delete(path);
     },
-    async annotate(_sessionId, tab, op) {
-      return tab.panes
-        .filter((pane) => pane.kind === 'html')
-        .map((pane) => ({ pane: pane.label, result: { invalid: [], marks: (op.add ?? []).map((mark) => ({ ...mark, label: mark.label ?? '', count: 1 })) } }));
+    async annotate(_sessionId, tab, marks) {
+      return tab.panes.flatMap((pane, index) =>
+        pane.kind === 'html'
+          ? [
+              {
+                pane: pane.label,
+                result: {
+                  invalid: [],
+                  marks: marks
+                    .filter((mark) => mark.pane === index)
+                    .map((mark) => ({ selector: mark.selector, label: mark.label ?? '', count: 1 })),
+                },
+              },
+            ]
+          : []
+      );
     },
     capture: async () => Buffer.from('PNGDATA'),
     delay: async () => {},
@@ -79,24 +96,33 @@ test('requests are validated before anything runs', () => {
   assert.throws(() => parseVisualizeRequest({ sessionId: '../x', cwd, action: 'open' }), /sessionId is invalid/);
   assert.throws(() => parseVisualizeRequest({ sessionId: 's1', cwd: 'relative', action: 'open' }), /absolute/);
   assert.throws(() => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'zap' }), /action must be/);
-  assert.throws(
-    () => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'open', input: { targets: [] } }),
-    /1-3/
-  );
+  assert.throws(() => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'open', input: { targets: [] } }), /1-3/);
   assert.throws(
     () => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'open', input: { targets: ['a', 'b', 'c', 'd'] } }),
     /1-3/
   );
   assert.throws(
-    () => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'annotate', input: { tab: 'v1', clear: true, remove: ['a'] } }),
+    () =>
+      parseVisualizeRequest({
+        sessionId: 's1',
+        cwd,
+        action: 'annotate',
+        input: { tab: 'v1', clear: true, remove: ['a'] },
+      }),
     /exactly one/
   );
   assert.throws(
-    () => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'annotate', input: { tab: 'v1', add: [{ label: 'x' }] } }),
+    () =>
+      parseVisualizeRequest({ sessionId: 's1', cwd, action: 'annotate', input: { tab: 'v1', add: [{ label: 'x' }] } }),
     /selector/
   );
   assert.deepEqual(
-    parseVisualizeRequest({ sessionId: 's1', cwd, action: 'annotate', input: { tab: 'v1', add: [{ selector: '#a', label: 'Hero' }] } }).op,
+    parseVisualizeRequest({
+      sessionId: 's1',
+      cwd,
+      action: 'annotate',
+      input: { tab: 'v1', add: [{ selector: '#a', label: 'Hero' }] },
+    }).op,
     { add: [{ selector: '#a', label: 'Hero' }] }
   );
   assert.equal(parseVisualizeRequest({ sessionId: 's1', cwd, action: 'close' }).tab, undefined);
@@ -147,6 +173,43 @@ test('targets route by type and must stay inside cwd', async () => {
   }
 });
 
+test('open says so when the panel is not on screen, keeping "as tab vN"', async () => {
+  const { cwd, cleanup } = workspace();
+  let visible = false;
+  const asked = [];
+  const { deps } = fakeDeps({
+    onScreen: async (sessionId, tab) => {
+      asked.push([sessionId, tab.id]);
+      return visible ? 'visible' : 'hidden';
+    },
+  });
+  const service = createVisualizeService(deps);
+  try {
+    const hidden = await service.execute({
+      sessionId: 's1',
+      cwd,
+      action: 'open',
+      input: { targets: ['site/index.html'] },
+    });
+    assert.match(hidden.text, /\bas tab v1\b/);
+    assert.match(hidden.text, /not on screen/);
+    assert.doesNotMatch(hidden.text, /Showing/);
+    assert.deepEqual(asked, [['s1', 'v1']]);
+
+    visible = true;
+    const shown = await service.execute({
+      sessionId: 's1',
+      cwd,
+      action: 'open',
+      input: { targets: ['site/index.html'] },
+    });
+    assert.match(shown.text, /^Showing site\/index\.html \(html\) in the side panel as tab v1\./);
+    assert.doesNotMatch(shown.text, /not on screen/);
+  } finally {
+    cleanup();
+  }
+});
+
 test('open reuses tabs, splits panes, reloads on change, and closes', async () => {
   const { cwd, cleanup } = workspace();
   const { deps, events, watched } = fakeDeps();
@@ -184,29 +247,47 @@ test('open reuses tabs, splits panes, reloads on change, and closes', async () =
     );
 
     // Same targets again: the existing tab comes back, not a new one.
-    const again = await service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['site/index.html'] } });
+    const again = await service.execute({
+      sessionId: 's1',
+      cwd,
+      action: 'open',
+      input: { targets: ['site/index.html'] },
+    });
     assert.equal(again.tabs[0].id, 'v1');
     assert.equal(service.snapshot()[0].tabs.length, 2);
 
-    // A watched file change reloads that tab (debounced) without revealing.
+    // A watched file change reloads that tab (debounced) in place: the
+    // event names the updated tab and asks for no reveal (only an open does).
     const before = service.snapshot()[0].tabs.find((tab) => tab.id === 'v1').revision;
     const change = [...watched.entries()].find(([path]) => path.endsWith('index.html'))[1];
+    const eventsBefore = events.length;
     change();
     change();
     await service.settled();
-    const reloaded = events.at(-1);
+    const reloaded = events.slice(eventsBefore).findLast((event) => event.updated);
+    assert.equal(reloaded.updated, 'v1');
     assert.equal(reloaded.reveal, undefined);
+    assert.equal(
+      events.slice(eventsBefore).some((event) => event.reveal),
+      false
+    );
     assert.equal(reloaded.state.tabs.find((tab) => tab.id === 'v1').revision, before + 1);
 
     // Other sessions never see this session's tabs.
-    assert.match((await service.execute({ sessionId: 's2', cwd, action: 'close', input: {} })).text, /No visualize tabs/);
+    assert.match(
+      (await service.execute({ sessionId: 's2', cwd, action: 'close', input: {} })).text,
+      /No visualize tabs/
+    );
     await assert.rejects(
       service.execute({ sessionId: 's2', cwd, action: 'close', input: { tab: 'v1' } }),
       /no visualize tab "v1"/
     );
 
     const closed = await service.execute({ sessionId: 's1', cwd, action: 'close', input: { tab: 'v2' } });
-    assert.deepEqual(closed.tabs.map((tab) => tab.id), ['v1']);
+    assert.deepEqual(
+      closed.tabs.map((tab) => tab.id),
+      ['v1']
+    );
     assert.equal(watched.size, 1);
     const all = await service.execute({ sessionId: 's1', cwd, action: 'close', input: {} });
     assert.match(all.text, /Closed 1 visualize tab/);
@@ -232,7 +313,12 @@ test('web URLs go to the browser panel alone; failures are errors', async () => 
     assert.equal(opened.tabs[0].kind, 'url');
     assert.deepEqual(events.at(-1), { sessionId: 's1', openUrl: 'http://localhost:3000/' });
     await assert.rejects(
-      service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['http://localhost:3000/', 'chart.png'] } }),
+      service.execute({
+        sessionId: 's1',
+        cwd,
+        action: 'open',
+        input: { targets: ['http://localhost:3000/', 'chart.png'] },
+      }),
       /opens alone/
     );
     await assert.rejects(
@@ -321,8 +407,14 @@ test('a parent folder swapped for a link outside cwd stops serving and closes th
     await service.settled();
     assert.deepEqual(events.at(-1).state.tabs, []);
     // Nothing is open; the closed entry stays in the session's list.
-    assert.deepEqual(service.snapshot().flatMap((state) => state.tabs), []);
-    assert.deepEqual(service.snapshot()[0].history.map((item) => item.open), [false]);
+    assert.deepEqual(
+      service.snapshot().flatMap((state) => state.tabs),
+      []
+    );
+    assert.deepEqual(
+      service.snapshot()[0].history.map((item) => item.open),
+      [false]
+    );
     assert.equal(watched.size, 0);
   } finally {
     service.dispose();
@@ -347,7 +439,12 @@ test('closing never reports a browser-panel page as closed', async () => {
   const { deps } = fakeDeps();
   const service = createVisualizeService(deps);
   try {
-    const page = await service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['http://localhost:3000/'] } });
+    const page = await service.execute({
+      sessionId: 's1',
+      cwd,
+      action: 'open',
+      input: { targets: ['http://localhost:3000/'] },
+    });
     await service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['chart.png'] } });
     const id = page.tabs[0].id;
     await assert.rejects(
@@ -355,11 +452,143 @@ test('closing never reports a browser-panel page as closed', async () => {
       /browser panel .*close it with the browser tool/
     );
     const all = await service.execute({ sessionId: 's1', cwd, action: 'close', input: {} });
-    assert.match(all.text, /Closed 1 visualize tab\. Still open in the browser panel: v1 \(http:\/\/localhost:3000\/\)/);
-    assert.deepEqual(all.tabs.map((tab) => [tab.id, tab.kind]), [[id, 'url']]);
+    assert.match(
+      all.text,
+      /Closed 1 visualize tab\. Still open in the browser panel: v1 \(http:\/\/localhost:3000\/\)/
+    );
+    assert.deepEqual(
+      all.tabs.map((tab) => [tab.id, tab.kind]),
+      [[id, 'url']]
+    );
     // The browser-panel page is no visual; the closed chart stays listed.
-    assert.deepEqual(service.snapshot().flatMap((state) => state.tabs), []);
-    assert.deepEqual(service.snapshot()[0].history.map((item) => [item.label, item.open]), [['chart.png', false]]);
+    assert.deepEqual(
+      service.snapshot().flatMap((state) => state.tabs),
+      []
+    );
+    assert.deepEqual(
+      service.snapshot()[0].history.map((item) => [item.label, item.open]),
+      [['chart.png', false]]
+    );
+  } finally {
+    service.dispose();
+    cleanup();
+  }
+});
+
+test('rapid writes settle into one reload and one version, updated in place without a reveal', async () => {
+  const { root, cwd, cleanup } = workspace();
+  const { deps, events, watched, prepared } = fakeDeps({
+    versions: { directory: join(root, 'app-data', 'visualize-versions') },
+    reloadDebounceMs: 40,
+  });
+  const service = createVisualizeService(deps);
+  const page = join(cwd, 'site', 'index.html');
+  const latest = () => events.filter((event) => event.state).at(-1).state.tabs[0];
+  try {
+    await service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['site/index.html'] } });
+    assert.deepEqual(
+      latest().versions.map((version) => version.n),
+      [1]
+    );
+    const opened = events.at(-1);
+    assert.equal(opened.reveal, true, 'an open still reveals its tab');
+    const preparedBefore = prepared.length;
+    const revisionBefore = latest().revision;
+    const eventsBefore = events.length;
+    const change = [...watched.entries()].find(([path]) => path.endsWith('index.html'))[1];
+    for (let write = 1; write <= 5; write += 1) {
+      writeFileSync(page, `<h1>write ${write}</h1>`);
+      change();
+      await new Promise((resolve) => setTimeout(resolve, 8));
+    }
+    await service.settled();
+    assert.equal(prepared.length - preparedBefore, 1, 'one reload for the burst');
+    assert.equal(latest().revision, revisionBefore + 1);
+    assert.deepEqual(
+      latest().versions.map((version) => version.n),
+      [1, 2],
+      'one version per settled update'
+    );
+    const published = events.slice(eventsBefore);
+    assert.equal(
+      published.some((event) => event.reveal),
+      false,
+      'a content update never reveals'
+    );
+    assert.equal(published.filter((event) => event.updated === 'v1').length, 1);
+  } finally {
+    service.dispose();
+    cleanup();
+  }
+});
+
+test('a tab whose folder is deleted and recreated shows a removed state, then reloads and re-arms its watch', async () => {
+  const { cwd, cleanup } = workspace();
+  const { deps, events, watched } = fakeDeps({ reloadDebounceMs: 20 });
+  let watches = 0;
+  const watch = deps.watch;
+  deps.watch = (path, onChange) => {
+    watches += 1;
+    return watch(path, onChange);
+  };
+  const service = createVisualizeService(deps);
+  const site = join(cwd, 'site');
+  const latest = () => events.filter((event) => event.state).at(-1).state.tabs[0];
+  const until = async (done) => {
+    for (let waited = 0; waited < 3000 && !done(); waited += 20)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(done(), 'condition not reached in time');
+  };
+  try {
+    await service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['site/index.html'] } });
+    const revision = latest().revision;
+    const armed = watches;
+    // The agent removes the whole folder: the one change event is all the dead watch reports.
+    rmSync(site, { recursive: true, force: true });
+    [...watched.values()][0]();
+    await until(() => latest().missing === true);
+    assert.equal(latest().revision, revision, 'the last view is not replaced by a broken one');
+    assert.deepEqual(
+      remoteVisualizeState({
+        sessionId: 's1',
+        active: 'v1',
+        tabs: [{ ...latest(), remoteLabel: 'x', cwd, panes: [] }],
+      }).tabs[0].missing,
+      true,
+      'a paired device is told too'
+    );
+    // Seconds later the file is written again; no watch event ever arrives.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    mkdirSync(site, { recursive: true });
+    writeFileSync(join(site, 'index.html'), '<h1>back</h1>');
+    await until(() => latest().missing !== true);
+    assert.equal(latest().revision, revision + 1, 'the recreated file reloads the tab');
+    assert.ok(watches > armed, 'the watch is armed again for the new folder');
+    assert.equal(latest().problems, undefined);
+  } finally {
+    service.dispose();
+    cleanup();
+  }
+});
+
+test('the default debounce waits for 1200ms of quiet', async (t) => {
+  const { cwd, cleanup } = workspace();
+  const { deps, watched, prepared } = fakeDeps({ reloadDebounceMs: undefined });
+  const service = createVisualizeService(deps);
+  try {
+    await service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['site/index.html'] } });
+    const preparedBefore = prepared.length;
+    const change = [...watched.entries()].find(([path]) => path.endsWith('index.html'))[1];
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    change();
+    t.mock.timers.tick(1000);
+    change();
+    t.mock.timers.tick(1199);
+    assert.equal(prepared.length, preparedBefore, 'each change restarts the wait');
+    t.mock.timers.tick(1);
+    t.mock.timers.reset();
+    await service.settled();
+    assert.equal(prepared.length - preparedBefore, 1);
   } finally {
     service.dispose();
     cleanup();
@@ -418,7 +647,10 @@ test('version history: kept on change, shown read-only, compared, restored, path
     await command({ action: 'version', version: 1, compare: true });
     tab = latest();
     assert.equal(tab.compare, true);
-    assert.deepEqual(tab.panes.map((pane) => pane.version ?? 'live'), [1, 'live']);
+    assert.deepEqual(
+      tab.panes.map((pane) => pane.version ?? 'live'),
+      [1, 'live']
+    );
     assert.equal(paneFile(tab.panes[0]), '<h1>hi</h1>');
     assert.deepEqual(numbers(), [1, 2], 'the live side still waits');
 
@@ -438,7 +670,12 @@ test('version history: kept on change, shown read-only, compared, restored, path
     assert.equal(tab.version, null);
     assert.deepEqual(
       tab.versions.map((version) => [version.n, version.label ?? '']),
-      [[1, ''], [2, ''], [3, ''], [4, 'Restored from v1']]
+      [
+        [1, ''],
+        [2, ''],
+        [3, ''],
+        [4, 'Restored from v1'],
+      ]
     );
 
     // The tool opens a kept version on request, and names the kept ones.
@@ -458,12 +695,18 @@ test('version history: kept on change, shown read-only, compared, restored, path
     for (const path of [root, realpathSync(root)]) {
       assert.equal(json.includes(path) || json.includes(JSON.stringify(path).slice(1, -1)), false, 'no host path');
     }
-    assert.deepEqual(remote.tabs[0].versions.map((version) => version.n), [1, 2, 3, 4]);
+    assert.deepEqual(
+      remote.tabs[0].versions.map((version) => version.n),
+      [1, 2, 3, 4]
+    );
     assert.equal(remote.tabs[0].version, 2);
     assert.equal(remote.tabs[0].compare, true);
     assert.deepEqual(
       remote.tabs[0].panes.map((pane) => [pane.target, pane.version ?? 'live', pane.url]),
-      [['site/index.html', 2, ''], ['site/index.html', 'live', '']]
+      [
+        ['site/index.html', 2, ''],
+        ['site/index.html', 'live', ''],
+      ]
     );
 
     result = await service.execute({ sessionId: 's1', cwd, action: 'close', input: { tab: 'v1' } });
@@ -508,7 +751,10 @@ async function pageWithTwoVersions(cssRel, options = {}) {
 test('restore also writes the kept page assets that changed, once the confirm listed them', async () => {
   const { service, page, css, latest, command, cleanup } = await pageWithTwoVersions('style.css');
   try {
-    assert.deepEqual(latest().versions.map((version) => version.n), [1, 2]);
+    assert.deepEqual(
+      latest().versions.map((version) => version.n),
+      [1, 2]
+    );
     await command({ action: 'version', version: 1 });
     assert.deepEqual(latest().restoreAssets, ['site/style.css'], 'the confirm lists the shared stylesheet');
     assert.deepEqual(remoteVisualizeState(service.hostSnapshot()[0]).tabs[0].restoreAssets, ['site/style.css']);
@@ -529,7 +775,11 @@ test('restore also writes the kept page assets that changed, once the confirm li
     assert.equal(tab.restoreAssets, undefined);
     assert.deepEqual(
       tab.versions.map((version) => [version.n, version.label ?? '']),
-      [[1, ''], [2, ''], [3, 'Restored from v1']]
+      [
+        [1, ''],
+        [2, ''],
+        [3, 'Restored from v1'],
+      ]
     );
   } finally {
     service.dispose();
@@ -573,11 +823,18 @@ test('a full version history keeps the tab live, its list unchanged, and says so
     assert.doesNotMatch((await open('paper.pdf')).text, /history is full/);
     const full = await open('site/index.html');
     assert.match(full.text, /The current files were not kept as a version: this session's version history is full/);
-    assert.deepEqual(full.tabs.map((tab) => [tab.id, tab.kind]), [['v3', 'html']]);
+    assert.deepEqual(
+      full.tabs.map((tab) => [tab.id, tab.kind]),
+      [['v3', 'html']]
+    );
     const tabs = events.filter((event) => event.state).at(-1).state.tabs;
     assert.deepEqual(
       tabs.map((tab) => [tab.id, tab.versions.map((version) => version.n)]),
-      [['v1', [1]], ['v2', [1]], ['v3', []]]
+      [
+        ['v1', [1]],
+        ['v2', [1]],
+        ['v3', []],
+      ]
     );
   } finally {
     service.dispose();
@@ -605,8 +862,14 @@ test('a settled open takes the tab thumbnail; remote state carries it only withi
     assert.equal(remoteVisualizeState(service.hostSnapshot()[0]).tabs[0].thumbnail, thumbnail);
     const oversized = `data:image/png;base64,${Buffer.alloc(VISUALIZE_THUMBNAIL_MAX_BYTES + 1).toString('base64')}`;
     const host = service.hostSnapshot()[0];
-    assert.equal(remoteVisualizeState({ ...host, tabs: [{ ...host.tabs[0], thumbnail: oversized }] }).tabs[0].thumbnail, undefined);
-    assert.equal(remoteVisualizeState({ ...host, tabs: [{ ...host.tabs[0], thumbnail: 'data:text/html,<b>' }] }).tabs[0].thumbnail, undefined);
+    assert.equal(
+      remoteVisualizeState({ ...host, tabs: [{ ...host.tabs[0], thumbnail: oversized }] }).tabs[0].thumbnail,
+      undefined
+    );
+    assert.equal(
+      remoteVisualizeState({ ...host, tabs: [{ ...host.tabs[0], thumbnail: 'data:text/html,<b>' }] }).tabs[0].thumbnail,
+      undefined
+    );
   } finally {
     service.dispose();
     cleanup();
@@ -676,7 +939,10 @@ test('a closed tab reopens from its card with the same targets, ids never reused
     assert.deepEqual(tabs(), []);
     // A card reopens it in the cwd main remembers, revealing the panel.
     await service.command({ sessionId: 's1', tabId: 'v1', action: 'reopen', targets: ['chart.png'], label: 'Chart' });
-    assert.deepEqual(tabs().map((tab) => [tab.id, tab.label, tab.panes[0].target]), [['v2', 'Chart', 'chart.png']]);
+    assert.deepEqual(
+      tabs().map((tab) => [tab.id, tab.label, tab.panes[0].target]),
+      [['v2', 'Chart', 'chart.png']]
+    );
     assert.equal(events.at(-1).reveal, true);
     // Containment holds like an agent open.
     await assert.rejects(
@@ -782,7 +1048,11 @@ test('annotate needs the tab on screen, like capture', async () => {
         const pane = event.state?.tabs[0]?.panes[0];
         if (pane) frame.url = pane.url;
       },
-      executeJavaScript: async () => (bodyShown ? { x: 0, y: 0, width: 10, height: 10 } : null),
+      // The rect query and the hit-test query answer differently: a rect, or whether the body is uncovered.
+      executeJavaScript: async (script) => {
+        if (script.includes('elementFromPoint')) return bodyShown ? true : null;
+        return bodyShown ? { x: 0, y: 0, width: 10, height: 10 } : null;
+      },
       mainFrame: { framesInSubtree: [frame] },
     },
   };
@@ -832,9 +1102,16 @@ test('annotate needs the tab on screen, like capture', async () => {
     const failing = { url: asset('missing.css'), statusCode: 404, resourceType: 'stylesheet' };
     network.completed(fromPage(failing, { webContentsId: 99 }));
     network.completed(fromPage(failing, { webContentsId: undefined }));
-    network.completed(fromPage(failing, { frame: { url: 'file:///C:/app/index.html', isDestroyed: () => false, parent: null } }));
+    network.completed(
+      fromPage(failing, { frame: { url: 'file:///C:/app/index.html', isDestroyed: () => false, parent: null } })
+    );
     network.completed(fromPage(failing, { frame: null }));
-    network.failed(fromPage({ url: asset('font.woff'), error: 'net::ERR_CONNECTION_RESET', resourceType: 'font' }, { webContentsId: 99 }));
+    network.failed(
+      fromPage(
+        { url: asset('font.woff'), error: 'net::ERR_CONNECTION_RESET', resourceType: 'font' },
+        { webContentsId: 99 }
+      )
+    );
     assert.equal(problems(), undefined);
     network.completed(fromPage(failing));
     network.failed(fromPage({ url: asset('font.woff'), error: 'net::ERR_CONNECTION_RESET', resourceType: 'font' }));
@@ -849,33 +1126,88 @@ test('annotate needs the tab on screen, like capture', async () => {
 
     // Outside network: refused only for requests made by a visualize page
     // (or a frame nested in one, or by its referrer); the app, other
-    // origins' frames and the page's own lease stay untouched.
+    // origins' frames and the page's own lease stay untouched. Tabs open with
+    // network allowed; the guard is exercised once it is switched off.
+    assert.equal(remoteEvents.at(-1).state.tabs[0].networkAllowed, true, 'allowed by default');
+    // A paired device's view carries it too: its frame drops the block on it.
+    assert.equal(remoteVisualizeState(remoteEvents.at(-1).state).tabs[0].networkAllowed, true);
+    await service.command({ sessionId: 's1', tabId: 'v1', action: 'network', allow: false });
     const page = { url: frame.url, isDestroyed: () => false, parent: null };
     const child = { url: 'https://ads.example/frame.html', isDestroyed: () => false, parent: page };
     const appFrame = { url: 'file:///C:/app/index.html', isDestroyed: () => false, parent: null };
     const cancelled = (details) => {
       let result;
-      network.before({ webContentsId: 7, referrer: '', resourceType: 'xhr', ...details }, (answer) => (result = answer));
+      network.before(
+        { webContentsId: 7, referrer: '', resourceType: 'xhr', ...details },
+        (answer) => (result = answer)
+      );
       return result.cancel;
     };
     assert.equal(
-      cancelled({ webContentsId: 99, frame: { url: frame.url, isDestroyed: () => false, parent: null }, url: 'https://cdn.example.com/lib.js' }),
+      cancelled({
+        webContentsId: 99,
+        frame: { url: frame.url, isDestroyed: () => false, parent: null },
+        url: 'https://cdn.example.com/lib.js',
+      }),
       false,
       'another webContents is never judged'
     );
     assert.equal(cancelled({ frame: page, url: 'https://cdn.example.com/lib.js', resourceType: 'script' }), true);
     assert.equal(cancelled({ frame: page, url: 'wss://live.example.com/socket', resourceType: 'webSocket' }), true);
-    assert.equal(cancelled({ frame: child, url: 'https://tracker.example/p.gif', resourceType: 'image' }), true, 'a nested frame');
-    assert.equal(cancelled({ frame: null, referrer: frame.url, url: 'http://localhost:3000/api', resourceType: 'xhr' }), true, 'by referrer');
-    assert.equal(cancelled({ frame: page, url: new URL('app.js', frame.url).href, resourceType: 'script' }), false, 'its own lease');
+    assert.equal(
+      cancelled({ frame: child, url: 'https://tracker.example/p.gif', resourceType: 'image' }),
+      true,
+      'a nested frame'
+    );
+    assert.equal(
+      cancelled({ frame: null, referrer: frame.url, url: 'http://localhost:3000/api', resourceType: 'xhr' }),
+      true,
+      'by referrer'
+    );
+    assert.equal(
+      cancelled({ frame: page, url: new URL('app.js', frame.url).href, resourceType: 'script' }),
+      false,
+      'its own lease'
+    );
     assert.equal(cancelled({ frame: appFrame, url: 'https://api.github.com/user' }), false, 'the app UI');
     assert.equal(cancelled({ frame: null, url: 'https://example.com/' }), false, 'a request of no visualize page');
-    assert.equal(cancelled({ frame: { url: 'http://127.0.0.1:1/other/x.html', isDestroyed: () => false, parent: null }, url: 'https://example.com/' }), false);
+    assert.equal(
+      cancelled({
+        frame: { url: 'http://127.0.0.1:1/other/x.html', isDestroyed: () => false, parent: null },
+        url: 'https://example.com/',
+      }),
+      false
+    );
     assert.deepEqual(
-      problems().filter((problem) => problem.kind === 'blocked-network').map((problem) => problem.message),
+      problems()
+        .filter((problem) => problem.kind === 'blocked-network')
+        .map((problem) => problem.message),
       ['cdn.example.com (script)', 'live.example.com (webSocket)', 'tracker.example (image)', 'localhost:3000 (xhr)']
     );
     assert.equal(remoteEvents.at(-1).state.tabs[0].networkAllowed, undefined);
+    assert.equal(remoteVisualizeState(remoteEvents.at(-1).state).tabs[0].networkAllowed, undefined);
+
+    // A paired device's page frame enforces the same block with a CSP and files
+    // each refusal as the very same problem; a local address files nothing.
+    const filed = problems().length;
+    await service.command({
+      sessionId: 's1',
+      tabId: 'v1',
+      action: 'blocked',
+      pane: 0,
+      url: 'https://fonts.example/f.woff2',
+      resource: 'font',
+    });
+    await service.command({
+      sessionId: 's1',
+      tabId: 'v1',
+      action: 'blocked',
+      pane: 0,
+      url: 'data:,x',
+      resource: 'image',
+    });
+    assert.equal(problems().length, filed + 1);
+    assert.deepEqual([problems().at(-1).kind, problems().at(-1).message], ['blocked-network', 'fonts.example (font)']);
 
     // The user's toggle lifts the block for this tab alone, reloads it (the
     // blocked problems are gone) and can be turned off again.
@@ -884,13 +1216,43 @@ test('annotate needs the tab on screen, like capture', async () => {
     assert.equal(remoteEvents.at(-1).state.tabs[0].networkAllowed, true);
     assert.equal(remoteEvents.at(-1).state.tabs[0].revision, revision + 1);
     assert.equal(problems(), undefined);
+    // A network-enabled tab still files a genuine CSP refusal of the paired device's frame
+    // (the relay preview CSP refuses wss:) as a blocked-network problem.
+    await service.command({
+      sessionId: 's1',
+      tabId: 'v1',
+      action: 'blocked',
+      pane: 0,
+      url: 'wss://live.example/socket',
+      resource: 'webSocket',
+    });
+    assert.deepEqual(
+      problems().map((problem) => [problem.kind, problem.message]),
+      [['blocked-network', 'live.example (webSocket)']]
+    );
     const reloaded = { url: frame.url, isDestroyed: () => false, parent: null };
     assert.notEqual(reloaded.url, page.url, 'a reload serves a fresh lease');
-    assert.equal(cancelled({ frame: reloaded, url: 'https://cdn.example.com/lib.js', resourceType: 'script' }), false, 'allowed');
-    assert.equal(cancelled({ frame: page, url: 'https://cdn.example.com/lib.js', resourceType: 'script' }), false, 'the earlier lease too');
+    assert.equal(
+      cancelled({ frame: reloaded, url: 'https://cdn.example.com/lib.js', resourceType: 'script' }),
+      false,
+      'allowed'
+    );
+    assert.equal(
+      cancelled({ frame: page, url: 'https://cdn.example.com/lib.js', resourceType: 'script' }),
+      false,
+      'the earlier lease too'
+    );
     await service.command({ sessionId: 's1', tabId: 'v1', action: 'network', allow: false });
     assert.equal(remoteEvents.at(-1).state.tabs[0].networkAllowed, undefined);
-    assert.equal(cancelled({ frame: { ...reloaded, url: frame.url }, url: 'https://cdn.example.com/lib.js', resourceType: 'script' }), true, 'blocked again');
+    assert.equal(
+      cancelled({
+        frame: { ...reloaded, url: frame.url },
+        url: 'https://cdn.example.com/lib.js',
+        resourceType: 'script',
+      }),
+      true,
+      'blocked again'
+    );
 
     // Ownership is by frame, not by its current URL: a pane that navigates
     // itself to blob:/data:/about: and then fetches is still blocked, and the
@@ -900,11 +1262,23 @@ test('annotate needs the tab on screen, like capture', async () => {
     const paneFrame = (url) => ({ url, frameTreeNodeId: 41, isDestroyed: () => false, parent: topFrame });
     const evil = { url: 'https://evil.example/x', resourceType: 'xhr' };
     assert.equal(cancelled({ frame: paneFrame(frame.url), ...evil }), true, 'seen at its lease: claimed');
-    assert.equal(cancelled({ frame: paneFrame('blob:http://127.0.0.1:1/9f8e'), ...evil }), true, 'after a blob: navigation');
+    assert.equal(
+      cancelled({ frame: paneFrame('blob:http://127.0.0.1:1/9f8e'), ...evil }),
+      true,
+      'after a blob: navigation'
+    );
     assert.equal(cancelled({ frame: paneFrame('data:text/html,<p>x'), ...evil }), true, 'after a data: navigation');
     assert.equal(cancelled({ frame: paneFrame('about:blank'), ...evil }), true, 'after an about: navigation');
     assert.equal(
-      cancelled({ frame: { url: 'blob:http://127.0.0.1:1/other', frameTreeNodeId: 77, isDestroyed: () => false, parent: topFrame }, ...evil }),
+      cancelled({
+        frame: {
+          url: 'blob:http://127.0.0.1:1/other',
+          frameTreeNodeId: 77,
+          isDestroyed: () => false,
+          parent: topFrame,
+        },
+        ...evil,
+      }),
       false,
       'a blob: frame that was never a pane'
     );
@@ -921,9 +1295,15 @@ test('annotate needs the tab on screen, like capture', async () => {
     assert.equal(navigate(new URL('other.html', frame.url).href), false, 'within its lease');
     assert.equal(navigate('about:blank'), false);
     assert.equal(navigate('https://example.com/', { isMainFrame: true }), false, 'the app window itself');
-    assert.equal(navigate('https://example.com/', { frame: { ...topFrame, frameTreeNodeId: 5 }, initiator: topFrame }), false, 'a frame of no pane');
+    assert.equal(
+      navigate('https://example.com/', { frame: { ...topFrame, frameTreeNodeId: 5 }, initiator: topFrame }),
+      false,
+      'a frame of no pane'
+    );
     assert.deepEqual(
-      problems().filter((problem) => problem.kind === 'blocked-navigation').map((problem) => problem.message.slice(0, 5)),
+      problems()
+        .filter((problem) => problem.kind === 'blocked-navigation')
+        .map((problem) => problem.message.slice(0, 5)),
       ['blob:', 'data:', 'https']
     );
     // The app pointing the iframe elsewhere (initiator: the main frame) is its
@@ -938,13 +1318,16 @@ test('annotate needs the tab on screen, like capture', async () => {
     minimized = false;
     // The frame exists but the panel shows nothing (closed / other session).
     await assert.rejects(annotate(), /not on screen/);
-    // Only a paired remote device shows it: the result says marks are desktop-only.
+    // Only a paired remote device shows it: the marks go to the tab state,
+    // which that device draws from; nothing is injected on the desktop.
     remoteViewer = true;
-    await assert.rejects(annotate(), (error) => error.message === REMOTE_ONLY_ANNOTATE);
+    assert.match((await annotate()).text, /h1 \(drawn on the paired device showing the tab/);
+    assert.deepEqual(remoteEvents.at(-1).state.tabs[0].annotations, [{ pane: 0, selector: 'h1' }]);
     minimized = true;
-    await assert.rejects(annotate(), (error) => error.message === REMOTE_ONLY_ANNOTATE);
+    assert.match((await annotate()).text, /drawn on the paired device/);
     minimized = false;
     assert.deepEqual(injected, []);
+    assert.equal(REMOTE_ONLY_ANNOTATE.length > 0, true);
 
     // Shown on the desktop too: no change, the marks are drawn there.
     bodyShown = true;
@@ -977,8 +1360,18 @@ test('console classification keeps only problems', () => {
   assert.equal(kind('debug', 'Uncaught nothing'), null);
   assert.equal(kind('error', 'Uncaught ReferenceError: foo is not defined'), 'exception');
   assert.equal(kind('error', 'Uncaught (in promise) TypeError: x'), 'rejection');
-  assert.equal(kind('error', "Refused to load the script 'https://x.dev/a.js' because it violates the following Content Security Policy directive"), 'csp');
-  assert.equal(kind('error', 'Failed to load resource: the server responded with a status of 404 (Not Found)'), null, 'asset failures come from the network layer');
+  assert.equal(
+    kind(
+      'error',
+      "Refused to load the script 'https://x.dev/a.js' because it violates the following Content Security Policy directive"
+    ),
+    'csp'
+  );
+  assert.equal(
+    kind('error', 'Failed to load resource: the server responded with a status of 404 (Not Found)'),
+    null,
+    'asset failures come from the network layer'
+  );
   assert.equal(kind('error', 'boom'), 'console-error');
   assert.equal(kind('warning', 'careful'), 'console-warn');
 });
@@ -987,7 +1380,10 @@ test('problem text is localized and the list dedupes and caps', () => {
   const root = join(tmpdir(), 'proj');
   const token = 'a'.repeat(32);
   assert.equal(
-    localizeProblemText(`GET http://127.0.0.1:4321/${token}/css/app.css failed in ${join(root, 'site', 'a.js')} and C:\\Users\\me\\key.txt`, [root]),
+    localizeProblemText(
+      `GET http://127.0.0.1:4321/${token}/css/app.css failed in ${join(root, 'site', 'a.js')} and C:\\Users\\me\\key.txt`,
+      [root]
+    ),
     `GET css/app.css failed in ${join('site', 'a.js')} and key.txt`
   );
   assert.equal(localizeProblemText('see https://cdn.dev/lib.js:3', [root]), 'see https://cdn.dev/lib.js:3');
@@ -1002,7 +1398,8 @@ test('problem text is localized and the list dedupes and caps', () => {
   assert.deepEqual([added.added, added.list.length, added.list[0].count], [false, 1, 2]);
   assert.equal(list[0].count, 1, 'the earlier list is not mutated');
   assert.equal(recordProblem(list, make('x', { pane: 1 })).added, true);
-  for (let index = 0; list.length < MAX_VISUALIZE_PROBLEMS; index += 1) list = recordProblem(list, make(`m${index}`)).list;
+  for (let index = 0; list.length < MAX_VISUALIZE_PROBLEMS; index += 1)
+    list = recordProblem(list, make(`m${index}`)).list;
   const full = recordProblem(list, make('one more'));
   assert.deepEqual([full.added, full.list.length], [false, MAX_VISUALIZE_PROBLEMS]);
 
@@ -1021,7 +1418,14 @@ test('page problems are captured per tab, reported in results, deduped, capped a
   const prefix = (url) => url.slice(0, url.indexOf('/site/') + 1);
   const problems = () => service.snapshot()[0].tabs.find((tab) => tab.id === 'v1').problems;
   const report = (over = {}) =>
-    service.reportConsole({ level: 'error', message: 'boom', sourceId: pane(), lineNumber: 3, frameUrl: pane(), ...over });
+    service.reportConsole({
+      level: 'error',
+      message: 'boom',
+      sourceId: pane(),
+      lineNumber: 3,
+      frameUrl: pane(),
+      ...over,
+    });
   try {
     const opened = await service.execute({ ...OPEN_PAGE, cwd });
     assert.doesNotMatch(opened.text, /Page problems/);
@@ -1030,6 +1434,9 @@ test('page problems are captured per tab, reported in results, deduped, capped a
 
     // Output that is not a problem, and frames that are not this tab's, are ignored.
     report({ level: 'info', message: 'hello' });
+    // Chromium's benign ResizeObserver notice (a fit-to-width page, resized by the panel).
+    report({ message: 'ResizeObserver loop completed with undelivered notifications.', lineNumber: 0 });
+    report({ message: 'ResizeObserver loop limit exceeded', lineNumber: 0 });
     report({ frameUrl: 'http://127.0.0.1:4321/other/x.html', sourceId: 'http://127.0.0.1:4321/other/x.js' });
     assert.equal(problems(), undefined);
 
@@ -1078,7 +1485,12 @@ test('page problems are captured per tab, reported in results, deduped, capped a
       input: { tab: 'v1', add: [{ selector: 'h1' }] },
     });
     assert.match(annotated.text, /Annotations on tab v1[\s\S]*Page problems on tab v1 \(5\)/);
-    const captured = await service.execute({ sessionId: 's1', cwd, action: 'capture', input: { tab: 'v1', output: 'shots/a.png' } });
+    const captured = await service.execute({
+      sessionId: 's1',
+      cwd,
+      action: 'capture',
+      input: { tab: 'v1', output: 'shots/a.png' },
+    });
     assert.match(captured.text, /Captured tab v1 to [\s\S]*Page problems on tab v1 \(5\)/);
 
     // A pane's own navigation (a page-side reload) drops its stale problems.
@@ -1091,7 +1503,10 @@ test('page problems are captured per tab, reported in results, deduped, capped a
     // The cap: later distinct problems are dropped, repeats still count.
     for (let index = 0; index < MAX_VISUALIZE_PROBLEMS + 15; index += 1) report({ message: `error ${index}` });
     assert.equal(problems().length, MAX_VISUALIZE_PROBLEMS);
-    assert.match((await service.execute({ sessionId: 's1', cwd, action: 'check', input: { tab: 'v1' } })).text, /…and 10 more/);
+    assert.match(
+      (await service.execute({ sessionId: 's1', cwd, action: 'check', input: { tab: 'v1' } })).text,
+      /…and 10 more/
+    );
 
     // A file change reloads the tab: problems reset, and the old lease's late
     // reports no longer count.
@@ -1102,7 +1517,10 @@ test('page problems are captured per tab, reported in results, deduped, capped a
     assert.equal(problems(), undefined);
     report({ frameUrl: oldUrl, sourceId: oldUrl, message: 'late' });
     assert.equal(problems(), undefined);
-    assert.equal((await service.execute({ sessionId: 's1', cwd, action: 'check', input: { tab: 'v1' } })).text, 'No page problems on tab v1.');
+    assert.equal(
+      (await service.execute({ sessionId: 's1', cwd, action: 'check', input: { tab: 'v1' } })).text,
+      'No page problems on tab v1.'
+    );
     report({ message: 'after reload' });
     assert.equal(problems().length, 1);
 
@@ -1129,17 +1547,29 @@ test('open waits briefly so the first page errors ride its result; check needs a
     delay: async () => {
       delays += 1;
       if (delays === 1) {
-        service.reportConsole({ level: 'error', message: 'Uncaught SyntaxError: bad', sourceId: url, lineNumber: 7, frameUrl: url });
+        service.reportConsole({
+          level: 'error',
+          message: 'Uncaught SyntaxError: bad',
+          sourceId: url,
+          lineNumber: 7,
+          frameUrl: url,
+        });
       }
     },
   });
   service = createVisualizeService(deps);
   try {
     const opened = await service.execute({ ...OPEN_PAGE, cwd });
-    assert.match(opened.text, /Showing site\/index\.html \(html\)[\s\S]*Page problems on tab v1 \(1\):\n- exception: Uncaught SyntaxError: bad \(site\/index\.html:7\)/);
+    assert.match(
+      opened.text,
+      /Showing site\/index\.html \(html\)[\s\S]*Page problems on tab v1 \(1\):\n- exception: Uncaught SyntaxError: bad \(site\/index\.html:7\)/
+    );
     const picture = await service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['chart.png'] } });
     assert.doesNotMatch(picture.text, /Page problems/);
-    await assert.rejects(service.execute({ sessionId: 's1', cwd, action: 'check', input: { tab: picture.tabs[0].id } }), /HTML tabs only/);
+    await assert.rejects(
+      service.execute({ sessionId: 's1', cwd, action: 'check', input: { tab: picture.tabs[0].id } }),
+      /HTML tabs only/
+    );
     await assert.rejects(service.execute({ sessionId: 's1', cwd, action: 'check', input: {} }), /tab must be/);
   } finally {
     service.dispose();
@@ -1183,7 +1613,12 @@ test('remote state carries page problems without host paths or page-server URLs'
     const host = service.hostSnapshot()[0];
     const raw = {
       ...host,
-      tabs: [{ ...host.tabs[0], problems: [{ ...problem, message: `x ${prefix}a.css`, source: `${prefix}a.css`, path: join(cwd, 'x') }] }],
+      tabs: [
+        {
+          ...host.tabs[0],
+          problems: [{ ...problem, message: `x ${prefix}a.css`, source: `${prefix}a.css`, path: join(cwd, 'x') }],
+        },
+      ],
     };
     const client = remoteVisualizeState(raw).tabs[0].problems[0];
     assert.deepEqual([client.message, client.source, 'path' in client], ['x a.css', 'a.css', false]);
@@ -1223,22 +1658,34 @@ test('page problems follow the displayed panes: kept versions, compare layout, s
 
     // The kept page's errors are attributed to it and name the version.
     report(tab().panes[0], 'old error');
-    assert.deepEqual(tab().problems.map((problem) => [problem.message, problem.pane, problem.version]), [['old error', 0, 1]]);
+    assert.deepEqual(
+      tab().problems.map((problem) => [problem.message, problem.pane, problem.version]),
+      [['old error', 0, 1]]
+    );
     const checked = await service.execute({ sessionId: 's1', cwd, action: 'check', input: { tab: 'v1' } });
     assert.match(checked.text, /- \[kept v1\] console-error: old error \(site\/index\.html:2\)/);
 
     // Compare: displayed order is kept v1, live; the layout change resets.
     await command({ action: 'version', version: 1, compare: true });
     assert.equal(tab().problems, undefined);
-    assert.deepEqual(tab().panes.map((pane) => pane.version ?? 'live'), [1, 'live']);
+    assert.deepEqual(
+      tab().panes.map((pane) => pane.version ?? 'live'),
+      [1, 'live']
+    );
     report(tab().panes[1], 'live in compare');
     report(tab().panes[0], 'kept in compare');
     assert.deepEqual(
       tab().problems.map((problem) => [problem.message, problem.pane, problem.version]),
-      [['live in compare', 1, undefined], ['kept in compare', 0, 1]]
+      [
+        ['live in compare', 1, undefined],
+        ['kept in compare', 0, 1],
+      ]
     );
     const host = service.hostSnapshot()[0].tabs[0];
-    assert.deepEqual(host.problems.map((problem) => problem.pane), [1, 0]);
+    assert.deepEqual(
+      host.problems.map((problem) => problem.pane),
+      [1, 0]
+    );
     assert.equal(remoteVisualizeState(service.hostSnapshot()[0]).tabs[0].problems[1].version, 1);
     const section = (await service.execute({ sessionId: 's1', cwd, action: 'check', input: { tab: 'v1' } })).text;
     assert.match(section, /- \[index\.html\] console-error: live in compare/);
@@ -1246,13 +1693,19 @@ test('page problems follow the displayed panes: kept versions, compare layout, s
 
     // A page navigation clears only its displayed pane's problems.
     service.reportNavigation(tab().panes[0].url, 200);
-    assert.deepEqual(tab().problems.map((problem) => problem.message), ['live in compare']);
+    assert.deepEqual(
+      tab().problems.map((problem) => problem.message),
+      ['live in compare']
+    );
 
     // Back to live resets again; the live page's errors carry no version.
     await command({ action: 'version', version: null });
     assert.equal(tab().problems, undefined);
     report(tab().panes[0], 'live again');
-    assert.deepEqual(tab().problems.map((problem) => [problem.pane, problem.version]), [[0, undefined]]);
+    assert.deepEqual(
+      tab().problems.map((problem) => [problem.pane, problem.version]),
+      [[0, undefined]]
+    );
     assert.ok(events.length > 0);
   } finally {
     service.dispose();
@@ -1264,12 +1717,16 @@ test('check requests are validated', () => {
   const cwd = tmpdir();
   assert.deepEqual(parseVisualizeRequest({ sessionId: 's1', cwd, action: 'check', input: { tab: 'v2' } }).tab, 'v2');
   assert.throws(() => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'check', input: {} }), /tab must be/);
-  assert.throws(() => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'zap' }), /annotate, capture, export, check/);
+  assert.throws(
+    () => parseVisualizeRequest({ sessionId: 's1', cwd, action: 'zap' }),
+    /annotate, capture, export, check/
+  );
 });
 
 test('the overlay script carries its operation as JSON only', () => {
-  const script = visualizeOverlayScript({ add: [{ selector: '"]); alert(1); //', label: '</script>' }] });
-  assert.match(script, /\(\{"add":\[\{"selector":"\\"\]\); alert\(1\); \/\/","label":"<\/script>"\}\]\}\)$/);
+  const script = visualizeOverlayScript([{ selector: '"]); alert(1); //', label: '</script>' }]);
+  assert.match(script, /\(\[\{"selector":"\\"\]\); alert\(1\); \/\/","label":"\\u003c\/script>"\}\]\)$/);
+  assert.equal(script.includes('</script'), false);
   assert.match(script, /attachShadow/);
 });
 
@@ -1343,6 +1800,7 @@ test('inspect lays the pane frames out at the requested viewport, reads only the
     isDestroyed: () => false,
     isMinimized: () => false,
     isVisible: () => true,
+    isFocused: () => true,
     webContents: {
       id: 7,
       isDestroyed: () => false,
@@ -1356,6 +1814,7 @@ test('inspect lays the pane frames out at the requested viewport, reads only the
         }
       },
       executeJavaScript: async (script) => {
+        if (script.includes('elementFromPoint')) return true;
         if (!script.includes('[data-visualize-body] iframe')) return { x: 0, y: 0, width: 10, height: 10 };
         if (script.includes('setProperty')) {
           log.push(['main', 'resize', script.includes('375px') && script.includes('812px')]);
@@ -1376,13 +1835,18 @@ test('inspect lays the pane frames out at the requested viewport, reads only the
     browserAvailable: () => true,
     remoteViewing: async () => remoteViewer,
   });
-  const inspect = (input) => service.execute({ sessionId: 's1', cwd, action: 'inspect', input: { tab: 'v1', ...input } });
+  const inspect = (input) =>
+    service.execute({ sessionId: 's1', cwd, action: 'inspect', input: { tab: 'v1', ...input } });
   try {
     await service.execute({ sessionId: 's1', cwd, action: 'open', input: { targets: ['site/index.html'] } });
     const result = await inspect({ viewport: { width: 375, height: 812 }, selector: 'main' });
     assert.match(result.text, /^Inspection of tab v1 at 375×812:\nindex\.html: the selector matched nothing/);
     // Resize, read the pane frame only (not the page nested inside it), restore.
-    assert.deepEqual(log, [['main', 'resize', true], ['page', 'scoped'], ['main', 'restore']]);
+    assert.deepEqual(log, [
+      ['main', 'resize', true],
+      ['page', 'scoped'],
+      ['main', 'restore'],
+    ]);
 
     // Without a viewport the page is read as shown: no resizing at all.
     log.length = 0;
@@ -1393,7 +1857,10 @@ test('inspect lays the pane frames out at the requested viewport, reads only the
     log.length = 0;
     resized = 0;
     await assert.rejects(inspect({ viewport: { width: 375, height: 812 } }), /could not lay the page out at 375×812/);
-    assert.deepEqual(log, [['main', 'resize', true], ['main', 'restore']]);
+    assert.deepEqual(log, [
+      ['main', 'resize', true],
+      ['main', 'restore'],
+    ]);
 
     // The desktop window is the only reader: a remote-only tab says so.
     window.webContents.executeJavaScript = async () => null;

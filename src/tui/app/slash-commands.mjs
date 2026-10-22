@@ -16,6 +16,12 @@ export const SLASH_COMMANDS = [
   },
   { name: 'compact', usage: '/compact', description: 'Compact older conversation context' },
   {
+    name: 'btw',
+    usage: '/btw',
+    params: '<question>',
+    description: 'Ask a quick side question without interrupting the current work',
+  },
+  {
     name: 'goal',
     usage: '/goal',
     params: '[objective --time 1h --time-mode max|status|pause|resume|edit|stop]',
@@ -24,11 +30,17 @@ export const SLASH_COMMANDS = [
   {
     name: 'autoclear',
     usage: '/autoclear',
-    params: '[on|off|duration]',
+    params: '[on|off|duration|unlimited]',
     description: 'Reduce cache-miss cost after long idle gaps',
   },
   { name: 'resume', usage: '/resume', params: '[id]', description: 'Resume a saved chat' },
   { name: 'context', usage: '/context', description: 'Show current context surface' },
+  {
+    name: 'shells',
+    usage: '/shells',
+    params: '[release <task_id> [--confirm]]',
+    description: 'List shells; release one whose termination is unconfirmed',
+  },
   {
     name: 'fork',
     usage: '/fork',
@@ -112,6 +124,7 @@ export function overlayBlocksGlobalTranscriptScroll(owner = {}) {
     owner.toolApproval ||
     owner.contextPanel ||
     owner.usagePanel ||
+    owner.btwPanel ||
     owner.providerPrompt ||
     owner.settingsPrompt
   );
@@ -127,6 +140,26 @@ for (const command of SLASH_COMMANDS) {
   for (const token of [command.name, ...(command.aliases || [])]) {
     if (!SLASH_COMMAND_BY_TOKEN.has(token)) SLASH_COMMAND_BY_TOKEN.set(token, command);
   }
+}
+
+/**
+ * The registered command a prompt runs, by the renderer's rule
+ * (apps/desktop renderer/slash-commands.ts recognisedSlashSpan): the text,
+ * trimmed, begins with `/` and its first whitespace-delimited token names a
+ * command or alias. Returns that token lowercased, else null: any other
+ * leading `/` (an absolute path, a stray word) is ordinary message text.
+ */
+export function recognisedSlashToken(text) {
+  const token = /^\s*\/(\S+)/.exec(String(text ?? ''))?.[1].toLowerCase();
+  return token && SLASH_COMMAND_BY_TOKEN.has(token) ? token : null;
+}
+
+/** The only commands a bot's conversation room runs, by their literal name
+ *  (`/new` stays text); mirrors the renderer's recognisedAgentRoomSlash. */
+const AGENT_ROOM_SLASH_TOKENS = new Set(['compact', 'clear']);
+
+export function recognisedAgentRoomSlash(text) {
+  return AGENT_ROOM_SLASH_TOKENS.has(recognisedSlashToken(text));
 }
 
 export function normalizeSlashCommandName(cmd) {

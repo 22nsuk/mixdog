@@ -5,11 +5,16 @@
 // ./goal-recovery.mjs.
 import { createGoalRecovery } from './goal-recovery.mjs';
 import {
+  attachmentsForIntake,
   materializePromptSubmission,
   preparePromptSubmissionForProvider,
 } from '../../../runtime/attachments/store.mjs';
 import { providerNativePdf } from '../../../runtime/agent/orchestrator/providers/registry.mjs';
 import { cancelBackgroundTasks } from '../../../runtime/shared/background-tasks.mjs';
+import { isAgentModeSession } from '../../../runtime/agent/orchestrator/session/agent-mode.mjs';
+import { isAgentHomeSessionId } from '../../../runtime/agent/orchestrator/session/agent-home.mjs';
+import { recognisedAgentRoomSlash } from '../../../tui/app/slash-commands.mjs';
+import { promptContentText } from '../../../tui/session/queue-helpers.mjs';
 
 /** Whether an abort on this session is an Agent cancelling its own turn: the
  *  catalog knows it, the runtime declares agent-only visibility, or it is a
@@ -34,6 +39,17 @@ function abortsAgentTurn(id, state, hasAgentSession) {
   );
 }
 
+/** A prompt the user typed: not an agent's send (`sender: 'lead'`), a hidden
+ *  wake, a routine fire or any other runtime-made turn. */
+export function isUserTurn(options = {}) {
+  return (
+    (options.mode || 'prompt') === 'prompt' &&
+    options.kickoff !== true &&
+    options.isMeta !== true &&
+    options.transcriptMeta?.sender !== 'lead'
+  );
+}
+
 export function createSessionTurnCalls(ctx) {
   const { log, readStoredGoal, listStoredActiveGoalSessionIds, hasAgentSession, sessionResult, advanceForCaller } = ctx;
   const { retainUnwatched } = ctx.retention;
@@ -46,28 +62,79 @@ export function createSessionTurnCalls(ctx) {
     return step;
   };
 
-  async function submitSession({ sessionId, prompt, options = {}, open: openHints = {}, baseRevision = null } = {}) {
+  // Intakes in flight per session: an abort of the session also cancels an
+  // attachment conversion that has not yet become a turn.
+  const intakeAborts = new Map();
+
+  async function submitSession({
+    sessionId,
+    prompt,
+    options = {},
+    open: openHints = {},
+    baseRevision = null,
+    signal = null,
+  } = {}) {
     const id = String(sessionId || '');
     if (!id) throw new TypeError('sessionId is required');
     const entry = await entryForSession(id, openHints || {});
     const target = entry.runtime.submitAsync;
     if (typeof target !== 'function') throw new TypeError('session runtime must implement submitAsync');
-    const intake = await preparePromptSubmissionForProvider(
-      materializePromptSubmission(prompt, options || {}),
-      { nativePdf: providerNativePdf(entry.runtime.provider || entry.runtime.session?.provider || '') }
-    );
+    const intakeAbort = new AbortController();
+    const forwardAbort = () => intakeAbort.abort(signal.reason);
+    if (signal?.aborted) forwardAbort();
+    else signal?.addEventListener?.('abort', forwardAbort, { once: true });
+    if (!intakeAborts.has(id)) intakeAborts.set(id, new Set());
+    intakeAborts.get(id).add(intakeAbort);
+    let intake;
+    try {
+      intake = await preparePromptSubmissionForProvider(
+        materializePromptSubmission(prompt, options || {}),
+        { nativePdf: providerNativePdf(entry.runtime.provider || entry.runtime.session?.provider || '') },
+        { signal: intakeAbort.signal }
+      );
+    } finally {
+      signal?.removeEventListener?.('abort', forwardAbort);
+      intakeAborts.get(id)?.delete(intakeAbort);
+      if (!intakeAborts.get(id)?.size) intakeAborts.delete(id);
+    }
+    // A cancel that landed after the last conversion step must not submit.
+    intakeAbort.signal.throwIfAborted();
     // Await intake only: submitAsync resolves once the prompt is represented by
     // the queue/user row, while provider execution remains daemon-owned and
     // detached.
     let submissionOptions = intake.options;
-    if (entry.runtime.externalAction === true) {
+    // Every send (desktop or paired device) reaches the engine here: the
+    // message records its attachments by content hash, so any device can open
+    // or download them by id later (and the store's census keeps the blobs).
+    const attachments = attachmentsForIntake(intake.prompt, intake.options);
+    if (attachments.length || entry.runtime.externalAction === true) {
       const transcriptMeta = intake.options?.transcriptMeta;
       const baseMeta = transcriptMeta && typeof transcriptMeta === 'object' ? transcriptMeta : {};
-      submissionOptions = { ...intake.options, transcriptMeta: { ...baseMeta, sender: 'user' } };
+      submissionOptions = {
+        ...intake.options,
+        transcriptMeta: {
+          ...baseMeta,
+          ...(attachments.length ? { attachments } : {}),
+          ...(entry.runtime.externalAction === true ? { sender: 'user' } : {}),
+        },
+      };
+    }
+    // A bot's conversation room runs only its own /compact and /clear (the
+    // composer's rule): every other leading `/` is message text for the model.
+    if (isAgentModeSession(entry.runtime.session ?? { id })) {
+      const text = typeof intake.prompt === 'string' ? intake.prompt : promptContentText(intake.prompt);
+      if (!recognisedAgentRoomSlash(text)) submissionOptions = { ...submissionOptions, skipSlashCommands: true };
     }
     const accepted = await Promise.resolve(target.call(entry.runtime, intake.prompt, submissionOptions));
     if (accepted === true) {
       entry.reservedOnly = false;
+      if (isAgentHomeSessionId(id) && isUserTurn(submissionOptions)) {
+        // The user spoke in this agent's home: its round trips with other
+        // sessions count from zero again, so a capped thread wakes again.
+        void import('../../../session-runtime/agent-home-delivery.mjs')
+          .then(({ resetAgentTaskRounds }) => resetAgentTaskRounds(id))
+          .catch((error) => log(`round reset of ${id} failed: ${error?.message || error}`));
+      }
     }
     const step = settleAction(entry, 'headless session submit');
     log(`session submit session=${id} accepted=${accepted === true}`);
@@ -92,6 +159,7 @@ export function createSessionTurnCalls(ctx) {
   async function abortSession({ sessionId, open: openHints = {}, options = {}, baseRevision = null } = {}) {
     const id = String(sessionId || '');
     if (!id) throw new TypeError('sessionId is required');
+    for (const intakeAbort of intakeAborts.get(id) ?? []) intakeAbort.abort();
     const entry = await entryForSession(id, openHints || {});
     const target = entry.runtime.abort;
     if (typeof target !== 'function') throw new TypeError('session action abort is unavailable');

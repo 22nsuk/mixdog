@@ -18,6 +18,7 @@ function bootParams({
   model,
   effort,
   fast,
+  autoEffort,
   modelParameters,
   contextPercent,
   contextTokens,
@@ -33,12 +34,14 @@ function bootParams({
   sessionProfile = null,
   worktree = null,
   executeAgentControl = null,
+  executeSessionControl = null,
 } = {}) {
   return {
     provider,
     model,
     effort,
     fast,
+    autoEffort,
     modelParameters,
     contextPercent,
     contextTokens,
@@ -55,6 +58,7 @@ function bootParams({
     // Creation-time worktree intent (workspace/transitions.mjs creationIntent).
     worktree,
     executeAgentControl,
+    executeSessionControl,
   };
 }
 

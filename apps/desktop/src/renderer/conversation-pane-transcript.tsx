@@ -1,4 +1,7 @@
-import type { ReactNode } from 'react';
+import { type ReactNode, useMemo } from 'react';
+import { roomIdOfSession } from '../../../../src/runtime/agent/orchestrator/session/agent-room.mjs';
+import { useAgentRoom } from './agent-room-store';
+import { MarkdownMentionNamesContext } from './markdown-mentions';
 import { collapseSelectionOnPress, JumpToLatestButton } from './conversation-support';
 import { t } from './i18n';
 import {
@@ -14,7 +17,7 @@ import { TurnChangesContext, type TurnChangesSurface } from './TurnChangesCard';
 import type { ConversationTimeline } from './use-conversation-timeline';
 import type { ConversationTranscriptSource } from './use-conversation-transcript-source';
 import type { ConversationViewport } from './use-conversation-viewport';
-import { TRANSCRIPT_HISTORY_TOP_PX } from './use-transcript-history';
+import { transcriptHistoryLead } from './use-transcript-history';
 import { BrandTile } from './WorkspaceEmptyState';
 
 type OpenFile = (project: string, rel: string, line?: number, accessToken?: string, column?: number) => void;
@@ -84,18 +87,24 @@ function TranscriptRowContexts({
   turnChangesSurface: TurnChangesSurface | null;
   children: ReactNode;
 }) {
+  const room = useAgentRoom(sessionId);
+  const inRoom = room !== null;
+  const memberNames = room?.memberNames;
+  const mentionNames = useMemo(() => (inRoom ? Object.values(memberNames ?? {}) : null), [inRoom, memberNames]);
   return (
     <MarkdownProjectContext.Provider value={project}>
       <MarkdownSessionContext.Provider value={sessionId}>
-        <MarkdownOpenFileContext.Provider value={openFile ?? null}>
-          <MarkdownOpenFolderContext.Provider value={openFolder ?? null}>
-            <TranscriptDevicesContext.Provider value={multiDevice}>
-              <TranscriptViewerDeviceContext.Provider value={viewerDevice}>
-                <TurnChangesContext.Provider value={turnChangesSurface}>{children}</TurnChangesContext.Provider>
-              </TranscriptViewerDeviceContext.Provider>
-            </TranscriptDevicesContext.Provider>
-          </MarkdownOpenFolderContext.Provider>
-        </MarkdownOpenFileContext.Provider>
+        <MarkdownMentionNamesContext.Provider value={mentionNames}>
+          <MarkdownOpenFileContext.Provider value={openFile ?? null}>
+            <MarkdownOpenFolderContext.Provider value={openFolder ?? null}>
+              <TranscriptDevicesContext.Provider value={multiDevice}>
+                <TranscriptViewerDeviceContext.Provider value={viewerDevice}>
+                  <TurnChangesContext.Provider value={turnChangesSurface}>{children}</TurnChangesContext.Provider>
+                </TranscriptViewerDeviceContext.Provider>
+              </TranscriptDevicesContext.Provider>
+            </MarkdownOpenFolderContext.Provider>
+          </MarkdownOpenFileContext.Provider>
+        </MarkdownMentionNamesContext.Provider>
       </MarkdownSessionContext.Provider>
     </MarkdownProjectContext.Provider>
   );
@@ -121,10 +130,17 @@ export function ConversationTranscript({
   viewerDevice,
   renderRow,
   itemCount,
+  cover,
+  intro,
+  agentMode = false,
 }: {
+  /** An agent chat: its rows learn their estimated heights apart from coding's. */
+  agentMode?: boolean;
+  /** Agent mode: the contact's profile a chat with no messages yet shows. */
+  intro?: ReactNode;
   view: Pick<
     ConversationViewport,
-    'viewport' | 'content' | 'follow' | 'composerDockHeight' | 'setTranscriptAnchorBottomRef' | 'scrollToEndRef'
+    'viewport' | 'content' | 'follow' | 'setTranscriptAnchorBottomRef' | 'scrollToEndRef'
   >;
   source: Pick<
     ConversationTranscriptSource,
@@ -146,12 +162,15 @@ export function ConversationTranscript({
   project: string;
   multiDevice: boolean;
   viewerDevice: string | null;
-  renderRow: (row: TranscriptRowModel) => ReactNode;
+  renderRow: (row: TranscriptRowModel, index: number, rows: readonly TranscriptRowModel[]) => ReactNode;
   itemCount: number;
+  /** Loading cover over the viewport alone (never the composer dock). */
+  cover?: ReactNode;
 }) {
   const { viewport, content, follow } = view;
   const { requestEarlierTranscript } = source;
   const revealed = timeline.transcriptRevealed;
+  const agentSurface = roomIdOfSession(routeSessionId) ? 'room' : 'agent';
   const showWelcome = conversationShowsWelcome({
     draftMode,
     routeSessionId,
@@ -164,6 +183,12 @@ export function ConversationTranscript({
   });
   return (
     <div className="transcript-shell">
+      {/* The top scroll fade (12-transcript.css). A real hidden element, not
+        the shell's ::before: its scroll-driven opacity restyles it on every
+        scroll frame, and a pseudo-element's restyle made Chromium's
+        accessibility tree re-serialize the whole shell — every transcript row
+        — each update (~100 ms tasks on a phone while a followed reply grew). */}
+      <div className="transcript-scroll-fade" aria-hidden="true" />
       <div
         className="transcript"
         ref={viewport}
@@ -187,11 +212,11 @@ export function ConversationTranscript({
         onMouseDownCapture={collapseSelectionOnPress}
         onScroll={(event) => {
           follow.handleScroll();
-          if (event.currentTarget.scrollTop <= TRANSCRIPT_HISTORY_TOP_PX) requestEarlierTranscript();
+          const element = event.currentTarget;
+          if (element.scrollTop <= transcriptHistoryLead(element.clientHeight)) requestEarlierTranscript();
         }}
         onWheel={follow.handleWheel}
         onPointerDown={follow.handlePointerDown}
-        onPointerMove={follow.handlePointerMove}
         onPointerUp={follow.handlePointerUp}
         onPointerCancel={follow.handlePointerUp}
         onTouchStart={follow.handleTouchStart}
@@ -207,6 +232,12 @@ export function ConversationTranscript({
             workspace; secondary surfaces keep the quiet letterpress).
             Sessions and transitions never show it. */}
           {showWelcome && welcomeWatermark(visibleWarmPaintHandoff)}
+          {intro &&
+            itemCount === 0 &&
+            pendingPromptCount === 0 &&
+            !source.activeStreamingTail &&
+            !transitioning &&
+            intro}
           {/* ONE mount per session, always with the real rows: a placeholder
             shell mounted first made the virtual core resolve its end anchor
             against an empty list and again on the 0 -> N row swap — the
@@ -227,21 +258,23 @@ export function ConversationTranscript({
                 rows={timeline.transcriptRows}
                 viewport={viewport}
                 content={content}
-                bottomInset={view.composerDockHeight}
                 shouldAnchorBottom={timeline.shouldAnchorTranscriptBottom}
                 markProgrammaticScroll={follow.markProgrammaticScroll}
                 hasScrollGesture={follow.hasScrollGesture}
-                hasTouchScroll={follow.hasTouchScroll}
+                hasTouchScroll={follow.holdsScrollCorrections}
+                touchHoldsCorrections={follow.touchHoldsCorrections}
                 onSelectionAutoScroll={follow.handleSelectionAutoScroll}
                 setAnchorBottomRef={view.setTranscriptAnchorBottomRef}
                 scrollToEndRef={view.scrollToEndRef}
                 renderRow={renderRow}
+                surface={agentMode ? agentSurface : 'coding'}
               />
             )}
           </TranscriptRowContexts>
         </div>
       </div>
       {itemCount > 0 && <JumpToLatestButton visible={follow.showJump} onJump={timeline.jumpToLatest} />}
+      {cover}
     </div>
   );
 }

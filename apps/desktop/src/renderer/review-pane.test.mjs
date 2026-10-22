@@ -70,8 +70,10 @@ test('on a phone each changed file has a visible ⋯ that opens its menu without
   window.mixdogDesktop = {
     gitStatus: async () => ({ repository: true, branch: 'main', ahead: 0, behind: 0, upstream: true, files: [] }),
     gitReview: async () => ({
+      repository: true,
+      root: '/repo',
       base: 'origin/main',
-      files: [{ path: 'src/a.ts', status: 'M', additions: 1, deletions: 1, untracked: false, uncommitted: true }],
+      files: [{ path: 'src/a.ts', status: 'M', additions: 1, deletions: 1, untracked: false }],
     }),
     gitReviewDiff: async () => '',
   };
@@ -96,8 +98,8 @@ test('on a phone each changed file has a visible ⋯ that opens its menu without
   const items = [...document.querySelectorAll('.review-context-menu [role="menuitem"]')].map(
     (item) => item.textContent
   );
-  // OS-only items stay hidden on a remote surface.
-  assert.deepEqual(items, ['Copy path', 'Revert changes']);
+  // OS-only items stay hidden on a remote surface; the file downloads instead.
+  assert.deepEqual(items, ['Download / Share', 'Copy path', 'Revert changes']);
   assert.equal(more.getAttribute('aria-expanded'), 'true');
 });
 
@@ -114,8 +116,10 @@ test('a failed file diff read renders as an error, never as patch text', async (
   window.mixdogDesktop = {
     gitStatus: async () => ({ repository: true, branch: 'main', ahead: 0, behind: 0, upstream: true, files: [] }),
     gitReview: async () => ({
+      repository: true,
+      root: '/repo',
       base: 'origin/main',
-      files: [{ path: 'src/a.ts', status: 'M', additions: 1, deletions: 1, untracked: false, uncommitted: true }],
+      files: [{ path: 'src/a.ts', status: 'M', additions: 1, deletions: 1, untracked: false }],
     }),
     gitReviewDiff: async () => {
       throw new Error('git diff failed: bad object');

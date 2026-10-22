@@ -16,6 +16,7 @@ import { createBrowserCdpExecution } from './cdp-execution';
 import { createBrowserCdpSessionInit } from './cdp-session-init';
 import type { BrowserGuestStateStore } from './guest-state';
 import type { BrowserFetchPattern, BrowserInterceptRule } from './intercept';
+import type { UserWaitClock } from './user-wait';
 
 export type { BrowserCdpCallOptions } from './cdp-calls';
 
@@ -24,9 +25,13 @@ interface BrowserGuestCdpHost {
   /** Extra Fetch patterns interception wants paused on this guest. */
   interceptFetchPatterns(guest: WebContents): BrowserFetchPattern[];
   matchInterceptRule(guest: WebContents, url: string, resourceType: string): BrowserInterceptRule | undefined;
+  /** Whether a person refused `origin` a permission (by engine name). */
+  permissionRefused?(origin: string, name: string): boolean;
   /** Policy-driven guards installed into every document and child frame,
    *  alongside the dialog bridge. Empty unless an operator restricts the page. */
   pageGuardScripts?(): string[];
+  /** How long driving domains outlive the last agent command (tests). */
+  lingerMs?: number;
 }
 
 /** The narrow CDP surface a page service depends on; tests fake this shape. */
@@ -35,13 +40,15 @@ export type BrowserCdpPort = Pick<BrowserGuestCdp, 'call' | 'sendCdp' | 'sendCdp
 export interface BrowserGuestCdp {
   /** Do not reuse a page while a cancelled dispatch is still executing. */
   waitForIdle(guest: WebContents, signal?: AbortSignal): Promise<void>;
-  /** Race a promise against a timeout and the caller's cancellation. */
+  /** Race a promise against a timeout and the caller's cancellation; the
+   *  timeout stands still while `userWait` has a wait open (cdp-bounded.ts). */
   bounded<T>(
     promise: Promise<T>,
     timeoutMs: number,
     label: string,
     signal?: AbortSignal,
-    onTimeout?: () => void
+    onTimeout?: () => void,
+    userWait?: UserWaitClock
   ): Promise<T>;
   sendCdp<T>(
     guest: WebContents,
@@ -77,21 +84,30 @@ export interface BrowserGuestCdp {
   evaluate<T>(guest: WebContents, expression: string, signal?: AbortSignal, timeoutMs?: number): Promise<T>;
   /** The attached debugger for a guest, initialised once per document. */
   guestDebugger(guest: WebContents, answeringDialog?: boolean): Promise<Electron.Debugger>;
+  /** Attach a page window.open created without blanking the navigation its
+   *  opener started, so its first document already has the dialog bridge. */
+  attachOpenedPage(guest: WebContents): Promise<Electron.Debugger>;
   waitForInitialDocument(guest: WebContents): Promise<void>;
   /** Push the current Fetch patterns to the root and every child session. */
   applyFetchPatterns(guest: WebContents, signal?: AbortSignal): Promise<void>;
+  /** An agent command works on the page until the returned release: the
+   *  domains only that work needs are up meanwhile (see cdp-session-init). */
+  drive(guest: WebContents): () => void;
   /** Drop the debugger for a guest whose bridge is going away. */
   detach(guest: WebContents): Promise<void>;
 }
 
 export function createBrowserGuestCdp(host: BrowserGuestCdpHost): BrowserGuestCdp {
   const { state } = host;
-  const { sendCdp, waitForIdle } = createBrowserCdpExecution({
+  const { sendCdp, waitForIdle, endSession } = createBrowserCdpExecution({
     bounded,
     diagnostic: (guest, message) => state.for(guest).console.recordInternal(message),
     awaitingDialog: (guest) => Boolean(state.peek(guest)?.pendingDialog),
   });
-  const sessions = createBrowserCdpSessionInit(host, sendCdp);
+  const sessions = createBrowserCdpSessionInit(
+    { ...host, guestDebugger: (guest) => attachment.guestDebugger(guest) },
+    sendCdp
+  );
   // The attachment routes messages through the router, and the router reads
   // the attachment's lifetimes; messages only arrive once both exist.
   const attachment = createGuestDebuggerAttachment({
@@ -102,9 +118,12 @@ export function createBrowserGuestCdp(host: BrowserGuestCdpHost): BrowserGuestCd
   const onCdpEvent = createBrowserCdpEventRouter({
     state,
     sendCdp,
+    targetDetached: endSession,
     matchInterceptRule: host.matchInterceptRule,
+    permissionRefused: host.permissionRefused,
     initializeTargetSession: sessions.initializeTargetSession,
     lifetimeSignal: attachment.lifetimeSignal,
+    onTopDocument: sessions.onTopDocument,
   });
   const calls = createBrowserCdpCalls({ state, sendCdp, guestDebugger: attachment.guestDebugger });
 
@@ -120,8 +139,10 @@ export function createBrowserGuestCdp(host: BrowserGuestCdpHost): BrowserGuestCd
     sendCdpInput: calls.sendCdpInput,
     evaluate: calls.evaluate,
     guestDebugger: attachment.guestDebugger,
+    attachOpenedPage: attachment.attachOpenedPage,
     waitForInitialDocument: attachment.waitForInitialDocument,
     applyFetchPatterns,
+    drive: sessions.drive,
     detach: attachment.detach,
   };
 }

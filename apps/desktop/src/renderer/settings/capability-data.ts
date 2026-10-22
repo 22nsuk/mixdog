@@ -16,7 +16,7 @@ import { record } from '../record-utils';
 import type { SettingsCategory } from './settings-items';
 import { errorMessage } from '../editor-pane-session-errors';
 
-export type CapabilityCategory = SettingsCategory | 'builtins';
+export type CapabilityCategory = SettingsCategory | 'builtins' | 'user-skills' | 'connectors';
 
 export type RecordValue = Record<string, unknown>;
 export type CapabilityApi = Partial<
@@ -129,7 +129,8 @@ export interface SettingsConfirmation {
   description: string;
   confirmLabel?: string;
   danger?: boolean;
-  onConfirm(): void | Promise<void>;
+  /** Absent: a notice (a failure to read) with one Close button. */
+  onConfirm?(): void | Promise<void>;
 }
 
 // Ordered by what the user sees first, cheapest first: the sweep runs in

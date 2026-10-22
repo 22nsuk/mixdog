@@ -1,5 +1,6 @@
 import {
   Fragment,
+  memo,
   useEffect,
   useMemo,
   useRef,
@@ -307,15 +308,7 @@ export function WorkbenchSideIconBar({
   );
 }
 
-function WorkbenchSideSection({
-  id,
-  active,
-  movable,
-  sectioned,
-  order,
-  basis,
-  children,
-}: {
+interface WorkbenchSideSectionProps {
   id: WorkbenchSideViewId;
   active: boolean;
   /** Left-side panels hand their title bar a live drag handle; the pane-scoped
@@ -324,8 +317,38 @@ function WorkbenchSideSection({
   sectioned: boolean;
   order: number;
   basis: number;
+  /** See WorkbenchSidePanel's `hiddenKey`. */
+  hiddenKey: string;
   children(active: boolean, titleDragProps: WorkbenchSideTitleDragProps): ReactNode;
-}) {
+}
+
+/** A view that stays hidden keeps its last render. Every App commit hands each
+ *  section a fresh render callback, so without this a session switch
+ *  re-rendered every retained destination behind the shown one (five hidden
+ *  session sidebars, the hidden dock's Changes pane) with props they cannot
+ *  show. It renders again with the current props the moment it is shown. */
+function sameHiddenSection(previous: WorkbenchSideSectionProps, next: WorkbenchSideSectionProps): boolean {
+  return (
+    !previous.active &&
+    !next.active &&
+    previous.id === next.id &&
+    previous.movable === next.movable &&
+    previous.sectioned === next.sectioned &&
+    previous.order === next.order &&
+    previous.basis === next.basis &&
+    previous.hiddenKey === next.hiddenKey
+  );
+}
+
+const WorkbenchSideSection = memo(function WorkbenchSideSection({
+  id,
+  active,
+  movable,
+  sectioned,
+  order,
+  basis,
+  children,
+}: WorkbenchSideSectionProps) {
   const titleDragProps = useMemo<WorkbenchSideTitleDragProps>(
     () => ({
       draggable: movable,
@@ -357,7 +380,7 @@ function WorkbenchSideSection({
       <div className="workbench-side-section-body">{children(active, titleDragProps)}</div>
     </section>
   );
-}
+}, sameHiddenSection);
 
 const SIDE_PANEL_WIDTH_KEY: Record<WorkbenchSide, string> = {
   left: 'mixdog:session-sidebar-width',
@@ -440,27 +463,7 @@ export function nextRetainedWorkbenchSideRoots(
     .filter((root): root is WorkbenchSideViewId => Boolean(root) && retained.has(root));
 }
 
-export function WorkbenchSidePanel({
-  side,
-  open,
-  motion = 'animated',
-  embedded = false,
-  widthStorageKey,
-  widthRange,
-  widthOverride,
-  onWidthDrag,
-  hideTabs = false,
-  groups,
-  activeRoot,
-  surfaces,
-  surfacesActive = false,
-  descriptors,
-  onSelect,
-  onMoveGroup,
-  onMoveView,
-  renderView,
-  footer,
-}: {
+interface WorkbenchSidePanelProps {
   side: WorkbenchSide;
   open: boolean;
   /** Narrow-band sheets slide; a responsive fold applies its state instantly. */
@@ -483,6 +486,9 @@ export function WorkbenchSidePanel({
    *  is aborted: the width then is only the rendered (possibly constrained)
    *  width at gesture start, so the owner restores its own snapshot instead. */
   onWidthDrag?(width: number, phase: 'preview' | 'commit' | 'cancel'): void;
+  /** False drops the width resize edge (a pane dock docked below the chat
+   *  fills the cell's width and resizes its height instead). */
+  resizable?: boolean;
   /** Pane docks render ONE unit-wide header themselves (user: 헤더 한 줄),
    *  so the panel's own tab header stays off. */
   hideTabs?: boolean;
@@ -498,9 +504,38 @@ export function WorkbenchSidePanel({
   onMoveGroup: Parameters<typeof WorkbenchSideIconBar>[0]['onMoveGroup'];
   onMoveView: Parameters<typeof WorkbenchSideIconBar>[0]['onMoveView'];
   renderView(id: WorkbenchSideViewId, active: boolean, titleDragProps: WorkbenchSideTitleDragProps): ReactNode;
+  /** Hidden views keep their last render until shown; a change of this key
+   *  renders them once more while hidden (a pane dock whose body mounts for
+   *  prewarm). A function keys each view on its own, so only the views it
+   *  changed for render again. */
+  hiddenKey?: string | ((id: WorkbenchSideViewId) => string);
   /** Pinned under the shown destination, the same for every view. */
   footer?: ReactNode;
-}) {
+}
+
+export function WorkbenchSidePanel({
+  side,
+  open,
+  motion = 'animated',
+  embedded = false,
+  widthStorageKey,
+  widthRange,
+  widthOverride,
+  onWidthDrag,
+  resizable = true,
+  hideTabs = false,
+  groups,
+  activeRoot,
+  surfaces,
+  surfacesActive = false,
+  descriptors,
+  onSelect,
+  onMoveGroup,
+  onMoveView,
+  renderView,
+  hiddenKey = '',
+  footer,
+}: WorkbenchSidePanelProps) {
   const selectedGroup = groups.find((group) => activeRoot !== null && group.includes(activeRoot)) ?? groups[0] ?? [];
   const root = selectedGroup[0] ?? null;
   const movable = side === 'left';
@@ -635,29 +670,31 @@ export function WorkbenchSidePanel({
         } as React.CSSProperties
       }
     >
-      {/* biome-ignore lint/a11y/useSemanticElements: a draggable resize handle, not a thematic break; <hr> brings its own border and margins. */}
-      <div
-        className="workbench-side-panel-resize"
-        role="separator"
-        aria-orientation="vertical"
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          resizeGesture.begin(event);
-          resizeStart.current = { x: event.clientX, width: effectiveWidth };
-          dragPending.current = null;
-        }}
-        onPointerMove={(event) => {
-          const start = resizeStart.current;
-          if (!start || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
-          const delta = side === 'left' ? event.clientX - start.x : start.x - event.clientX;
-          const next = Math.max(widthMin, Math.min(widthMax, Math.round(start.width + delta)));
-          if (onWidthDrag) {
-            dragPending.current = next;
-            onWidthDrag(next, 'preview');
-          } else setWidth(next);
-        }}
-        {...resizeGesture.handlers}
-      />
+      {resizable && (
+        // biome-ignore lint/a11y/useSemanticElements: a draggable resize handle, not a thematic break; <hr> brings its own border and margins.
+        <div
+          className="workbench-side-panel-resize"
+          role="separator"
+          aria-orientation="vertical"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            resizeGesture.begin(event);
+            resizeStart.current = { x: event.clientX, width: effectiveWidth };
+            dragPending.current = null;
+          }}
+          onPointerMove={(event) => {
+            const start = resizeStart.current;
+            if (!start || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+            const delta = side === 'left' ? event.clientX - start.x : start.x - event.clientX;
+            const next = Math.max(widthMin, Math.min(widthMax, Math.round(start.width + delta)));
+            if (onWidthDrag) {
+              dragPending.current = next;
+              onWidthDrag(next, 'preview');
+            } else setWidth(next);
+          }}
+          {...resizeGesture.handlers}
+        />
+      )}
       <div className="workbench-side-panel-content">
         {side === 'right' && !hideTabs && (
           <header className="workbench-side-panel-tabs">
@@ -688,7 +725,10 @@ export function WorkbenchSidePanel({
               className="workbench-side-panel-body"
               ref={selected ? panelBodyRef : undefined}
               hidden={!selected}
-              style={selected && surfacesActive ? { visibility: 'hidden' } : undefined}
+              // Under a showing surface (terminal, browser) the view stays
+              // mounted but skips layout and paint: a large diff laid out
+              // behind the terminal cost ~160ms on every terminal open.
+              style={selected && surfacesActive ? { visibility: 'hidden', contentVisibility: 'hidden' } : undefined}
               inert={!selected || surfacesActive ? true : undefined}
               aria-hidden={!selected || surfacesActive ? true : undefined}
               onDragOver={(event) => {
@@ -777,6 +817,7 @@ export function WorkbenchSidePanel({
                       sectioned={group.length > 1}
                       order={index * 2}
                       basis={sizes[index] ?? 100 / group.length}
+                      hiddenKey={typeof hiddenKey === 'function' ? hiddenKey(id) : hiddenKey}
                     >
                       {(active, titleDragProps) => renderView(id, active, titleDragProps)}
                     </WorkbenchSideSection>

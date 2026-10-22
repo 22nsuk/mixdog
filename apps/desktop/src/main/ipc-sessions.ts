@@ -3,7 +3,9 @@
 import { DESKTOP_IPC, type DesktopRemoteAccessInfo } from '../shared/contract';
 import type { BrowserHost } from './browser/host';
 import { readAttachmentThumbnail } from './attachment-thumbnail';
+import { attachmentViewName, readSessionAttachment } from './session-attachments';
 import { optionalSessionId, requiredSessionId } from './desktop-state';
+import { isSessionMissingError } from './session-final-answer';
 import type { DesktopService } from './desktop-service-contract';
 import {
   requiredAbortOptions,
@@ -23,6 +25,10 @@ import type { IpcHandle as Handle } from './ipc';
 import { hostDeviceName } from './session-device';
 import { sessionSidebarActions } from './session-sidebar-actions';
 import type { RemoteHostWindows } from './remote-host-windows';
+import { requiredAgentMemoryEntry } from './agent-memory';
+import { secretInputs } from './secret-input';
+import { takeoverGate } from './takeover-gate';
+import { resolveToolApprovalAnnouncingGrant } from './approval-grant-change';
 
 interface SessionIpcOptions {
   handle: Handle;
@@ -47,6 +53,15 @@ export function registerSessionIpc({
   remoteHosts,
 }: SessionIpcOptions): void {
   handle(DESKTOP_IPC.listSessions, () => host.listSessions());
+  handle(DESKTOP_IPC.readSessionAttachment, async (_event, sessionId, attachmentId) => {
+    const { meta, bytes } = await readSessionAttachment(host, requiredSessionId(sessionId), attachmentId);
+    return {
+      name: attachmentViewName(meta),
+      mimeType: meta.mimeType,
+      size: bytes.length,
+      dataUrl: `data:${meta.mimeType};base64,${bytes.toString('base64')}`,
+    };
+  });
   handle(DESKTOP_IPC.readAttachmentThumbnail, (_event, attachmentRef) =>
     readAttachmentThumbnail(
       attachmentRef,
@@ -83,6 +98,17 @@ export function registerSessionIpc({
   handle(DESKTOP_IPC.setSessionArchived, (_event, sessionId, archived) =>
     sidebar.setSessionArchived(sessionId, archived)
   );
+  handle(DESKTOP_IPC.openAgentHome, (_event, agentId) => host.openAgentHome(requiredString(agentId, 'agentId', 200)));
+  handle(DESKTOP_IPC.resetAgentHome, (_event, agentId) => host.resetAgentHome(requiredString(agentId, 'agentId', 200)));
+  handle(DESKTOP_IPC.listAgentMemory, (_event, agentId) =>
+    host.listAgentMemory(requiredString(agentId, 'agentId', 200))
+  );
+  handle(DESKTOP_IPC.deleteAgentMemory, (_event, agentId, entry) =>
+    host.deleteAgentMemory(requiredString(agentId, 'agentId', 200), requiredAgentMemoryEntry(entry))
+  );
+  handle(DESKTOP_IPC.agentRoomAction, (_event, action, args) =>
+    host.agentRoomAction(requiredString(action, 'action', 32), Array.isArray(args) ? args : [])
+  );
   handle(DESKTOP_IPC.setSessionFavorite, (_event, sessionId, favorite) =>
     sidebar.setSessionFavorite(sessionId, favorite)
   );
@@ -91,11 +117,17 @@ export function registerSessionIpc({
   );
   handle(DESKTOP_IPC.deleteSession, async (_event, sessionId) => {
     const ownerSessionId = requiredSessionId(sessionId);
-    const snapshot = await host.deleteSession(ownerSessionId);
+    // A session that is already gone is a no-op, not an error for the UI.
+    let snapshot: unknown = null;
+    try {
+      snapshot = await host.deleteSession(ownerSessionId);
+    } catch (error) {
+      if (!isSessionMissingError(error)) throw error;
+    }
     browserHost?.releaseSession(ownerSessionId);
     return snapshot;
   });
-  registerSessionRoutingIpc({ handle, host });
+  registerSessionRoutingIpc({ handle, host, invokeDesktopOperation });
 }
 
 function registerRemoteAccessIpc({
@@ -168,7 +200,11 @@ function registerRemoteAccessIpc({
   });
 }
 
-function registerSessionRoutingIpc({ handle, host }: Pick<SessionIpcOptions, 'handle' | 'host'>): void {
+function registerSessionRoutingIpc({
+  handle,
+  host,
+  invokeDesktopOperation,
+}: Pick<SessionIpcOptions, 'handle' | 'host' | 'invokeDesktopOperation'>): void {
   handle(DESKTOP_IPC.submitNewTask, (_event, prompt, options, draft) =>
     host.submitNewTask(requiredPromptContent(prompt), requiredSubmitOptions(options), requiredNewTaskDraft(draft))
   );
@@ -180,13 +216,32 @@ function registerSessionRoutingIpc({ handle, host }: Pick<SessionIpcOptions, 'ha
   handle(DESKTOP_IPC.abortSession, (_event, sessionId, options) =>
     host.abortSession(requiredSessionId(sessionId), requiredAbortOptions(options))
   );
-  handle(DESKTOP_IPC.resolveToolApprovalForSession, (_event, sessionId, id, input) =>
-    host.resolveToolApprovalForSession(
+  // The secret card's value stays in this process (secret-input.ts): never
+  // forwarded to the host, logged or echoed back.
+  handle(DESKTOP_IPC.provideSecretInput, (_event, requestId, value) =>
+    secretInputs.provide(requiredString(requestId, 'secret request id', 120), typeof value === 'string' ? value : '')
+  );
+  handle(DESKTOP_IPC.takeoverReady, (_event, sessionId, id) =>
+    takeoverGate.ready(requiredSessionId(sessionId), requiredString(id, 'takeover id', 200))
+  );
+  handle(DESKTOP_IPC.getAgentNotificationMute, (_event, agentId) =>
+    host.getAgentNotificationMute(requiredString(agentId, 'agent id', 200))
+  );
+  handle(DESKTOP_IPC.setAgentNotificationMute, (_event, agentId, muted) => {
+    if (typeof muted !== 'boolean') throw new TypeError('muted must be a boolean.');
+    return host.setAgentNotificationMute(requiredString(agentId, 'agent id', 200), muted);
+  });
+  handle(DESKTOP_IPC.resolveToolApprovalForSession, async (_event, sessionId, id, input) => {
+    const decision = requiredToolApprovalDecision(input);
+    return resolveToolApprovalAnnouncingGrant(
+      host,
+      invokeDesktopOperation,
       requiredSessionId(sessionId),
       requiredString(id, 'approval id', 1_024),
-      requiredToolApprovalDecision(input)
-    )
-  );
+      // This PC answered: every other device names it ("Allowed from <PC>").
+      { ...decision, device: hostDeviceName() }
+    );
+  });
   handle(DESKTOP_IPC.inheritSession, (_event, sourceSessionId, selection, options) =>
     host.inheritSession(
       requiredSessionId(sourceSessionId),
@@ -206,6 +261,9 @@ function registerSessionRoutingIpc({ handle, host }: Pick<SessionIpcOptions, 'ha
   handle(DESKTOP_IPC.cancelQuotaResume, (_event, sessionId) => host.cancelQuotaResume(requiredSessionId(sessionId)));
   handle(DESKTOP_IPC.stopShellJob, (_event, sessionId, taskId) =>
     host.stopShellJob(requiredSessionId(sessionId), requiredString(taskId, 'taskId', 256))
+  );
+  handle(DESKTOP_IPC.releaseShellJob, (_event, sessionId, taskId) =>
+    host.releaseShellJob(requiredSessionId(sessionId), requiredString(taskId, 'taskId', 256))
   );
   handle(DESKTOP_IPC.getQuotaAutoResume, () => host.getQuotaAutoResume());
   handle(DESKTOP_IPC.viewerDevice, () => hostDeviceName());

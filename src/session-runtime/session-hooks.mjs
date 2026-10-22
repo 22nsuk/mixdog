@@ -5,7 +5,6 @@
 // facade's hookCommonPayload / currentCwd accessor + the session itself. All
 // properties are non-enumerable/configurable/writable so the loop/manager can
 // read them by name without changing session enumeration.
-
 export function attachSessionHooks(session, { hooks, hookCommonPayload, getCwd }) {
   const identity = (input) => ({
     session_id: input?.sessionId || input?.session_id || session?.id,
@@ -26,8 +25,9 @@ export function attachSessionHooks(session, { hooks, hookCommonPayload, getCwd }
   // rejection cannot escape the tool loop or the compaction flow.
   const dispatcher = (event, payload) => (input) => hooks.dispatch(event, hookCommonPayload(payload(input)));
 
-  // PreToolUse bridge.
-  define('beforeToolHook', (input, options = {}) =>
+  // PreToolUse bridge. A group-room member follows the same rules as its
+  // agent's home thread: no room-only approval on top.
+  define('beforeToolHook', async (input, options = {}) =>
     hooks.beforeTool(
       hookCommonPayload({
         ...input,

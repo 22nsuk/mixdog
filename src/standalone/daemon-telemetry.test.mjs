@@ -7,8 +7,10 @@ import {
   DAEMON_TELEMETRY_INTERVAL_MS,
   collectDaemonTelemetry,
   createDaemonTelemetry,
+  createStallDescriber,
   formatDaemonTelemetry,
 } from './daemon-telemetry.mjs';
+import { createSlowSpans, markPhase } from '../runtime/shared/slow-span.mjs';
 
 const TELEMETRY_URL = new URL('./daemon-telemetry.mjs', import.meta.url).href;
 const MB = 1024 * 1024;
@@ -219,6 +221,24 @@ test('the production timer is a single 30s unrefed loop that samples then runs o
   assert.deepEqual(intervalTicks, ['lag']);
 });
 
+test('onStart runs once when the loop starts, before its first tick, and a throw stays contained', () => {
+  const started = [];
+  const { telemetry, timers, intervalTicks } = fixture({
+    onStart() {
+      started.push(intervalTicks.length);
+      throw new Error('probe boom');
+    },
+  });
+  telemetry.start();
+  telemetry.start();
+  assert.deepEqual(started, [0]);
+  assert.equal(timers.length, 1);
+  timers[0].fn();
+  assert.deepEqual(intervalTicks, ['lag']);
+  assert.deepEqual(started, [0]);
+  telemetry.stop();
+});
+
 test('a getWork failure still emits memory fields and does not throw into the timer', () => {
   const { telemetry, lines } = fixture({
     getWork: () => {
@@ -330,4 +350,25 @@ test('post-major-GC heap: min per interval is reported on the line and reset on 
   t.emit();
   t.stop();
   assert.match(lines[0], /postGcHeapMinBytes=120/);
+});
+
+test('createStallDescriber names the overlapping spans and the in-flight work snapshot', async () => {
+  let t = 0;
+  const spans = createSlowSpans({ now: () => t });
+  await spans.trace('session.read#abcd1234:getTurnChanges', async () => {
+    t += 480;
+    markPhase('action');
+  });
+  const describe = createStallDescriber({
+    spans,
+    getWork: () => ({ activeCalls: 2, queuedCalls: 1, busySessions: 1, busyMemoryAgents: 0 }),
+  });
+  assert.equal(
+    describe(100, 500),
+    'spans: session.read#abcd1234:getTurnChanges 480ms action=480 | in-flight: activeCalls=2 queuedCalls=1 busySessions=1 busyMemoryAgents=0'
+  );
+  assert.equal(
+    describe(900, 950),
+    'in-flight: activeCalls=2 queuedCalls=1 busySessions=1 busyMemoryAgents=0'
+  );
 });

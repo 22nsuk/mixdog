@@ -1,11 +1,13 @@
 import type { ComponentProps, RefObject } from 'react';
 import { BranchChip } from './BranchChip';
 import { Composer, OrchestrationModeSelect, WorkflowSelect } from './Composer';
+import { useSessionRouteChoices } from './model-controls';
 import { ComposerContextChips } from './composer-context-chips';
 import { ProjectContextSelector } from './composer-support';
 import { ComposerDock } from './ComposerDock';
 import type { ConversationProps } from './conversation-pane-props';
 import { useComposerUserMessages } from './conversation-pane-user-messages';
+import { questionAwareSubmit } from './question-card-logic';
 import type { RecordValue, Snapshot, TranscriptItem } from './desktop-types';
 import { t } from './i18n';
 import type { ConversationIsland } from './use-conversation-island';
@@ -24,7 +26,6 @@ export type ConversationComposerDockProps = Pick<
   | 'activeProjectLabel'
   | 'onClearProject'
   | 'onSelectProject'
-  | 'onResumeSession'
   | 'draftWorkflow'
   | 'onDraftWorkflow'
   | 'draftOrchestrationMode'
@@ -33,6 +34,7 @@ export type ConversationComposerDockProps = Pick<
   | 'onDraftModelSelection'
   | 'onRoutePreferenceApplied'
   | 'contextIndicator'
+  | 'usageReadout'
   | 'goalIsland'
   | 'onOpenSessionDiff'
   | 'onOpenAgentSession'
@@ -41,13 +43,16 @@ export type ConversationComposerDockProps = Pick<
 > & {
   draftMode: boolean;
   draftId: string;
+  /** Agent mode: no coding chrome (branch, files, PR, workspace chips) and
+   *  the one-line messenger composer. */
+  agentMode?: boolean;
   reviewActive: boolean;
   dropTargetRef: RefObject<HTMLElement | null>;
   routeProject: string;
   island: ConversationIsland;
   submission: Pick<
     ConversationSubmission,
-    'goalSubmissionId' | 'reviewItems' | 'composerQueued' | 'pendingPromptIds' | 'actions'
+    'goalSubmissionId' | 'reviewItems' | 'steerItems' | 'pendingPromptIds' | 'holdSlashCommand' | 'actions'
   >;
   settledItems: TranscriptItem[];
   openFile: ComponentProps<typeof Composer>['onOpenFile'];
@@ -74,7 +79,6 @@ function conversationContextBar({
   activeProjectLabel,
   onClearProject,
   onSelectProject,
-  onResumeSession,
   draftWorkflow,
   onDraftWorkflow,
   draftOrchestrationMode,
@@ -95,7 +99,6 @@ function conversationContextBar({
         routeSnapshot.workspace?.revision ?? '',
         routeSnapshot.workspace?.cwd ?? '',
       ].join(':')}
-      onOpenSession={onResumeSession}
     />
   );
   return (
@@ -142,6 +145,7 @@ export function ConversationComposerDock(props: ConversationComposerDockProps) {
     sessionAddress,
     draftMode,
     draftId,
+    agentMode = false,
     reviewActive,
     transitioning,
     composerFocusRequest,
@@ -151,6 +155,7 @@ export function ConversationComposerDock(props: ConversationComposerDockProps) {
     onDraftModelSelection,
     onRoutePreferenceApplied,
     contextIndicator,
+    usageReadout,
     goalIsland,
     onOpenSessionDiff,
     onOpenAgentSession,
@@ -164,15 +169,29 @@ export function ConversationComposerDock(props: ConversationComposerDockProps) {
   const routeScope = String(routeSnapshot.sessionId || routeProject || 'new-task');
   const { actions } = submission;
   const userMessages = useComposerUserMessages(props.settledItems);
-  // A message sent while a question waits closes that question, then goes out
+  // A plain message sent while a question waits answers it (with the card's
+  // picks); an attachment or slash command closes the question and goes out
   // as a new request the agent reads after it.
-  const { dismissQuestion } = island;
-  const submit: typeof actions.composerSubmit = dismissQuestion
-    ? async (content, options) => {
-        await dismissQuestion();
-        return actions.composerSubmit(content, options);
-      }
-    : actions.composerSubmit;
+  const { dismissQuestion, answerQuestion } = island;
+  const submit: typeof actions.composerSubmit =
+    dismissQuestion && answerQuestion
+      ? questionAwareSubmit(actions.composerSubmit, answerQuestion, dismissQuestion)
+      : actions.composerSubmit;
+  // An existing coding session has no context bar: its workflow and
+  // delegation mode are rows of the model menu and switch that session
+  // alone — at once between turns, from the next response while one runs
+  // (never refused). Agent mode has neither.
+  const sessionChoices = useSessionRouteChoices({
+    sessionId: draftMode || agentMode ? '' : String(routeSnapshot.sessionId || ''),
+    workflow: (routeSnapshot.workflow as RecordValue | null) ?? null,
+    mode: routeSnapshot.orchestrationMode,
+    pendingWorkflow: routeSnapshot.pendingWorkflowSwitch === true,
+    pendingMode: routeSnapshot.pendingOrchestrationModeSwitch === true,
+    disabled: transitioning || Boolean(routeSnapshot.commandBusy),
+    invokeResult: actions.composerInvokeResult,
+    applySnapshot: actions.composerApplySnapshot,
+  });
+  const modelAside = contextIndicator;
   return (
     <ComposerDock
       sessionId={draftMode ? '' : String(snapshot.sessionId || '')}
@@ -184,8 +203,10 @@ export function ConversationComposerDock(props: ConversationComposerDockProps) {
       quotaResume={island.quotaResume}
       onOpenSessionDiff={onOpenSessionDiff}
       onOpenAgentSession={onOpenAgentSession}
-      showProjectSelector={showProjectSelector}
-      contextBar={conversationContextBar(props)}
+      workspace={draftMode ? null : (routeSnapshot.workspace ?? null)}
+      pendingInput={!draftMode && submission.steerItems.length > 0}
+      showProjectSelector={showProjectSelector && !agentMode}
+      agentMode={agentMode}
       reviewItems={submission.reviewItems}
       reviewActive={reviewActive}
       reviewBusy={Boolean(snapshot.busy || routeSnapshot.commandBusy)}
@@ -219,15 +240,24 @@ export function ConversationComposerDock(props: ConversationComposerDockProps) {
         draftMode={draftMode}
         onDraftModelSelection={onDraftModelSelection}
         onRoutePreferenceApplied={onRoutePreferenceApplied}
-        modelAside={contextIndicator}
-        queued={submission.composerQueued}
-        hiddenQueueIds={submission.pendingPromptIds}
+        modelAside={modelAside}
+        sessionChoices={sessionChoices}
+        // Before the first message the pickers stand in for the readout.
+        contextBar={
+          showProjectSelector && !agentMode ? (
+            <div className="composer-model-line-context">{conversationContextBar(props)}</div>
+          ) : undefined
+        }
+        usageReadout={draftMode ? undefined : usageReadout}
+        agentMode={agentMode}
+        steerItems={submission.steerItems}
         pendingSubmissionIds={submission.pendingPromptIds}
         onQueuedRestored={actions.composerQueuedRestored}
+        onSlashHeld={submission.holdSlashCommand}
         promptRestore={draftMode ? null : (routeSnapshot.promptRestore ?? null)}
         userMessages={userMessages}
         submit={submit}
-        placeholderOverride={dismissQuestion ? t('Sending closes the question') : undefined}
+        placeholderOverride={dismissQuestion ? t('Sending answers the question') : undefined}
         abort={actions.composerAbort}
         invokeResult={actions.composerInvokeResult}
         applySnapshot={actions.composerApplySnapshot}

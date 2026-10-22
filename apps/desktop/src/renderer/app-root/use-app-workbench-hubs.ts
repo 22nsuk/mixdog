@@ -41,8 +41,8 @@ export function useAppWorkbenchHubs(
     setSelection,
     requestedSessionId,
   } = nav;
-  const { tabs, startTask, activateSelection } = lifecycle.taskLifecycle;
-  const { startProject, openSettings } = commands;
+  const { tabs, startTask, startProjectlessTask, activateSelection } = lifecycle.taskLifecycle;
+  const { startProject, openSettings, renameSession } = commands;
   const { sessionTitle, activeTabKey, toolProjectPath, workbenchWorkspace } = context;
   const {
     openFileTab,
@@ -74,6 +74,7 @@ export function useAppWorkbenchHubs(
     navigateTab,
     closeTab,
     pinPaneTab,
+    renameSession,
     stripTrailing: (leaf) =>
       renderPaneDockStripTrailing(leaf, {
         workbenchSideLayout,
@@ -99,6 +100,7 @@ export function useAppWorkbenchHubs(
       focusPaneTypingSurface,
       activatePaneSurface,
       startTask,
+      startProjectlessTask,
       openSettings,
       setQuickAccessMode,
       navigateEditorHistory,

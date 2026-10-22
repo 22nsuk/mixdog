@@ -75,9 +75,11 @@ const ANTHROPIC_SSE_ERROR_TYPE_STATUS = new Map([
   ['authentication_error', 401],
   ['permission_error', 403],
   ['not_found_error', 404],
+  ['conflict_error', 409],
   ['request_too_large', 413],
   ['rate_limit_error', 429],
   ['api_error', 500],
+  ['timeout_error', 504],
   ['overloaded_error', 529],
 ]);
 
@@ -184,7 +186,7 @@ export async function parseSSEStream(
   state,
   onTextDelta,
   knownToolNames,
-  { relayProgressUpdates = false, labels = OAUTH_STREAM_LABELS } = {}
+  { relayProgressUpdates = false, labels = OAUTH_STREAM_LABELS, onStreamItemStart = null } = {}
 ) {
   // Anthropic/Claude parity: every received SSE byte proves transport
   // activity, including comment and named ping keepalives. Content kinds
@@ -206,6 +208,7 @@ export async function parseSSEStream(
     knownToolNames,
     relayProgressUpdates,
     labels,
+    onStreamItemStart,
   });
   const watchdogs = createAnthropicSseWatchdogs({
     state,

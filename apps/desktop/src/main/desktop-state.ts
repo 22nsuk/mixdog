@@ -4,9 +4,13 @@ import type {
   DesktopSessionWorkspace,
   DesktopWorkspaceTransitionState,
 } from '../shared/contract';
+import { cleanIncomingTail } from '../shared/incoming-tail';
 import { compactedSessionTitle, generatedSessionTitle, normalizeSessionTitle } from '../shared/session-title.mjs';
+import { agentIdOfHomeSession } from '../../../../src/runtime/agent/orchestrator/session/agent-home.mjs';
+import { normalizeRoutineProvenance } from '../../../../src/runtime/agent/orchestrator/session/routine-result.mjs';
 
-const SESSION_WORKING_HEARTBEAT_MS = 2 * 60 * 1000;
+// A user prompt plus an assistant reply: the smallest persisted conversation.
+const MIN_CONVERSATION_MESSAGE_COUNT = 2;
 const WORKSPACE_TRANSITION_STATES = new Set(['idle', 'provisioning', 'switching', 'removing', 'recovery']);
 
 const workspaceText = (value: unknown): string | null =>
@@ -105,8 +109,7 @@ export function requiredVisibleSessionVersion(value: unknown): number {
 export function desktopSessionSummaries(
   rows: Array<Record<string, unknown>>,
   titles: Readonly<Record<string, string>> = {},
-  names: Readonly<Record<string, string>> = {},
-  now = Date.now()
+  names: Readonly<Record<string, string>> = {}
 ): DesktopSessionSummary[] {
   return rows
     .flatMap((row): DesktopSessionSummary[] => {
@@ -131,15 +134,17 @@ export function desktopSessionSummaries(
       const projectPath = classification === 'project' ? workspace?.projectPath || cwd || storedProjectPath : '';
       if (classification === 'project' && (!projectPath || projectPath.includes('\0'))) return [];
       const preview = String(row.preview || '').trim();
+      const lastMessagePreview = String(row.lastMessagePreview || '').trim();
+      const lastMessageRoutine = normalizeRoutineProvenance(row.lastMessageRoutine);
+      const incomingTail = cleanIncomingTail(row.incomingTail);
       const id = String(row.id || '');
       const manualTitle = normalizeSessionTitle(names[id] || '', '');
       const sharedTitle = generatedSessionTitle(row.title || '', '');
       const legacyDesktopTitle = generatedSessionTitle(titles[id] || '', '');
       const previewTitle = compactedSessionTitle(preview, '') || generatedSessionTitle(preview, '');
-      const heartbeatAt = Number(row.heartbeatAt) || 0;
-      const agentHeartbeatAt = Number(row.agentHeartbeatAt) || 0;
-      const ownWorking = heartbeatAt > 0 && now - heartbeatAt <= SESSION_WORKING_HEARTBEAT_MS;
-      const agentWorking = agentHeartbeatAt > 0 && now - agentHeartbeatAt <= SESSION_WORKING_HEARTBEAT_MS;
+      // Turn activity the daemon overlays from its in-memory runtime state.
+      const ownWorking = row.working === true;
+      const agentWorking = row.agentWorking === true;
       const working = ownWorking || agentWorking;
       const updatedAt = Number(row.updatedAt) || 0;
       const activityAt = Number(row.lastUsedAt) || updatedAt;
@@ -158,19 +163,54 @@ export function desktopSessionSummaries(
       const model = String(row.model || '').trim();
       const createdAt = Number(row.createdAt) || 0;
       const inheritedFrom = String(row.inheritedFromSessionId || '').trim();
+      const messageCount = Math.max(0, Math.floor(Number(row.messageCount) || 0));
+      const agentHome = agentIdOfHomeSession(String(row.id || ''));
+      // A coding task session an agent created (session create): `agent:<id>`,
+      // then where it was created (`@home`, `@room`, `@run`) when recorded.
+      // Only a host-made task session (a Lead, never an agent-owned session) carries it.
+      const taskRow = sourceType === 'lead' && row.owner !== 'agent' && row.visibility !== 'agent-only';
+      const [taskAgent = '', taskFrom = ''] =
+        taskRow && sourceName.startsWith('agent:') ? sourceName.slice(6).split('@') : [];
       // Empty and synthetic runtime previews both normalize to no usable title.
       // Keep compacted handoffs when their earliest real user prompt can be
       // recovered, but hide abandoned/interrupted/internal rows instead of
-      // stacking "Untitled session" placeholders.
-      if (!previewTitle && !manualTitle && !sharedTitle && !legacyDesktopTitle) return [];
+      // stacking "Untitled session" placeholders. A row that persisted at
+      // least one full exchange (user + assistant) is a real conversation
+      // whose title sources were lost to compaction: it keeps the default
+      // title instead of vanishing. Abandoned/internal rows hold at most the
+      // lone synthetic user message, so they stay hidden. The durable
+      // `realTurnCount` (real human turns + compact summaries) rules out
+      // synthetic-only rows, and resume-machinery scratch forks never count.
+      // Rows indexed before that field existed (null/absent) keep the
+      // message-count rule alone.
+      const realTurnCount = typeof row.realTurnCount === 'number' ? row.realTurnCount : null;
+      const hadConversation =
+        messageCount >= MIN_CONVERSATION_MESSAGE_COUNT &&
+        row.detachedReason !== 'cli-resume' &&
+        (realTurnCount === null || realTurnCount >= 1);
+      // An agent home thread is a contact's chat, titled by its agent: a home
+      // that holds only routine results (no real turn, no first-prompt
+      // preview) still belongs in the catalog the Agents pane reads.
+      if (
+        !previewTitle &&
+        !manualTitle &&
+        !sharedTitle &&
+        !legacyDesktopTitle &&
+        !hadConversation &&
+        !(agentHome && messageCount > 0)
+      )
+        return [];
       return [
         {
           id,
+          ...(row.visibility === 'agent-only' || (row.owner === 'agent' && row.agent !== 'lead')
+            ? { agentSession: true }
+            : {}),
           preview,
           title: manualTitle || sharedTitle || legacyDesktopTitle || previewTitle || generatedSessionTitle(preview),
           updatedAt,
           activityAt,
-          messageCount: Math.max(0, Math.floor(Number(row.messageCount) || 0)),
+          messageCount,
           cwd,
           classification,
           projectPath: classification === 'project' ? projectPath : null,
@@ -184,6 +224,13 @@ export function desktopSessionSummaries(
           ...(createdAt > 0 ? { createdAt } : {}),
           ...(inheritedFrom ? { inheritedFromSessionId: inheritedFrom } : {}),
           ...(workspace ? { workspace } : {}),
+          ...(agentHome ? { agentHome } : {}),
+          ...(taskAgent ? { taskAgent } : {}),
+          ...(taskAgent && (taskFrom === 'home' || taskFrom === 'room' || taskFrom === 'run') ? { taskFrom } : {}),
+          ...(row.sessionMode === 'agent' ? { sessionMode: 'agent' as const } : {}),
+          ...(lastMessagePreview ? { lastMessagePreview } : {}),
+          ...(lastMessagePreview && lastMessageRoutine ? { lastMessageRoutine } : {}),
+          ...(incomingTail ? { incomingTail } : {}),
         },
       ];
     })

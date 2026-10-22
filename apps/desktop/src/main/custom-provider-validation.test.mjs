@@ -23,6 +23,25 @@ test('custom provider capabilities are exposed on the desktop surface', () => {
   }
 });
 
+test('custom provider wires and modelWires are shape-checked and v2 only', () => {
+  const v2 = { name: 'Local', protocol: 'openai-chat', baseURL: 'http://localhost:1234/v1', schemaVersion: 2 };
+  assert.doesNotThrow(() =>
+    requiredCustomProviderInput({ ...v2, wires: ['chat', 'messages'], modelWires: { m: 'messages' } })
+  );
+  for (const bad of [
+    { wires: [] },
+    { wires: 'chat' },
+    { wires: ['gemini'] },
+    { modelWires: [] },
+    { modelWires: { m: 'gemini' } },
+    { modelWires: { m: 1 } },
+    { modelWires: { ' m': 'chat' } },
+  ]) {
+    assert.throws(() => requiredCustomProviderInput({ ...v2, ...bad }), TypeError, JSON.stringify(bad));
+  }
+  assert.throws(() => requiredCustomProviderInput({ ...valid, wires: ['chat'] }), /schemaVersion/);
+});
+
 test('custom provider apiKeyEnv is validated and exclusive with apiKey', () => {
   const env = { ...valid, auth: 'key' };
   assert.doesNotThrow(() => requiredCustomProviderInput({ ...env, apiKeyEnv: 'GROQ_API_KEY' }));
@@ -185,6 +204,10 @@ const PARITY_CASES = [
   ['model id with control char', { modelOverrides: { 'm\u0000': {} } }, false],
   ['non-boolean hidden', { modelOverrides: { m: { hidden: 'no' } } }, false],
   ['non-boolean replay', { modelOverrides: { m: { reasoning: { replay: 1 } } } }, false],
+  ['supportsVision true', { modelOverrides: { m: { supportsVision: true } } }, true],
+  ['supportsVision false', { modelOverrides: { m: { supportsVision: false } } }, true],
+  ['non-boolean supportsVision', { modelOverrides: { m: { supportsVision: 'auto' } } }, false],
+  ['null supportsVision', { modelOverrides: { m: { supportsVision: null } } }, false],
   // Top level.
   ['auth omitted', {}, true],
   ['auth none', { auth: 'none' }, true],

@@ -4,13 +4,15 @@
  * lastProgressAt during long tool work; this module decides when to abort.
  * How long one tool runs is never a stall by itself: every tool owns its own
  * deadline (shell timeout_ms, task wait timeout), so a legitimate 10-minute
- * wait is not cut off at a role budget. Only model-response progress is judged.
+ * wait is not cut off at a role budget. Only model-response progress is judged,
+ * and never while the turn waits on the user's approval (`awaitingUser`).
  */
 
 import { appendAgentTrace } from '../agent-trace-io.mjs';
 import { getHiddenAgent } from '../internal-agents.mjs';
 import { envNonNegativeInt, envPresent } from '../../../shared/env.mjs';
 import {
+  PROVIDER_FIRST_BYTE_TIMEOUT_MS,
   PROVIDER_SEMANTIC_IDLE_TIMEOUT_MS,
   PROVIDER_WS_SEMANTIC_IDLE_TIMEOUT_MS,
   STALL_TICK_MS,
@@ -45,7 +47,7 @@ export class AgentStallAbortError extends Error {
   }
 }
 
-function isAgentProgressWatchdogAbortError(err) {
+export function isAgentProgressWatchdogAbortError(err) {
   const msg = err?.message;
   return typeof msg === 'string' && WATCHDOG_ABORT_RE.test(msg);
 }
@@ -203,14 +205,34 @@ function resolveExplicitMs(value, fallback) {
   return fallback;
 }
 
+// One deadline floored one watchdog tick above the provider's own budget for
+// that phase (none when the provider names none); 0 stays disabled.
+function aboveProviderBudget(requestedMs, providerBudgetMs) {
+  if (!(requestedMs > 0) || !(providerBudgetMs > 0)) return requestedMs;
+  return Math.max(requestedMs, providerBudgetMs + STALL_TICK_MS);
+}
+
+// `providerFirstByteTimeoutMs` is how long the session's provider itself may
+// wait for response headers, and `providerFirstOutputTimeoutMs` for its first
+// output (headers plus first chunk), its own retries included
+// (providerFirstResponseBudget). Provider retries keep the request clock
+// running, so each first-response deadline sits one watchdog tick above that
+// budget: the provider's timeout and retry decide first, and a provider that
+// gives up is reported as the provider's failure.
 export function resolveAgentWatchdogPolicy(agent, overrides = {}) {
-  const firstTransportMs = resolveExplicitMs(
-    overrides.firstTransportTimeoutMs ?? overrides.firstResponseTimeoutMs,
-    DEFAULT_FIRST_RESPONSE_TIMEOUT_MS
+  const firstTransportMs = aboveProviderBudget(
+    resolveExplicitMs(
+      overrides.firstTransportTimeoutMs ?? overrides.firstResponseTimeoutMs,
+      DEFAULT_FIRST_RESPONSE_TIMEOUT_MS
+    ),
+    resolveExplicitMs(overrides.providerFirstByteTimeoutMs, PROVIDER_FIRST_BYTE_TIMEOUT_MS)
   );
-  const firstSemanticMs = resolveExplicitMs(
-    overrides.firstSemanticTimeoutMs ?? overrides.firstVisibleTimeoutMs,
-    DEFAULT_FIRST_VISIBLE_CEILING_MS
+  const firstSemanticMs = aboveProviderBudget(
+    resolveExplicitMs(
+      overrides.firstSemanticTimeoutMs ?? overrides.firstVisibleTimeoutMs,
+      DEFAULT_FIRST_VISIBLE_CEILING_MS
+    ),
+    resolveExplicitMs(overrides.providerFirstOutputTimeoutMs, 0)
   );
 
   let idleStaleMs;
@@ -250,6 +272,10 @@ export function resolveAgentWatchdogPolicy(agent, overrides = {}) {
 
 export function evaluateAgentWatchdogAbort(snapshot, now, policy) {
   if (!snapshot || !policy) return null;
+  // A turn blocked on the user's tool approval (its own, or a sub-agent's that
+  // the bot chat answers) is waiting on a person, not stalled: an approval has
+  // no wait limit, so no deadline below applies until it settles.
+  if (snapshot.awaitingUser) return null;
 
   const startedAt = snapshot.modelRequestStartedAt || 0;
   // stage=connecting with no request timestamp means the provider request is

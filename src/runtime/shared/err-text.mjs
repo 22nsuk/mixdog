@@ -1,6 +1,7 @@
 import { transportErrorText } from './transport-error-text.mjs';
 import { describeError, safeErrorDetails } from './error-presentation.mjs';
 import { oneLine } from './clean.mjs';
+import { TIMEOUT_PHASE, isFirstByteTimeout } from './provider-timeout-phase.mjs';
 
 // HTTP status carried by a provider/transport error, or 0 when absent.
 export function errorHttpStatus(err) {
@@ -185,7 +186,9 @@ export function isCancelLikeError(error) {
 const KIND_LINES = {
   overloaded: 'Provider is busy at capacity.',
   rate_limited: ({ retryAfterMs }) =>
-    retryAfterMs ? `Provider is rate-limited (retry in ${formatDurationMs(retryAfterMs)}).` : 'Provider is rate-limited.',
+    retryAfterMs
+      ? `Provider is rate-limited (retry in ${formatDurationMs(retryAfterMs)}).`
+      : 'Provider is rate-limited.',
   quota_exhausted: 'Provider usage limit reached.',
   entitlement: 'Not included in your plan.',
   billing: 'Out of credits or at spend limit.',
@@ -198,12 +201,45 @@ const KIND_LINES = {
 // A bare message carries none, so its wording keeps the legacy text path.
 function hasTypedEvidence(error) {
   if (!error || typeof error !== 'object') return false;
-  return Boolean(error.errorKind?.kind) || errorHttpStatus(error) > 0 || Boolean(error.code) || Boolean(error.retryAfterMs);
+  return (
+    Boolean(error.errorKind?.kind) || errorHttpStatus(error) > 0 || Boolean(error.code) || Boolean(error.retryAfterMs)
+  );
+}
+
+// The window a provider timeout names (providerTimeoutError's message), or 0.
+const timedOutMs = (text) => Number(/timed out after (\d+)ms/i.exec(text)?.[1]) || 0;
+
+// A provider timeout before the model produced anything (isFirstByteTimeout):
+// the model is slow, not the connection.
+function stillThinkingText(error, text) {
+  const ms = Number(error.waitedMs) || timedOutMs(text);
+  const provider =
+    typeof error.providerLabel === 'string' && error.providerLabel ? error.providerLabel : 'the provider';
+  const attempts = Number(error.attempts) > 0 ? `; attempts: ${Math.floor(Number(error.attempts))}` : '';
+  return `Model still thinking: no output in ${formatDurationMs(ms)}; ${provider} sent nothing yet${attempts}.`;
+}
+
+// Stamped provider timeout phases and stream cuts. Null when the error names
+// neither, so the text rules below decide.
+function typedStreamFailureText(error, text) {
+  if (!error || typeof error !== 'object') return null;
+  if (isFirstByteTimeout(error)) return stillThinkingText(error, text);
+  if (error.timeoutPhase === TIMEOUT_PHASE.IDLE) {
+    const ms = timedOutMs(text);
+    return ms > 0 ? `No progress ${formatDurationMs(ms)}.` : 'No progress.';
+  }
+  // A stream that ended before its finish marker lost its connection.
+  if (error.code === 'TRUNCATED_STREAM' && error.streamCorruption !== true) {
+    return 'Connection to the provider was lost (TRUNCATED_STREAM).';
+  }
+  return null;
 }
 
 export function presentErrorText(error, options = {}) {
   const presentation = describeError(error);
-  if (['image-size', 'payload-size', 'request'].includes(presentation.kind)) return presentation.summary;
+  if (['image-size', 'payload-size', 'request', 'model-unavailable', 'tool-schema'].includes(presentation.kind)) {
+    return presentation.summary;
+  }
   const kindLine = hasTypedEvidence(error) ? KIND_LINES[presentation.providerKind] : null;
   if (kindLine && presentation.kind !== 'unknown') {
     return typeof kindLine === 'function' ? kindLine(presentation) : kindLine;
@@ -215,12 +251,24 @@ export function presentErrorText(error, options = {}) {
   const name = error && typeof error === 'object' ? String(error.name || '') : '';
   const code = error && typeof error === 'object' ? String(error.code || '') : '';
   const status = errorHttpStatus(error);
+  // The fixed request overhead error is actionable as written (sizes,
+  // contributors, remedy): keep its lines instead of a generic "Context too
+  // large." that would suggest compacting.
+  if (code === 'TOOL_SURFACE_EXCEEDS_CONTEXT' || /\(TOOL_SURFACE_EXCEEDS_CONTEXT\)/.test(text)) {
+    return stripErrorPrefix(text);
+  }
+  // Likewise a latest message that cannot fit names its size and what would
+  // help; a wrapper's prefix ("agent compact failed (...): ") is dropped.
+  const latestTurn = /The latest message cannot fit this model \(LATEST_TURN_EXCEEDS_CONTEXT\)[\s\S]*$/.exec(text);
+  if (latestTurn) return latestTurn[0].replace(' (LATEST_TURN_EXCEEDS_CONTEXT)', '');
   const jsonError = extractJsonError(text);
   if (jsonError) text = jsonError;
   const embeddedError = extractEmbeddedError(text);
   if (embeddedError) text = embeddedError;
   text = oneLine(stripErrorPrefix(text));
   if (!text) return 'Unknown error';
+  const streamFailure = typedStreamFailureText(error, text);
+  if (streamFailure) return streamFailure;
 
   if (code === 'PROVIDER_PREFIX_MUTATION' || name === 'ProviderPrefixMutationError') {
     return 'Session state changed unexpectedly.';
@@ -276,9 +324,10 @@ export function presentErrorText(error, options = {}) {
     return Number.isFinite(ms) && ms > 0 ? `No first response ${formatDurationMs(ms)}.` : 'No first response.';
   }
 
+  // The agent's own watchdog, worded apart from any provider timeout.
   const firstTransport = /first (?:transport|semantic response) stale\s*\((\d+)ms\)/i.exec(text);
   if (firstTransport) {
-    return `No first response ${formatDurationMs(firstTransport[1])}.`;
+    return `Agent watchdog stopped the run: no model response in ${formatDurationMs(firstTransport[1])}.`;
   }
 
   const firstResponse = /(?:agent\s+)?first response stale\s*\((\d+)ms\)/i.exec(text);
@@ -357,7 +406,8 @@ export function backgroundTaskFailureStatusLabel(status, error, options = {}) {
     /^timeout$/i.test(statusNorm) ||
     watchdog?.kind === 'timeout' ||
     /first response stale/i.test(raw) ||
-    /no first response from/i.test(presented)
+    /no first response from/i.test(presented) ||
+    /^(?:Model still thinking|Agent watchdog stopped the run):/.test(presented)
   )
     head = 'Timeout';
   else if (

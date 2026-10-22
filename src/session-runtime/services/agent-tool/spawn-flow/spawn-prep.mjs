@@ -4,11 +4,12 @@
  * route, and the transport prewarm. The validated spawn plan and the session
  * spec it produces live in ./spawn-plan.mjs.
  */
-import { presetKey, writeAgentStatuslineRoute } from '../helpers.mjs';
+import { presetKey, readAgentFirstResponseTimeoutMs, writeAgentStatuslineRoute } from '../helpers.mjs';
 import { resolveAgentWatchdogPolicy } from '../../../../runtime/agent/orchestrator/agent-runtime/agent-progress-watchdog.mjs';
 import { prepareAgentSession } from '../../../../runtime/agent/orchestrator/agent-runtime/session-builder.mjs';
 import { getProvider } from '../../../../runtime/agent/orchestrator/providers/registry.mjs';
 import { resolveRouteContextState } from '../../../route-state.mjs';
+import { contextSelectionFromState } from '../../../../runtime/agent/orchestrator/runtime-core/route-context-state.mjs';
 import { createSpawnPlanner } from './spawn-plan.mjs';
 import { enterWorkerSpawn } from '../../../workspace/admission-gate.mjs';
 
@@ -55,12 +56,13 @@ export function createSpawnPreparer({
   resolveTag,
   wantsSessionScan,
   bindTag,
-  cancelReap,
   ensureProvider,
   sessionSurface = null,
   refreshTagsFromSessions,
+  mgr = null,
 }) {
   const { resolveSpawnPlan, spawnSessionSpec } = createSpawnPlanner({
+    mgr,
     cfgMod,
     dataDir,
     STANDALONE_SOURCE_ROOT,
@@ -71,6 +73,19 @@ export function createSpawnPreparer({
     wantsSessionScan,
   });
 
+  /** Watchdog inputs for one agent run: the agent definition's own
+   *  first-response deadline and the provider's first-response budget for the
+   *  routed model (headers, and first output), handed to
+   *  resolveAgentWatchdogPolicy. A provider on the shared window names none. */
+  function agentWatchdogOverrides({ agent, provider, model }) {
+    const budget = getProvider(provider)?.firstResponseBudget?.(model);
+    return {
+      firstResponseTimeoutMs: readAgentFirstResponseTimeoutMs(agent, dataDir, STANDALONE_SOURCE_ROOT) ?? undefined,
+      providerFirstByteTimeoutMs: budget?.transportMs,
+      providerFirstOutputTimeoutMs: budget?.semanticMs,
+    };
+  }
+
   /** Shared post-create wiring. Lead sessions write a gateway-session route on
    *  create; agent sessions are built through prepareAgentSession()/the remote
    *  runtime, so mirror that registration here or the vendored L1/L2
@@ -79,16 +94,17 @@ export function createSpawnPreparer({
     const { agent, presetName, preset, tag } = plan;
     writeAgentStatuslineRoute(session.id, preset);
     bindTag(tag, session, { ...presetDescriptor(agent, preset, presetName), status: 'idle', stage: 'idle' });
-    cancelReap(session.id);
   }
 
   async function createSpawnedSession(plan, spec, prepState) {
     // A sub-100 context share needs the window it selects; a percent alone
-    // keeps the full served window.
+    // keeps the full served window. A model whose window is not known yet
+    // resolves to nothing: the agent's own choice then travels as stored (the
+    // session sizes it from the provider's window) instead of being dropped
+    // for the model's default.
     const sessionSpec = { ...spec };
     if (plan.preset.contextPercent || plan.preset.contextTokens) {
-      const { contextPercent, selectedContextWindow, contextTokens } = resolveRouteContextState(plan.preset, null);
-      Object.assign(sessionSpec, { contextPercent, selectedContextWindow }, contextTokens ? { contextTokens } : {});
+      Object.assign(sessionSpec, contextSelectionFromState(resolveRouteContextState(plan.preset, null), plan.preset));
     }
     if (sessionSurface?.canonical === true && typeof sessionSurface.createChild === 'function') {
       return sessionSurface.createChild({ spec: sessionSpec, prompt: plan.prompt, tag: plan.tag });
@@ -127,7 +143,10 @@ export function createSpawnPreparer({
       presetName: plan.presetName,
       workerCwd: effectiveCwd || plan.workerCwd,
       prompt: plan.prompt,
-      watchdogPolicy: resolveAgentWatchdogPolicy(plan.agent),
+      watchdogPolicy: resolveAgentWatchdogPolicy(
+        plan.agent,
+        agentWatchdogOverrides({ agent: plan.agent, provider: plan.preset.provider, model: plan.preset.model })
+      ),
     };
   }
 
@@ -136,5 +155,5 @@ export function createSpawnPreparer({
     return prepareSpawnInProcess(args, callerCwd, context, prepState);
   }
 
-  return { prepareSpawn, prepareSpawnInProcess, createSpawnedSession };
+  return { prepareSpawn, prepareSpawnInProcess, createSpawnedSession, agentWatchdogOverrides };
 }

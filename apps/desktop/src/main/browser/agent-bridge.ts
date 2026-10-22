@@ -18,6 +18,7 @@ export function createBrowserAgentBridge(options: {
   execute: (command: BrowserCommand, signal: AbortSignal) => Promise<unknown>;
   /** Close a finished turn's temporary pages; returns how many closed. */
   finishTurn: (sessionId: string, turnId: number, options: { aborted: boolean }) => number;
+  secretInput: (sessionId: string, requestId: string, signal: AbortSignal) => Promise<{ text: string }>;
   visibleGuests: () => WebContents[];
   lifecycle: {
     attachDebuggerEagerly(guest: WebContents): void;
@@ -32,7 +33,7 @@ export function createBrowserAgentBridge(options: {
   const server = new BrowserBridgeServer<BrowserCommand>({
     dataDirectory: bridgeDiscoveryDirectory,
     execute: (command, signal) => {
-      const { session_id, turn_id, internalStep, ...input } = command;
+      const { session_id, turn_id, internalStep, unattended_run, unattended_agent, ...input } = command;
       if (internalStep !== undefined) throw new Error('internalStep is not a bridge input');
       // Runtime-only lifecycle message: deliberately absent from tool schemas.
       if (command.action === 'finish_turn') {
@@ -44,9 +45,25 @@ export function createBrowserAgentBridge(options: {
           text: `Browser task cleanup complete: ${options.finishTurn(owner, Number(turn_id), { aborted })} temporary page(s) closed.`,
         }));
       }
+      // Runtime-only: fill the secret the user handed this desktop for the
+      // request (secret-input.ts); the reply is 'provided' or 'skipped' only.
+      if (command.action === 'secret_input') {
+        const requestId = String((input as Record<string, unknown>).request_id || '');
+        return options.secretInput(browserSessionId(session_id), requestId, signal);
+      }
       const validated = validateBrowserToolArgs(input);
       if (!validated.ok) throw new Error(validated.error);
-      return options.execute({ ...validated.input, action: validated.action, session_id, turn_id }, signal);
+      return options.execute(
+        {
+          ...validated.input,
+          action: validated.action,
+          session_id,
+          turn_id,
+          // Runtime-set (client.mjs), outside the tool schema: a schedule/webhook run.
+          ...(unattended_run === true ? { unattended_run: true, unattended_agent } : {}),
+        },
+        signal
+      );
     },
     redactError: redactBrowserText,
     onReady: () => {

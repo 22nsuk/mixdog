@@ -2,6 +2,8 @@
 // message-array change detect, tool-kind classification, skills, hook overrides,
 // native tool-search payload parsing, bash-session routing, and approval.
 import { isMcpTool } from '../../mcp/client.mjs';
+import { unattendedApprovalPort } from '../human-gate/gate.mjs';
+import { isGrantedRun, runAskOutcome } from '../human-gate/run-policy.mjs';
 import { isBuiltinTool } from '../../tools/builtin.mjs';
 import { isInternalTool } from '../../internal-tools.mjs';
 import { loadSkillToolDependencies } from '../../runtime-core/skill-tool-loading.mjs';
@@ -207,15 +209,25 @@ export async function resolvePreToolAskApproval({
   toolCallId,
   askReason,
   toolApprovalHook,
+  request = null,
 }) {
   const name = String(toolName || 'tool');
   const reason = String(askReason || 'approval requested by hook').trim();
-  if (typeof toolApprovalHook !== 'function') {
+  // A schedule or webhook run never asks: saving it was the user's grant
+  // (human-gate/run-policy.mjs). A room member is held for its owner when no
+  // approval UI is attached (session-runtime/held-requests.mjs).
+  const unattended = unattendedApprovalPort();
+  const run = unattended?.runOf?.(sessionId) || null;
+  if (isGrantedRun(run)) return runAskOutcome({ name, request });
+  const held = run && typeof toolApprovalHook !== 'function';
+  const ask = held ? unattended.hold : toolApprovalHook;
+  if (typeof ask !== 'function') {
     return { denial: formatMissingToolApprovalUiDenial(name, reason) };
   }
   let approval;
   try {
-    approval = await toolApprovalHook({
+    approval = await ask({
+      ...(request || {}),
       name,
       args,
       cwd,
@@ -228,8 +240,12 @@ export async function resolvePreToolAskApproval({
     return { denial: `Error: tool "${name}" denied by hook: ${detail}` };
   }
   if (!approvalGranted(approval)) {
-    const detail = approvalReason(approval, reason || 'not approved');
-    return { denial: `Error: tool "${name}" denied by hook: ${detail}` };
+    // A person (or the hold for one) said no: never a policy hook to work around.
+    const detail = String(approvalReason(approval, reason || 'not approved')).replace(/[.\s]+$/, '');
+    return {
+      denial: `Error: tool "${name}" was not approved: ${detail}. Do not retry it or reach the same result another way; report it.`,
+      approval,
+    };
   }
   return { approval };
 }

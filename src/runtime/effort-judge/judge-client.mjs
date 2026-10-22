@@ -1,18 +1,25 @@
-// Effort-judge client. The judge loads on the first turn that uses it (a model
-// with Auto effort support) and then stays resident until the feature is
-// turned off or a model update replaces its files, so users who never send
-// such a turn never hold it in memory. A turn waits for a still-loading judge
+// Effort-judge client. The judge loads when a session that uses it (a model
+// with Auto effort support) is created or opened, or on the first judged turn,
+// and then stays resident until the feature is turned off or a model update
+// replaces its files, so users who never open such a session never hold it in
+// memory. A turn waits for a still-loading judge
 // only briefly; when the model is missing, still loading, slow, or failing,
 // `judgeTurn` returns a `skipped` reason and the turn keeps its default
 // effort. Decisions are logged locally (lengths and probabilities only, never
 // the request text).
 import { Worker } from 'node:worker_threads';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolvePluginData } from '../shared/plugin-paths.mjs';
 import { onnxRuntimeSupported } from '../shared/onnx-runtime-support.mjs';
-import { effortJudgeInstallCurrent, effortJudgeInstallStamped, installEffortJudgeModel } from './model-install.mjs';
+import { fileHasData } from '../shared/file-has-data.mjs';
+import {
+  effortJudgeInstallCurrent,
+  effortJudgeInstallStamped,
+  installEffortJudgeModel,
+  invalidateDamagedEffortJudgeInstall,
+} from './model-install.mjs';
 
 export const EFFORT_JUDGE_UNSUPPORTED = 'Auto effort is unsupported on darwin-x64 (no onnxruntime-node binding)';
 const WORKER_PATH = fileURLToPath(new URL('./judge-worker.mjs', import.meta.url));
@@ -85,7 +92,9 @@ export function effortJudgeModelDir() {
 // it is. Unstamped leftovers (hand-copied packs) never load.
 export function effortJudgeAvailable(dir = effortJudgeModelDir()) {
   if (!onnxRuntimeSupported()) return false;
-  if (!MODEL_FILES.every((file) => existsSync(join(dir, file)))) return false;
+  // A model file a crash left empty or NUL-filled is not installed: the refresh
+  // then re-verifies the folder against the manifest hashes and fetches it again.
+  if (!MODEL_FILES.every((file) => fileHasData(join(dir, file)))) return false;
   return Boolean(process.env.MIXDOG_EFFORT_JUDGE_DIR) || effortJudgeInstallStamped(dir);
 }
 
@@ -135,6 +144,7 @@ function ensureWorker(dir) {
       lastLoadError = msg.message;
       lastLoadErrorAt = Date.now();
       notifyReady(false);
+      void repairAfterLoadError(dir);
     } else if (msg.type === 'result') {
       settle(msg.id, (entry) => entry.resolve(msg.probs));
     } else if (msg.type === 'error') {
@@ -200,6 +210,49 @@ function request(target, { request: text, prev, prevRequest, step }) {
 // One install at a time (the settings install and the boot refresh can overlap).
 let installing = null;
 let refreshChecked = false;
+let verifying = false;
+
+/** Why the judge last failed to load; '' when it loaded or never failed. */
+export function effortJudgeLastError() {
+  return lastLoadError;
+}
+
+// Runs `task` as the one install: the slot stays taken until it settles, so
+// installs, refreshes and repairs never overlap.
+function occupyInstall(task) {
+  const run = task().finally(() => {
+    if (installing === run) installing = null;
+  });
+  installing = run;
+  return run;
+}
+
+// A model that fails to load may be damaged on disk (a crash can leave a
+// stamped file with a zeroed tail). Re-verify the hashes once per load error,
+// off the turn's path: a mismatch drops the stamp and re-downloads only the bad
+// files; matching hashes keep the plain LOAD_RETRY_MS back-off. Verifying and
+// invalidating hold the install slot, after any install in flight has settled,
+// so the stamp they remove is never one an installer just wrote.
+async function repairAfterLoadError(dir) {
+  if (verifying || process.env.MIXDOG_EFFORT_JUDGE_DIR || !onnxRuntimeSupported()) return;
+  verifying = true;
+  try {
+    while (installing) await installing.catch(() => {});
+    await occupyInstall(async () => {
+      const bad = await invalidateDamagedEffortJudgeInstall(dir);
+      if (!bad.length) return;
+      process.stderr.write(`[effort-judge] reinstalling damaged model files: ${bad.join(', ')}\n`);
+      await runInstall();
+      // The files are replaced: the next turn loads them without the back-off.
+      lastLoadErrorAt = 0;
+      lastLoadError = '';
+    });
+  } catch (error) {
+    process.stderr.write(`[effort-judge] model repair failed: ${error?.message || error}\n`);
+  } finally {
+    verifying = false;
+  }
+}
 
 /**
  * Installs or updates the judge model from the release the bundled manifest
@@ -209,19 +262,17 @@ let refreshChecked = false;
  */
 export function installEffortJudge() {
   if (!onnxRuntimeSupported()) return Promise.reject(new Error(EFFORT_JUDGE_UNSUPPORTED));
-  installing ??= (async () => {
-    const dir = effortJudgeModelDir();
-    if (process.env.MIXDOG_EFFORT_JUDGE_DIR || (effortJudgeAvailable(dir) && effortJudgeInstallCurrent(dir))) {
-      if (!effortJudgeAvailable(dir))
-        throw new Error(`The Auto reasoning model is not installed (expected in ${dir}).`);
-      return;
-    }
-    await installEffortJudgeModel(dir);
-    if (worker) await shutdownEffortJudge();
-  })().finally(() => {
-    installing = null;
-  });
-  return installing;
+  return installing ?? occupyInstall(runInstall);
+}
+
+async function runInstall() {
+  const dir = effortJudgeModelDir();
+  if (process.env.MIXDOG_EFFORT_JUDGE_DIR || (effortJudgeAvailable(dir) && effortJudgeInstallCurrent(dir))) {
+    if (!effortJudgeAvailable(dir)) throw new Error(`The Auto reasoning model is not installed (expected in ${dir}).`);
+    return;
+  }
+  await installEffortJudgeModel(dir);
+  if (worker) await shutdownEffortJudge();
 }
 
 /**
@@ -237,6 +288,22 @@ export function refreshEffortJudge() {
   });
 }
 
+/**
+ * Starts the judge worker ahead of the first judged turn so its cold load
+ * (about 2.3 s) is over by then. Fire-and-forget: it spawns nothing when the
+ * platform is unsupported, the model is missing or being installed, or a
+ * failed load is still inside LOAD_RETRY_MS. Returns whether a worker is
+ * running or loading.
+ */
+export function prewarmEffortJudge() {
+  if (!onnxRuntimeSupported() || installing) return false;
+  const dir = effortJudgeModelDir();
+  if (!effortJudgeAvailable(dir)) return false;
+  if (!worker && lastLoadError && Date.now() - lastLoadErrorAt < LOAD_RETRY_MS) return false;
+  ensureWorker(dir);
+  return true;
+}
+
 export function effortJudgeReady() {
   return ready;
 }
@@ -250,7 +317,7 @@ export function effortJudgeInfo(dir = effortJudgeModelDir()) {
     /* not installed */
   }
   // The installed model names its backbone in calibration.json; older packs predate the field.
-  let backbone = 'mmBERT-small';
+  let backbone = 'EmbeddingGemma 2 (18 layers)';
   try {
     backbone = JSON.parse(readFileSync(join(dir, 'calibration.json'), 'utf8')).backbone || backbone;
   } catch {

@@ -90,9 +90,19 @@ export function inlineModelProxyAttachments(messages, { maxBytes = MODEL_PROXY_I
   return out ?? messages;
 }
 
+/** A first-response budget the PC reported, or null for anything malformed. */
+function reportedBudget(value) {
+  const transportMs = Number(value?.transportMs);
+  const semanticMs = Number(value?.semanticMs);
+  return transportMs > 0 && semanticMs > 0 && Number.isFinite(transportMs) && Number.isFinite(semanticMs)
+    ? { transportMs, semanticMs }
+    : null;
+}
+
 export class ModelProxyProvider {
   #channel;
   #modelInfo = new Map();
+  #noWireRoute = new Set();
 
   constructor(name, config = {}, channel = getModelProxyChannel()) {
     this.name = name;
@@ -100,6 +110,8 @@ export class ModelProxyProvider {
     this.#channel = channel;
     // Adapter traits are reported by the PC's real instance.
     if (typeof this.config.modelProxy?.nativePdf === 'boolean') this.nativePdf = this.config.modelProxy.nativePdf;
+    if (this.config.modelProxy?.consumesReadWindows === true) this.consumesReadWindows = true;
+    if (this.config.modelProxy?.takesImages === false) this.takesImages = false;
   }
 
   #call(method, fields = {}, options = {}) {
@@ -109,18 +121,32 @@ export class ModelProxyProvider {
   async send(messages, model, tools, sendOpts) {
     const { options, callbacks } = splitModelProxySendOptions(sendOpts);
     const finalized = isFinalizedProviderRequestTools(tools);
-    return this.#call(
-      'send',
-      {
-        model: model ?? null,
-        messages: inlineModelProxyAttachments(messages),
-        tools: Array.isArray(tools) ? tools : null,
-        toolsFinalized: finalized,
-        nativePrefixCount: finalized ? providerNativeToolPrefixCount(tools) : 0,
-        options,
-      },
-      { signal: sendOpts?.signal || null, callbacks }
-    );
+    const fields = {
+      model: model ?? null,
+      messages: inlineModelProxyAttachments(messages),
+      tools: Array.isArray(tools) ? tools : null,
+      toolsFinalized: finalized,
+      nativePrefixCount: finalized ? providerNativeToolPrefixCount(tools) : 0,
+      options,
+    };
+    const signal = sendOpts?.signal || null;
+    const result = await this.#call('send', fields, { signal, callbacks });
+    // The PC rerouted the wire (a clear "unsupported" refusal) and reports the
+    // route it used: the daemon's own session adopts it, so the next proxied
+    // turn starts on the new wire instead of repeating the refusal.
+    const rerouted = result?.wireReroute;
+    const session = sendOpts?.session;
+    if (
+      rerouted?.source === 'reroute' &&
+      session?.wireRoute &&
+      session.wireRoute.provider === this.name &&
+      session.wireRoute.model === (model ?? null) &&
+      rerouted.provider === this.name &&
+      rerouted.model === session.wireRoute.model
+    ) {
+      session.wireRoute = rerouted;
+    }
+    return result;
   }
 
   #adoptCatalog(catalog) {
@@ -144,6 +170,31 @@ export class ModelProxyProvider {
 
   getCachedModelInfo(model) {
     return this.#modelInfo.get(String(model ?? '')) ?? null;
+  }
+
+  /** The PC adapter's first-response budget for `model`: the catalog's
+   *  model-specific figure, else the adapter's own from its provider config;
+   *  null keeps the agent watchdog default. */
+  firstResponseBudget(model) {
+    return (
+      reportedBudget(this.getCachedModelInfo(model)?.firstResponseBudget) ??
+      reportedBudget(this.config.modelProxy?.firstResponseBudget)
+    );
+  }
+
+  /** The PC adapter's wire route for `model` (its config and roster decide);
+   *  null for a single-wire adapter, which is remembered so every later turn
+   *  skips the round trip. */
+  async resolveWireRoute(model, ctx = {}) {
+    const key = String(model ?? '');
+    if (this.#noWireRoute.has(key)) return null;
+    const route = await this.#call('resolveWireRoute', {
+      model: model ?? null,
+      context: { agent: ctx.agent === true, legacy: ctx.legacy === true },
+    });
+    if (route && typeof route === 'object') return route;
+    this.#noWireRoute.add(key);
+    return null;
   }
 }
 
@@ -190,10 +241,12 @@ export function loadModelProxyProviderConfig({
   channel = getModelProxyChannel(),
   now = Date.now,
   waitMs = MODEL_PROXY_CONFIG_WAIT_MS,
+  force = false,
 } = {}) {
   const generation = channel.generation;
   const cached = _providerConfigCache;
   if (
+    !force &&
     cached &&
     cached.channel === channel &&
     cached.generation === generation &&
@@ -202,7 +255,16 @@ export function loadModelProxyProviderConfig({
     return Promise.resolve(cached.value);
   }
   const inFlight = _providerConfigInFlight;
-  if (inFlight && inFlight.channel === channel && inFlight.generation === generation) return inFlight.promise;
+  // A forced read starts after the caller's change, never reuses an older
+  // snapshot. Short setup reads also cannot inherit a registry init's budget.
+  if (
+    !force &&
+    inFlight &&
+    inFlight.channel === channel &&
+    inFlight.generation === generation &&
+    inFlight.waitMs === waitMs
+  )
+    return inFlight.promise;
   const promise = (async () => {
     const deadline = Date.now() + waitMs;
     let delay = CONFIG_RETRY_FIRST_MS;
@@ -215,12 +277,27 @@ export function loadModelProxyProviderConfig({
         }
       }
       try {
-        const reply = await channel.request({ provider: '', method: 'providerConfig' });
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new ModelProxyUnavailableError('the desktop provider request timed out');
+        const controller = new AbortController();
+        const timer = setTimeout(
+          () => controller.abort(new ModelProxyUnavailableError('the desktop provider request timed out')),
+          remaining
+        );
+        timer.unref?.();
+        let reply;
+        try {
+          reply = await channel.request({ provider: '', method: 'providerConfig' }, { signal: controller.signal });
+        } finally {
+          clearTimeout(timer);
+        }
         const raw = reply?.providers && typeof reply.providers === 'object' ? reply.providers : {};
         // Defense in depth: the PC already strips secrets before sending.
         const value = stripModelProxySecrets(raw);
         if (providerConfigReady(reply, value)) {
-          if (channel.generation === generation) {
+          // An older read may finish after a forced refresh; only the newest
+          // request may publish to the shared cache.
+          if (channel.generation === generation && _providerConfigInFlight === entry) {
             _providerConfigCache = { at: now(), value, channel, generation };
           }
           return value;
@@ -236,7 +313,7 @@ export function loadModelProxyProviderConfig({
       delay = Math.min(delay * 2, CONFIG_RETRY_MAX_MS);
     }
   })();
-  const entry = { channel, generation, promise };
+  const entry = { channel, generation, waitMs, promise };
   _providerConfigInFlight = entry;
   const clear = () => {
     if (_providerConfigInFlight === entry) _providerConfigInFlight = null;

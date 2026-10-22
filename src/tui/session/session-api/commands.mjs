@@ -2,6 +2,7 @@
  * commands.mjs — the session object's long-running slash commands: memory
  * control, recall, doctor, and manual compaction (scheduled for turn end when
  * a turn is running). Each shows a command status while it holds the lock.
+ * /btw side questions (askSide/cancelSide) run beside them, lock-free.
  */
 import { compactEventDetail } from '../labels.mjs';
 import { archiveItemsForCompaction, compactionArchivedRows } from '../compaction-view.mjs';
@@ -92,16 +93,14 @@ export function createSessionCommandsApi(bag) {
     };
   };
 
-  // The compaction pass itself, under a lock its caller holds. `quiet` (the
-  // model switch's pre-compaction) asks the compactor to skip a pass that
-  // would not reduce anything and then adds no row for it.
-  async function runCompaction(startedAt, { quiet = false } = {}) {
+  // The explicit compaction pass, under a lock its caller holds.
+  async function runCompaction(startedAt) {
     // Give Ink one event-loop turn to paint the compacting spinner before
     // runtime.compact() starts synchronous session/transcript work (same
     // yield as the auto-clear path; without it /compact looks frozen with
     // no spinner until the compact already finished).
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const result = await runtime.compact({ recoverAgent: true, ...(quiet ? { requireReduction: true } : {}) });
+    const result = await runtime.compact({ recoverAgent: true });
     const compactChanged = Boolean(result && !result.error && result.changed !== false);
     syncContextStats({
       allowEstimated: true,
@@ -114,15 +113,11 @@ export function createSessionCommandsApi(bag) {
         archived: compactionArchivedRows(result),
       });
       set({ items: replaceItems(items, { preserveSpill: true }) });
-    } else if (!quiet || result?.error) {
+    } else {
       pushItem(compactDoneItem(result, startedAt));
     }
     return result;
   }
-
-  // An in-place model switch compacts first on the current model (routes.mjs
-  // holds the command lock and shows the compacting status meanwhile).
-  bag.compactBeforeModelSwitch = () => runCompaction(Date.now(), { quiet: true });
 
   async function compactCommand() {
     if (getState().commandBusy) return null;
@@ -175,5 +170,14 @@ export function createSessionCommandsApi(bag) {
       });
     },
     compact: compactCommand,
+    // /btw: answered from the conversation so far while a turn keeps running.
+    // No command lock and no transcript row: the answer is only returned.
+    askSide: (question) => runtime.askSide(question),
+    // `sessionId` names the session the side question was asked in (it may
+    // no longer be the current one after a switch); omitted, the current one.
+    cancelSide: (sessionId) => {
+      if (typeof sessionId === 'string' && sessionId) runtime.cancelSide(sessionId);
+      else runtime.cancelSide();
+    },
   };
 }

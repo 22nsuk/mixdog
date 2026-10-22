@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { DesktopWorkspace, DesktopWorkspaceFolder } from '../shared/contract';
@@ -6,6 +6,8 @@ import type { DesktopEditorSettings } from '../shared/contract';
 import { editorLanguageIdForPath } from '../shared/editor-languages';
 import { DEFAULT_DESKTOP_EDITOR_SETTINGS } from '../shared/editor-settings';
 import { applyEdits, modify } from 'jsonc-parser';
+import { holdsNoData } from '../../../../src/runtime/shared/atomic-file.mjs';
+import { writeUserFile } from './user-file-write';
 import { objectRecord, parseJsonc, readJsoncFile } from './workflow-config';
 
 const MAX_WORKSPACE_FOLDERS = 64;
@@ -65,19 +67,20 @@ export async function readWorkspaceFile(workspaceFile: string): Promise<DesktopW
   return parseWorkspaceFile(await readFile(file, 'utf8'), file);
 }
 
-export async function writeWorkspaceFile(
-  workspaceFile: string,
-  folders: readonly DesktopWorkspaceFolder[]
-): Promise<DesktopWorkspace> {
-  let file = resolve(workspaceFile);
-  if (!file.toLocaleLowerCase().endsWith('.code-workspace')) file += '.code-workspace';
+/** The `.code-workspace` path a save names (the extension added when absent). */
+export function workspaceFilePath(workspaceFile: string): string {
+  const file = resolve(workspaceFile);
+  return file.toLocaleLowerCase().endsWith('.code-workspace') ? file : `${file}.code-workspace`;
+}
+
+/** The saved text of workspace `file` listing `folders`, keeping the other
+ *  keys of its `existing` configuration, and the workspace it describes. */
+export function workspaceFileText(
+  file: string,
+  folders: readonly DesktopWorkspaceFolder[],
+  existing: Record<string, unknown>
+): { text: string; workspace: DesktopWorkspace } {
   const normalized = uniqueFolders(folders);
-  let existing: Record<string, unknown> = {};
-  try {
-    existing = (await readJsoncFile(file)) ?? {};
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
-  }
   const base = dirname(file);
   const serializedFolders = normalized.map((folder) => {
     const rel = relative(base, folder.path);
@@ -87,25 +90,32 @@ export async function writeWorkspaceFile(
       ...(folder.name ? { name: folder.name } : {}),
     };
   });
-  await mkdir(base, { recursive: true });
-  await writeFile(
-    file,
-    `${JSON.stringify(
-      {
-        ...existing,
-        folders: serializedFolders,
-      },
-      null,
-      2
-    )}\n`,
-    'utf8'
-  );
   return {
-    kind: 'workspace',
-    name: workspaceName(file),
-    workspaceFile: file,
-    folders: normalized,
+    text: `${JSON.stringify({ ...existing, folders: serializedFolders }, null, 2)}\n`,
+    workspace: { kind: 'workspace', name: workspaceName(file), workspaceFile: file, folders: normalized },
   };
+}
+
+/** A workspace file's existing configuration (`{}` for none) from its text. */
+export function workspaceConfiguration(text: string | null): Record<string, unknown> {
+  return text === null || holdsNoData(text) ? {} : (objectRecord(parseJsonc(text)) ?? {});
+}
+
+export async function writeWorkspaceFile(
+  workspaceFile: string,
+  folders: readonly DesktopWorkspaceFolder[]
+): Promise<DesktopWorkspace> {
+  const file = workspaceFilePath(workspaceFile);
+  let existing: Record<string, unknown> = {};
+  try {
+    existing = (await readJsoncFile(file)) ?? {};
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+  }
+  const { text, workspace } = workspaceFileText(file, folders, existing);
+  await mkdir(dirname(file), { recursive: true });
+  await writeUserFile(file, text);
+  return workspace;
 }
 
 function languageSettings(source: Record<string, unknown>, languageId: string): Record<string, unknown> {
@@ -289,7 +299,8 @@ async function writeMarkdownDefaultViewNow(
     const original = await readSettingsText(file);
     await hooks?.afterRead?.();
     const formatting = detectFormatting(original);
-    const source = original.trim() ? original : '{}';
+    // An empty or NUL-filled settings file means no settings yet.
+    const source = holdsNoData(original) ? '{}' : original;
     let parsed: unknown;
     try {
       parsed = parseJsonc(source);
@@ -298,16 +309,11 @@ async function writeMarkdownDefaultViewNow(
     }
     if (!objectRecord(parsed)) throw new TypeError('User settings must be an object.');
     const edits = modify(source, [MARKDOWN_DEFAULT_VIEW_KEY], next, { formattingOptions: formatting });
-    const temp = `${file}.${process.pid}.${Date.now()}.${attempt}.tmp`;
-    try {
-      await writeFile(temp, applyEdits(source, edits), 'utf8');
-      // Re-check the target right before replacing it; if it changed, redo on fresh text.
-      if ((await readSettingsText(file)) !== original) continue;
-      await rename(temp, file);
-      return;
-    } finally {
-      await rm(temp, { force: true });
-    }
+    const updated = applyEdits(source, edits);
+    // Re-check the target right before replacing it; if it changed, redo on fresh text.
+    if ((await readSettingsText(file)) !== original) continue;
+    await writeUserFile(file, updated);
+    return;
   }
   throw new Error('User settings kept changing during write; giving up without overwriting.');
 }
@@ -321,4 +327,21 @@ export async function readScopedEditorSettings(
   const workspace = workspaceFile ? (objectRecord((await optionalJsonc(resolve(workspaceFile))).settings) ?? {}) : {};
   const folder = await optionalJsonc(join(resolve(folderPath), '.vscode', 'settings.json'));
   return editorSettingsFromScopes([user, workspace, folder], editorLanguageIdForPath(relPath));
+}
+
+/** readScopedEditorSettings for a caller that read the workspace and folder
+ *  settings files itself (a paired device's request, through authorized
+ *  handles): their text, or null when there is none. */
+export async function scopedEditorSettingsFromText(
+  userDataPath: string,
+  relPath: string,
+  workspaceText: string | null,
+  folderText: string | null
+): Promise<DesktopEditorSettings> {
+  const user = userDataPath ? await optionalJsonc(join(userDataPath, 'User', 'settings.json')) : {};
+  const workspace = objectRecord(workspaceConfiguration(workspaceText).settings) ?? {};
+  return editorSettingsFromScopes(
+    [user, workspace, workspaceConfiguration(folderText)],
+    editorLanguageIdForPath(relPath)
+  );
 }

@@ -1,18 +1,14 @@
 // sweep/sweep-record.mjs
 // What the stale-session sweep reads per record and the bounds it decides
-// with: the fingerprint-cached lifecycle record, the linked-agent retention
-// rule, and the idle / retention / blank-scratch thresholds.
+// with: the fingerprint-cached lifecycle record and the
+// idle / retention / blank-scratch thresholds.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { writeJsonAtomicSync } from '../../../../../shared/atomic-file.mjs';
+import { holdsNoData, writeJsonAtomicSync } from '../../../../../shared/atomic-file.mjs';
 import { getPluginData } from '../../../config.mjs';
-import { isAgentOwner } from '../../../agent-owner.mjs';
 import { readTopLevelLifecycleRecord, isLifecycleUnreadable } from '../../lifecycle-scan.mjs';
-import { sessionPath } from '../paths-heartbeat.mjs';
-import { probePath, PROBE_ABSENT } from '../fs-probe.mjs';
 
 export const DEFAULT_SESSION_TTL_MS = 5 * 60 * 1000; // 5 minutes idle — aligned with Anthropic 5m messages tier and OpenAI in-memory cache window
-export const AGENT_TERMINAL_STATUSES = new Set(['idle', 'done', 'error']);
 // Hard wall-clock ceiling for sessions stuck in status='running'. The
 // stream-watchdog should abort stalled streams within ~120s, but if it misses
 // one (process crash, watchdog not started, provider never returned), this
@@ -52,7 +48,7 @@ export const BLANK_SCRATCH_MAX_AGE_MS = 60 * 60 * 1000; // 1h
 // running is still parsed again.
 const sweepRecordCache = new Map();
 const SWEEP_RECORD_CACHE_FILE = 'session-sweep-records.json';
-const SWEEP_RECORD_CACHE_VERSION = 1;
+const SWEEP_RECORD_CACHE_VERSION = 3;
 let sweepRecordCacheDataDir = null;
 let sweepRecordCacheDirty = false;
 let sweepRecordParses = 0;
@@ -86,11 +82,13 @@ function syncSweepRecordCache() {
 }
 
 // The only document fields sweep-row reads (effectiveFields, the closed
-// check and retainedLinkedAgent). Caching the whole top-level document kept
+// check, the sub-agent retention verdict). Caching the whole top-level document kept
 // every session's tool catalogs, schemas and provider state alive — one
 // entry per session file, measured at ~290MB of a 470MB daemon heap.
 const SWEEP_DOC_FIELDS = [
   'id',
+  'closed',
+  'closedReason',
   'owner',
   'status',
   'provider',
@@ -99,6 +97,11 @@ const SWEEP_DOC_FIELDS = [
   'createdAt',
   'ownerSessionId',
   'parentSessionId',
+  'lastUsedAt',
+  'agent',
+  'visibility',
+  'sessionVisibility',
+  'taskOrigin',
 ];
 
 function conversationCountOf(doc) {
@@ -110,8 +113,12 @@ function conversationCountOf(doc) {
   return count;
 }
 
-/** `null` when the file could not be read; otherwise the lifecycle record
- * (possibly LIFECYCLE_SCAN_CONFLICT, which is never cached). */
+/** The file holds no data (empty or NUL-filled by a crash); never cached. */
+export const SWEEP_RECORD_NO_DATA = Symbol('sweep-record-no-data');
+
+/** `null` when the file could not be read; SWEEP_RECORD_NO_DATA for a file
+ * without data; otherwise the lifecycle record (possibly
+ * LIFECYCLE_SCAN_CONFLICT, which is never cached). */
 export function readSweepRecord(id, jsonPath, probe) {
   syncSweepRecordCache();
   const cached = sweepRecordCache.get(id);
@@ -123,6 +130,7 @@ export function readSweepRecord(id, jsonPath, probe) {
   } catch {
     return null;
   }
+  if (holdsNoData(raw)) return SWEEP_RECORD_NO_DATA;
   sweepRecordParses++;
   const full = readTopLevelLifecycleRecord(raw);
   if (isLifecycleUnreadable(full)) return full;
@@ -171,14 +179,4 @@ export function persistSweepRecordCache() {
 export function sweepRecordCacheStats() {
   syncSweepRecordCache();
   return { entries: sweepRecordCache.size, parses: sweepRecordParses };
-}
-
-/** Child-agent transcripts share their visible parent's retention boundary.
- * Presence (including a tombstone or unreadable file) preserves the child;
- * only proven parent absence releases it to ordinary cleanup. */
-export function retainedLinkedAgent(session) {
-  if (!session || !isAgentOwner(session)) return false;
-  const parentId = String(session.ownerSessionId || session.parentSessionId || '').trim();
-  if (!/^[A-Za-z0-9_-]+$/.test(parentId) || parentId === session.id) return false;
-  return probePath(sessionPath(parentId)).state !== PROBE_ABSENT;
 }

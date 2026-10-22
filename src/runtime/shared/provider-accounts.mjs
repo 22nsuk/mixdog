@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseJsonText, updateJsonAtomic } from './atomic-file.mjs';
+import { readJsonStateSync, unsupportedState, updateJsonAtomic } from './atomic-file.mjs';
 import { resolvePluginData } from './plugin-paths.mjs';
 
 export const ACCOUNT_PROVIDERS = Object.freeze([
@@ -13,6 +12,7 @@ export const ACCOUNT_PROVIDERS = Object.freeze([
   'mimo-oauth',
   'cursor-oauth',
   'antigravity-oauth',
+  'opencode-go-oauth',
 ]);
 const MAX_ACCOUNTS = 20;
 // `dataDir` defaults to this process's data dir; an isolated runtime passes
@@ -33,12 +33,19 @@ function requireAccountId(id) {
 
 function validate(raw) {
   if (raw == null) return { version: 1, providers: {} };
+  // A newer build's roster is left in place: reads see no accounts and writes
+  // refuse, so a downgrade never discards it.
+  if (Number.isSafeInteger(raw.version) && raw.version > 1) {
+    throw unsupportedState(`Provider account settings version ${raw.version} is newer than this build.`);
+  }
   if (raw.version !== 1 || !raw.providers || typeof raw.providers !== 'object') {
     throw new Error('Provider account settings are unreadable.');
   }
   for (const [provider, pool] of Object.entries(raw.providers)) {
-    requireAccountProvider(provider);
-    if (!Array.isArray(pool.accounts) || pool.accounts.length > MAX_ACCOUNTS) {
+    // A provider a newer build added is carried as is: this build never reads
+    // or writes its pool, and treating it as damage would discard it.
+    if (!ACCOUNT_PROVIDERS.includes(provider)) continue;
+    if (!Array.isArray(pool?.accounts) || pool.accounts.length > MAX_ACCOUNTS) {
       throw new Error('Invalid provider account list.');
     }
     const ids = pool.accounts.map((row) => requireAccountId(row.id));
@@ -47,13 +54,11 @@ function validate(raw) {
   return raw;
 }
 
+// Every OAuth provider's init reads the roster, so a damaged one (crash
+// leftovers, truncation, a shape this build rejects) must never throw: it is
+// kept aside and the last good copy, which every write keeps, is restored.
 function read(dataDir) {
-  try {
-    return validate(parseJsonText(readFileSync(file(dataDir), 'utf8')));
-  } catch (error) {
-    if (error.code === 'ENOENT') return validate(null);
-    throw error;
-  }
+  return readJsonStateSync(file(dataDir), { validate, fallback: validate(null), secret: true });
 }
 
 // Labels an earlier build assigned automatically. They read as a different
@@ -79,7 +84,7 @@ function normalizeLabels(pool) {
 // only; `limit` keeps the selected account until it reaches a limit and then
 // moves to the account with the most headroom; `headroom` starts every new
 // session on the account with the most headroom and keeps it for that session.
-export const ACCOUNT_POLICIES = Object.freeze(['manual', 'limit', 'headroom']);
+const ACCOUNT_POLICIES = Object.freeze(['manual', 'limit', 'headroom']);
 
 // `auto` predates `policy` and is still written beside it, so a build that
 // knows only `auto` reads the same switching on/off. Whenever the two
@@ -105,7 +110,8 @@ export function readProviderAccountPool(provider, dataDir = resolvePluginData())
 
 async function update(provider, mutate) {
   requireAccountProvider(provider);
-  // Read failures must not be interpreted as an empty account roster.
+  // A roster that parses yet fails validation is recovered here first; the
+  // mutator's validate would otherwise refuse every write. I/O failures throw.
   read();
   const result = await updateJsonAtomic(
     file(),
@@ -116,7 +122,7 @@ async function update(provider, mutate) {
       state.providers[provider] = pool;
       return validate(state);
     },
-    { mode: 0o600, secret: true, fsyncDir: true }
+    { mode: 0o600, secret: true, fsyncDir: true, backup: true }
   );
   return normalizePool(result.providers[provider]);
 }

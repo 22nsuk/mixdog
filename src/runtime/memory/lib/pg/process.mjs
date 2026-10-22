@@ -5,8 +5,11 @@ import { sleep as delay } from '../../../shared/sleep.mjs';
 //
 // Public API:
 //   startPg({ runtimeDir, pgdataDir, port?, logPath? }) → { pid, port }
-//   stopPg({ runtimeDir, pgdataDir })                   → void
+//   stopPg({ runtimeDir, pgdataDir, timeoutMs? })       → void
 //   healthcheckPg({ port, host? })                      → boolean
+//
+// Every child on the start/stop path (initdb, pg_ctl start/reload/status/stop)
+// runs async; only stopPgSync — a process 'exit' hook — may block.
 
 import {
   existsSync,
@@ -23,7 +26,9 @@ import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { createConnection, createServer } from 'node:net';
+import { holdsNoData, writeFileAtomicSync } from '../../../shared/atomic-file.mjs';
 import { isPidAlive } from '../../../shared/pid-liveness.mjs';
+import { runChild } from './run-child.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -176,9 +181,12 @@ function stripPlatformInvalidLines(conf) {
 function ensureConfV2(pgdataDir) {
   const confPath = join(pgdataDir, 'postgresql.conf');
   if (!existsSync(confPath)) return false;
-  const original = readFileSync(confPath, 'utf8');
+  // A conf a crash left empty or NUL-filled cannot be parsed by PostgreSQL; the
+  // defaults plus the overrides appended below are a working config.
+  const text = readFileSync(confPath, 'utf8');
+  const original = holdsNoData(text) ? '' : text;
   let conf = stripPlatformInvalidLines(original);
-  let changed = conf !== original;
+  let changed = conf !== text;
   if (!conf.includes(MIXDOG_CONF_V2_MARKER)) {
     conf += buildV2Block();
     changed = true;
@@ -192,7 +200,7 @@ function ensureConfV2(pgdataDir) {
     changed = true;
   }
   if (!changed) return false;
-  writeFileSync(confPath, conf);
+  writeFileAtomicSync(confPath, conf, { backup: true });
   return true;
 }
 
@@ -201,14 +209,12 @@ function ensureConfV2(pgdataDir) {
 // callers route through this rather than re-implementing the conf/reload pair.
 // Reload-compatible settings apply immediately; postmaster settings such as
 // max_connections apply on the next normal PG start (never restart live work).
-export function reconcileConfV2(runtimeDir, pgdataDir) {
+export async function reconcileConfV2(runtimeDir, pgdataDir) {
   const applied = ensureConfV2(pgdataDir);
   if (!applied) return { applied: false, reloaded: false };
-  const reload = spawnSync(pgBin(runtimeDir, 'pg_ctl'), ['reload', '-D', pgdataDir], {
+  const reload = await runChild(pgBin(runtimeDir, 'pg_ctl'), ['reload', '-D', pgdataDir], {
     env: libEnv(runtimeDir),
-    stdio: 'pipe',
-    timeout: 5_000,
-    windowsHide: true,
+    timeoutMs: 5_000,
   });
   const reloaded = reload.status === 0;
   if (reloaded) {
@@ -238,7 +244,7 @@ async function attachExistingPostmaster({ runtimeDir, pgdataDir, existingWaitMs,
     __mixdogMemoryLog(`[pg-process] attaching to existing PG pid=${existing.pid} port=${existing.port}\n`);
     // Route through the single reconcile entry point so v1 → v2 conf
     // upgrades land on already-running instances without restart.
-    if (v2Applied) reconcileConfV2(runtimeDir, pgdataDir);
+    if (v2Applied) await reconcileConfV2(runtimeDir, pgdataDir);
     return { pid: existing.pid, port: existing.port, attached: true };
   }
   if (existing.state === 'alive-not-ready') {
@@ -259,6 +265,10 @@ async function attachExistingPostmaster({ runtimeDir, pgdataDir, existingWaitMs,
 // default_transaction_isolation: native PG default is read committed.
 // Native PG does not default to serializable; set isolation level explicitly
 // so behaviour is unambiguous across PG major versions.
+// Carries every versioned block ensureConfV2 checks for, so a fresh cluster
+// already holds what later boots expect: none of them rewrites the conf and
+// pg_ctl-reloads it (a postmaster-only setting such as shared_buffers cannot
+// change by reload, and every such reload logged an error).
 function freshClusterConfAppend() {
   return (
     [
@@ -279,7 +289,8 @@ function freshClusterConfAppend() {
     ].join('\n') +
     '\n' +
     buildV2Block() +
-    buildV3Block()
+    buildV3Block() +
+    buildV4Block()
   );
 }
 
@@ -290,14 +301,14 @@ function freshClusterConfAppend() {
  * user profile). Such a share dir is passed through an ASCII junction under
  * %ProgramData% that is removed afterwards.
  */
-export function withInitdbShareDir(runtimeDir, run) {
+export async function withInitdbShareDir(runtimeDir, run) {
   const shareDir = join(runtimeDir, 'share');
   if (process.platform !== 'win32' || /^[\x20-\x7e]*$/.test(shareDir)) return run(null);
   const linkRoot = mkdtempSync(join(process.env.ProgramData, 'mixdog-initdb-'));
   const link = join(linkRoot, 'share');
   try {
     symlinkSync(shareDir, link, 'junction');
-    return run(link);
+    return await run(link);
   } finally {
     // Cleanup must not replace initdb's own result or error. Both removals are
     // non-recursive, so the junction target (the runtime share) is never touched.
@@ -312,11 +323,11 @@ export function withInitdbShareDir(runtimeDir, run) {
 }
 
 /** initdb if pgdata is not yet initialised (no PG_VERSION file). */
-function initClusterIfNeeded({ runtimeDir, pgdataDir, env }) {
+async function initClusterIfNeeded({ runtimeDir, pgdataDir, env }) {
   if (existsSync(join(pgdataDir, 'PG_VERSION'))) return;
   __mixdogMemoryLog(`[pg-process] initdb → ${pgdataDir}\n`);
-  const r = withInitdbShareDir(runtimeDir, (shareDir) =>
-    spawnSync(
+  const r = await withInitdbShareDir(runtimeDir, (shareDir) =>
+    runChild(
       pgBin(runtimeDir, 'initdb'),
       [
         '-D',
@@ -329,7 +340,7 @@ function initClusterIfNeeded({ runtimeDir, pgdataDir, env }) {
         '-U',
         'postgres',
       ],
-      { env, stdio: 'pipe', windowsHide: true }
+      { env }
     )
   );
   if (r.status !== 0) {
@@ -343,7 +354,7 @@ function initClusterIfNeeded({ runtimeDir, pgdataDir, env }) {
   const confPath = join(pgdataDir, 'postgresql.conf');
   try {
     const existing = readFileSync(confPath, 'utf8');
-    writeFileSync(confPath, existing + freshClusterConfAppend());
+    writeFileAtomicSync(confPath, existing + freshClusterConfAppend());
   } catch (e) {
     __mixdogMemoryLog(`[pg-process] postgresql.conf append failed: ${e?.message}\n`);
   }
@@ -435,12 +446,7 @@ async function startAndWaitReady({ pgctl, startArgs, env, pgdataDir, port }) {
  */
 async function attachRaceWinner({ pgdataDir, pgctl, env, existingWaitMs }) {
   __mixdogMemoryLog(`[pg-process] pg_ctl start: "another server might be running" — probing status\n`);
-  const statusR = spawnSync(pgctl, ['status', '-D', pgdataDir], {
-    env,
-    stdio: 'pipe',
-    timeout: 3_000,
-    windowsHide: true,
-  });
+  const statusR = await runChild(pgctl, ['status', '-D', pgdataDir], { env, timeoutMs: 3_000 });
   __mixdogMemoryLog(
     `[pg-process] pg_ctl status: ${statusR.stdout?.toString() || statusR.stderr?.toString() || 'no output'}\n`
   );
@@ -480,7 +486,7 @@ export async function startPg({
   if (attached) return attached;
 
   const pgctl = pgBin(runtimeDir, 'pg_ctl');
-  initClusterIfNeeded({ runtimeDir, pgdataDir, env });
+  await initClusterIfNeeded({ runtimeDir, pgdataDir, env });
   // PostgreSQL requires a completely empty target on first init. Creating the
   // Spotlight marker before initdb makes every fresh macOS cluster fail with
   // "directory exists but is not empty"; add it only after initialization.
@@ -511,15 +517,18 @@ export async function startPg({
 // stopPg
 // ---------------------------------------------------------------------------
 
-export async function stopPg({ runtimeDir, pgdataDir }) {
+// Bounded graceful stop. `-m fast` rolls back open transactions and
+// disconnects clients; pg_ctl's own wait (-t, whole seconds) and the child
+// timeout share `timeoutMs`, so a wedged stop rejects instead of holding a
+// shutdown sequence open.
+export async function stopPg({ runtimeDir, pgdataDir, timeoutMs = 15_000 }) {
   const pgctl = pgBin(runtimeDir, 'pg_ctl');
   const env = libEnv(runtimeDir);
+  const waitSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
 
-  const r = spawnSync(pgctl, ['stop', '-m', 'fast', '-w', '-D', pgdataDir], {
+  const r = await runChild(pgctl, ['stop', '-m', 'fast', '-w', '-t', String(waitSeconds), '-D', pgdataDir], {
     env,
-    stdio: 'pipe',
-    timeout: 15_000,
-    windowsHide: true,
+    timeoutMs: waitSeconds * 1000 + 1_000,
   });
 
   if (r.status !== 0) {
@@ -662,13 +671,11 @@ async function listPostmasterRows() {
   }
   const stdout = await execFileText('ps', ['-eo', 'pid=,etimes=,args='], { timeout: 15_000 });
   if (stdout === null) return [];
-  return stdout
-    .split(/\r?\n/)
-    .flatMap((line) => {
-      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*postgres.*)$/);
-      if (!match) return [];
-      return [{ pid: Number(match[1]), uptimeSec: Number(match[2]), args: match[3] }];
-    });
+  return stdout.split(/\r?\n/).flatMap((line) => {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*postgres.*)$/);
+    if (!match) return [];
+    return [{ pid: Number(match[1]), uptimeSec: Number(match[2]), args: match[3] }];
+  });
 }
 
 const PRISTINE_ROOT_PREFIX = 'mixdog-headless-pristine-';

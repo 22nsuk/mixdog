@@ -10,12 +10,14 @@ import type {
   DesktopSubmitOptions,
   SessionSnapshot,
 } from '../shared/contract';
+import { hostRouteAutoEffort } from './auto-effort-store';
 import { type RouteSpeed, speedRouteFields } from './model-route-utils';
 import {
   resolveDesktopSlashCommand,
   type CommandSurface as CommandSurfaceName,
   type SettingsSection,
 } from './slash-commands';
+import { t } from './i18n';
 import { TURN_LOCKED_SLASH_COMMANDS, asRecord } from './text-format';
 
 type SlashExecutorDeps = {
@@ -45,6 +47,8 @@ type SlashExecutorDeps = {
   clearNotice: () => void;
   showNotice: (message: string) => void;
   openGoalDialog: () => void;
+  /** /btw opens the side-question card above the composer. */
+  onBtw: (sessionId: string, question: string) => void;
   /** /skills opens the composer's add menu, where a skill is picked for the next message. */
   openSkillMenu: () => void;
   onNewTask: () => void;
@@ -56,6 +60,9 @@ type SlashExecutorDeps = {
   onOpenCommandSurface: (surface: CommandSurfaceName) => void;
   /** /fork (alias /inherit) runs the carry in place, like the context card's button. */
   onInherit?: () => Promise<boolean>;
+  /** A command the session holds for the running turn's end (/compact):
+   *  it shows in the transcript until then. */
+  onSlashHeld?: (text: string) => void;
 };
 
 type SlashRun = { deps: SlashExecutorDeps; failed: boolean };
@@ -96,6 +103,7 @@ async function runSlashCommand(
   const { deps } = run;
   const name = command.name;
   if (rawName === 'new' || name === 'clear') return runNewOrClear(run, rawName);
+  if (name === 'btw') return runBtw(run, argument);
   if (name === 'goal') return runGoal(run, argument);
   if (name === 'fast') return runFast(run, argument);
   if (name === 'model' && argument) return runModel(run, argument);
@@ -103,7 +111,7 @@ async function runSlashCommand(
   if (name === 'project') deps.onOpenProjects();
   else if (name === 'resume' && argument) deps.onResumeSession(argument);
   else if (name === 'resume') deps.onOpenSessions();
-  else if (name === 'compact') await commandCapability(run, 'compact');
+  else if (name === 'compact') await runCompact(run, rawName);
   else if (name === 'doctor') deps.onOpenCommandSurface('doctor');
   else if (name === 'settings') deps.onOpenSettings();
   // Desktop /quit leaves THIS task, not the app (user): it rides the same
@@ -122,6 +130,13 @@ async function runSlashCommand(
   return undefined;
 }
 
+// /compact during a turn is scheduled by the session for the turn's end.
+async function runCompact(run: SlashRun, rawName: string) {
+  const busy = run.deps.turnBusy;
+  await commandCapability(run, 'compact');
+  if (busy && !run.failed) run.deps.onSlashHeld?.(`/${rawName}`);
+}
+
 // A draft pane only answers the read-only commands and the effort change
 // (which becomes the draft's model selection); everything else needs a
 // started task.
@@ -129,8 +144,13 @@ async function commandCapability<T>(run: SlashRun, capability: DesktopCapability
   const { deps } = run;
   if (deps.draftMode && capability === 'setEffort' && deps.onDraftModelSelection && deps.provider && deps.model) {
     const nextEffort = String(args[0] || deps.effort);
+    // An explicit level turns the route's Auto effort off (runtime setEffort).
     deps.onDraftModelSelection(
-      modelSelection(deps, { effort: nextEffort, ...(deps.fastCapable ? { fast: deps.fast } : {}) })
+      modelSelection(deps, {
+        effort: nextEffort,
+        ...(deps.fastCapable ? { fast: deps.fast } : {}),
+        ...(hostRouteAutoEffort() ? { autoEffort: false } : {}),
+      })
     );
     return nextEffort as T;
   }
@@ -149,7 +169,7 @@ async function commandCapability<T>(run: SlashRun, capability: DesktopCapability
 
 function modelSelection(
   deps: SlashExecutorDeps,
-  patch: { effort?: string; fast?: boolean; modelParameters?: Record<string, string> }
+  patch: { effort?: string; fast?: boolean; autoEffort?: boolean; modelParameters?: Record<string, string> }
 ): DesktopModelSelection {
   const { provider, model, effort } = deps;
   const { modelParameters = deps.modelParameters, ...rest } = patch;
@@ -157,8 +177,8 @@ function modelSelection(
     provider,
     model,
     effort,
-    ...rest,
     ...(typeof deps.autoEffort === 'boolean' ? { autoEffort: deps.autoEffort } : {}),
+    ...rest,
     ...(modelParameters && Object.keys(modelParameters).length ? { modelParameters } : {}),
   };
 }
@@ -172,6 +192,22 @@ async function runNewOrClear(run: SlashRun, rawName: string): Promise<undefined>
   else if (rawName === 'new') deps.onNewTask();
   else await commandCapability(run, 'clear');
   return undefined;
+}
+
+// A side question never queues or interrupts the turn: the card owns it, so
+// this works while the main agent runs. An empty question keeps the draft.
+function runBtw(run: SlashRun, argument: string): boolean {
+  const { deps } = run;
+  if (!argument) {
+    deps.setAttachmentError('Usage: /btw <question>');
+    return false;
+  }
+  if (deps.draftMode || !deps.sessionId) {
+    deps.setAttachmentError('Start the task with a message before running this command.');
+    return false;
+  }
+  deps.onBtw(deps.sessionId, argument);
+  return true;
 }
 
 async function runGoal(run: SlashRun, argument: string): Promise<boolean | undefined> {
@@ -211,9 +247,17 @@ async function runAutoClear(run: SlashRun, argument: string) {
     await commandCapability<unknown>(run, statusQuery ? 'getAutoClear' : 'setAutoClear', statusQuery ? [] : [patch])
   );
   if (run.failed) return;
-  run.deps.showNotice(
-    `Auto-clear ${status?.enabled ? 'on' : 'off'}${status?.idleMs ? ` · idle ${status.idleMs}ms` : ''}`
-  );
+  const enabled = Boolean(status?.enabled);
+  const label = String(status?.label ?? '');
+  run.deps.showNotice(autoClearNotice(Boolean(status?.unlimited), enabled, label));
+}
+
+function autoClearNotice(unlimited: boolean, enabled: boolean, label: string): string {
+  if (unlimited) return enabled ? t('Auto-clear on · unlimited') : t('Auto-clear off · unlimited');
+  if (label) {
+    return enabled ? t('Auto-clear on · idle {{label}}', { label }) : t('Auto-clear off · idle {{label}}', { label });
+  }
+  return enabled ? t('Auto-clear on') : t('Auto-clear off');
 }
 
 async function runOutputStyle(run: SlashRun, argument: string) {

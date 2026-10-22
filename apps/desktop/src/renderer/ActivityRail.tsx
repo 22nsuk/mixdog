@@ -2,9 +2,17 @@
 // on every surface (chat and code alike). It contains only destinations that
 // swap the adjacent panel; creation actions live in the Sessions panel header.
 // Usage and Settings live at the rail foot.
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import type React from 'react';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 
+import type { DesktopUpdaterState } from '../shared/contract';
+import {
+  RAIL_UPDATE_SLOT_HEIGHT,
+  RailUpdateSlot,
+  type RailUpdateSettingsTarget,
+  useRailUpdate,
+} from './RailUpdateSlot';
 import { DESKTOP_SIDEBAR_DEFAULT_WIDTH } from '../shared/window-layout';
 import { desktopFeatureEnabled } from './desktop-feature-config';
 import { t } from './i18n';
@@ -31,6 +39,9 @@ import type { WorkbenchSideViewDescriptor, WorkbenchSideViewId } from './workben
 // shared usage store. A loaded module renders directly: React.lazy suspended
 // every first mount even when the chunk was cached, and React's fallback
 // throttle then held an empty popup for 300ms+.
+/** One mouse-wheel notch in pixel units. */
+const WHEEL_NOTCH_PIXELS = 100;
+
 const prefetchSidebarUsage = () => void loadSidebarUsageModule().catch(() => undefined);
 
 function usagePinGlyph(rows: ReturnType<typeof useUsageRailPin>['usagePinRows'], loading: boolean) {
@@ -49,15 +60,25 @@ function usagePinGlyph(rows: ReturnType<typeof useUsageRailPin>['usagePinRows'],
               className={`rail-usage-pin-brand${tone}`}
               key={entry.key}
               data-usage-pin={entry.key}
+              aria-busy={entry.pending || undefined}
               data-tooltip={entry.tooltip}
             >
-              <ProviderIcon provider={entry.provider} />
+              {entry.accountIndex === undefined ? (
+                <ProviderIcon provider={entry.provider} />
+              ) : (
+                <span className="rail-usage-pin-mark">
+                  <ProviderIcon provider={entry.provider} />
+                  <sup className={entry.accountSelected ? 'is-selected' : undefined}>{entry.accountIndex}</sup>
+                </span>
+              )}
               {entry.bars.map((bar, index) => (
                 <i key={bar.label} className={entry.bars.length > 1 && index !== entry.hot ? 'is-cool' : undefined}>
                   <i style={{ width: `${displayUsagePercent(bar.percent) ?? 0}%` }} />
                 </i>
               ))}
-              <small>{percent}%</small>
+              <small>
+                <span className="rail-usage-pin-value">{entry.pending ? '–' : `${percent}%`}</span>
+              </small>
             </span>
           );
         })}
@@ -68,9 +89,13 @@ function usagePinGlyph(rows: ReturnType<typeof useUsageRailPin>['usagePinRows'],
   return <span className="codicon codicon-pie-chart" aria-hidden="true" />;
 }
 
-export function ActivityRail({
+// Memoised: the rail sits beside every App commit (a session switch is four)
+// and changes only with its destinations, the shown one and Settings.
+export const ActivityRail = memo(function ActivityRail({
   settingsOpen,
   onOpenSettings,
+  desktopUpdaterState,
+  onInstallDesktopUpdate,
   onOpenProviders,
   onOpenUsageStats,
   onPrefetchSettings,
@@ -81,7 +106,11 @@ export function ActivityRail({
 }: {
   /** The settings surface is open, so the rail-foot button reads selected. */
   settingsOpen: boolean;
-  onOpenSettings(): void;
+  /** A section opens Settings on it (the update slot's "see progress"). */
+  onOpenSettings(section?: RailUpdateSettingsTarget): void;
+  /** The desktop app's own updater, for the slot above Usage. */
+  desktopUpdaterState?: DesktopUpdaterState;
+  onInstallDesktopUpdate?(): void;
   onOpenProviders?(): void;
   /** Opens the token-usage statistics dialog from the usage flyout header. */
   onOpenUsageStats?(): void;
@@ -104,18 +133,61 @@ export function ActivityRail({
   const railRef = useRef<HTMLElement | null>(null);
   const navRef = useRef<HTMLElement | null>(null);
   const settingsRef = useRef<HTMLButtonElement | null>(null);
+  const railUpdate = useRailUpdate(desktopUpdaterState, onInstallDesktopUpdate, onOpenSettings);
   const {
     usagePinned,
     toggleUsagePin,
     railBars,
     setRailBars,
+    accountsExpanded,
+    setAccountsExpanded,
+    railSlots,
+    setRailSlots,
     usagePinRows,
+    usagePinScroll,
     loading: usagePinLoading,
   } = useUsageRailPin(
     usageSnapshot,
     { rail: railRef, nav: navRef, settings: settingsRef },
-    desktopFeatureEnabled('usage')
+    desktopFeatureEnabled('usage'),
+    railUpdate ? RAIL_UPDATE_SLOT_HEIGHT : 0,
+    usageApi ?? window.mixdogDesktop
   );
+  // The wheel moves the stack one slot per discrete notch; a smooth (trackpad)
+  // stream of small pixel deltas accumulates to a notch before it steps.
+  // Horizontal or zero vertical deltas never step.
+  const wheelPixels = useRef(0);
+  const stepOnWheel = (event: React.WheelEvent) => {
+    if (!usagePinScroll.hasPrev && !usagePinScroll.hasNext) return;
+    if (event.deltaY === 0 || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    const direction = event.deltaY > 0 ? 1 : -1;
+    // Line and page deltas are always whole notches.
+    if (event.deltaMode !== 0) {
+      usagePinScroll.step(direction);
+      return;
+    }
+    if (Math.sign(wheelPixels.current) !== direction) wheelPixels.current = 0;
+    wheelPixels.current += event.deltaY;
+    if (Math.abs(wheelPixels.current) < WHEEL_NOTCH_PIXELS) return;
+    wheelPixels.current = 0;
+    usagePinScroll.step(direction);
+  };
+  // A step control leaves when its end is reached; focus held on it moves to
+  // the opposite control (which that very step just made available) so
+  // keyboard stepping does not drop to the page.
+  const focusedStep = useRef<1 | -1 | null>(null);
+  const stepFromControl = (direction: 1 | -1, event: React.MouseEvent<HTMLButtonElement>) => {
+    focusedStep.current = document.activeElement === event.currentTarget ? direction : null;
+    usagePinScroll.step(direction);
+  };
+  useLayoutEffect(() => {
+    const direction = focusedStep.current;
+    if (direction === null) return;
+    focusedStep.current = null;
+    const rail = railRef.current;
+    if (rail?.querySelector(`[data-rail-step="${direction}"]`)) return;
+    rail?.querySelector<HTMLButtonElement>(`[data-rail-step="${-direction}"]`)?.focus();
+  });
   // Anchor the flyout's bottom edge to the Usage button itself, measured at
   // open time (static offsets drifted a few px from the real rail layout).
   const [usageAnchorBottom, setUsageAnchorBottom] = useState(48);
@@ -123,7 +195,10 @@ export function ActivityRail({
   const usageClickGuard = useImmediateOverlayClickGuard();
   const rememberUsageAnchor = (element: HTMLButtonElement) => {
     const bounds = element.getBoundingClientRect();
-    preparedUsageAnchor.current = Math.max(8, Math.round(window.innerHeight - bounds.bottom));
+    preparedUsageAnchor.current = Math.max(
+      8,
+      Math.round((window.visualViewport?.height ?? window.innerHeight) - bounds.bottom)
+    );
   };
   const [fetchedUsageModule, setFetchedUsageModule] = useState(loadedSidebarUsageModule);
   const usageModule = fetchedUsageModule ?? loadedSidebarUsageModule();
@@ -170,7 +245,12 @@ export function ActivityRail({
     }
     const dismiss = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('.rail-usage-popup, .sidebar-usage-toggle, [data-provider-account-overlay], [data-usage-menu-overlay]')) return;
+      if (
+        target?.closest(
+          '.rail-usage-popup, .sidebar-usage-toggle, [data-provider-account-overlay], [data-usage-menu-overlay]'
+        )
+      )
+        return;
       setUsageOpen(false);
     };
     const keydown = (event: KeyboardEvent) => {
@@ -197,9 +277,23 @@ export function ActivityRail({
         <ActivityRailNavigation entries={navigationItems} activeId={activeNavigationId} onSelect={onSelectNavigation} />
       </nav>
       <div className="activity-rail-spacer" />
+      {desktopFeatureEnabled('usage') && usagePinScroll.hasPrev && (
+        <div className="rail-usage-pin-step-row">
+          <button
+            type="button"
+            className="rail-usage-pin-step"
+            aria-label={t('Show earlier slots')}
+            data-rail-step="-1"
+            onClick={(event) => stepFromControl(-1, event)}
+          >
+            <ChevronUp size={8} strokeWidth={4.5} aria-hidden="true" />
+          </button>
+        </div>
+      )}
       {desktopFeatureEnabled('usage') && (
         <button
           type="button"
+          onWheel={stepOnWheel}
           className={`sidebar-usage-toggle ${usageOpen ? 'is-active' : ''}${usagePinRows.length ? ' is-pinned' : ''}`}
           aria-label={t('Usage')}
           aria-expanded={usageOpen}
@@ -231,6 +325,21 @@ export function ActivityRail({
           {usagePinGlyph(usagePinRows, usagePinLoading)}
         </button>
       )}
+      {desktopFeatureEnabled('usage') && usagePinScroll.hasNext && (
+        <div className="rail-usage-pin-step-row">
+          <button
+            type="button"
+            className="rail-usage-pin-step"
+            aria-label={t('Show more slots')}
+            data-rail-step="1"
+            onClick={(event) => stepFromControl(1, event)}
+          >
+            <ChevronDown size={8} strokeWidth={4.5} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {/* Directly above Settings, under the Usage block (user: 설정 버튼 위). */}
+      <RailUpdateSlot update={railUpdate} />
       {desktopFeatureEnabled('settings') && (
         <button
           type="button"
@@ -244,7 +353,7 @@ export function ActivityRail({
           onPointerDown={(event) => {
             if (event.button === 0) onPrefetchSettings?.();
           }}
-          onClick={onOpenSettings}
+          onClick={() => onOpenSettings()}
         >
           <span className="codicon codicon-settings-gear" aria-hidden="true" />
         </button>
@@ -279,6 +388,10 @@ export function ActivityRail({
               onTogglePin={toggleUsagePin}
               railBars={railBars}
               onRailBarsChange={setRailBars}
+              accountsExpanded={accountsExpanded}
+              onAccountsExpandedChange={setAccountsExpanded}
+              railSlots={railSlots}
+              onRailSlotsChange={setRailSlots}
             />
           ) : (
             <InitialSurface />
@@ -287,4 +400,4 @@ export function ActivityRail({
       )}
     </aside>
   );
-}
+});

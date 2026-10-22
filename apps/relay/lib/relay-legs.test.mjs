@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
-import { runClientLeg, runDesktopLeg } from './relay-legs.mjs';
+import { DESKTOP_HANDSHAKE_STALLED_CLOSE, runClientLeg, runDesktopLeg } from './relay-legs.mjs';
 import { newUplinkLeg } from './relay-transport.mjs';
 
 function fakeSocket() {
@@ -65,6 +65,160 @@ test('runDesktopLeg publishes capabilities and replays live phone ids', () => {
   assert.equal(sent[1].type, 'client-open');
   assert.equal(sent[1].clientId, 'live-client');
   assert.equal(sent[1].browserClientId, 'browser-1');
+});
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A desktop leg wired the way server.mjs wires it, over fake sockets. */
+function desktopLeg(entry, socket, options = {}) {
+  socket.uplinkLeg = newUplinkLeg(64 * 1024);
+  socket.ping = () => {
+    socket.pings = (socket.pings || 0) + 1;
+  };
+  runDesktopLeg(
+    {
+      store: {},
+      sendJson: (target, payload) => target.send(JSON.stringify(payload)),
+      attachDesktop: () => {
+        entry.socket = socket;
+        return entry;
+      },
+      liveDesktops: new Map([['dev', entry]]),
+      claims: new Map(),
+      maxFrameBytes: 1024,
+      handshakeStallMs: 30,
+      livenessProbeMs: 30,
+      ...options,
+    },
+    'dev',
+    socket
+  );
+}
+
+const sentTypes = (socket) => socket.sent.map((raw) => JSON.parse(raw).type);
+
+test('a phone the PC rejected never holds the PC to a handshake turn, even if it withholds its close', async () => {
+  const desktop = fakeSocket();
+  const entry = { socket: desktop, clients: new Map(), media: new Map(), mediaLane: false };
+  desktopLeg(entry, desktop);
+  const phone = fakeSocket();
+  // A phone that never acknowledges the relay's close: no 'close' event, so
+  // it stays in the client map, CLOSING.
+  phone.close = (code, reason) => {
+    phone.closed = { code, reason };
+    phone.readyState = 2;
+  };
+  runClientLeg(entry, (target, payload) => target.send(JSON.stringify(payload)), phone, 'browser-1', {
+    maxFrameBytes: 1024,
+  });
+  const clientId = JSON.parse(desktop.sent.find((raw) => JSON.parse(raw).type === 'client-open')).clientId;
+  desktop.emit('message', Buffer.from(JSON.stringify({ type: 'close-client', clientId, reason: 'limit' })), false);
+  assert.equal(phone.closed.code, 4004);
+  await sleep(150);
+  assert.equal(desktop.closed, null, 'the PC answered the phone with a rejection; its leg stays up');
+  assert.equal(desktop.pings || 0, 0, 'no liveness probe for a turn that was answered');
+
+  // A replacement leg is not told about the closing phone, and owes it nothing.
+  const replacement = fakeSocket();
+  desktopLeg(entry, replacement);
+  assert.ok(!sentTypes(replacement).includes('client-open'), 'a closing phone is never replayed');
+  await sleep(150);
+  assert.equal(replacement.closed, null);
+});
+
+test('a missed handshake turn closes the PC leg only when the leg is also silent through a probe', async () => {
+  const sendJson = (target, payload) => target.send(JSON.stringify(payload));
+  // Live PC: busy with other traffic while one phone's challenge is late.
+  {
+    const desktop = fakeSocket();
+    const entry = { socket: desktop, clients: new Map(), media: new Map(), mediaLane: false };
+    desktopLeg(entry, desktop);
+    runClientLeg(entry, sendJson, fakeSocket(), 'browser-1', { maxFrameBytes: 1024 });
+    const chatter = setInterval(() => {
+      desktop.emit('message', Buffer.from(JSON.stringify({ type: 'desktop-name', name: 'PC' })), false);
+    }, 5);
+    await sleep(150);
+    clearInterval(chatter);
+    assert.equal(desktop.closed, null, 'a slow handshake on a responsive PC never costs the shared leg');
+  }
+  // Quiet but alive PC: it answers the probe.
+  {
+    const desktop = fakeSocket();
+    const entry = { socket: desktop, clients: new Map(), media: new Map(), mediaLane: false };
+    desktopLeg(entry, desktop);
+    desktop.ping = () => {
+      desktop.pings = (desktop.pings || 0) + 1;
+      setTimeout(() => desktop.emit('pong'), 5);
+    };
+    runClientLeg(entry, sendJson, fakeSocket(), 'browser-1', { maxFrameBytes: 1024 });
+    await sleep(150);
+    assert.equal(desktop.pings, 1, 'the silent leg is probed once');
+    assert.equal(desktop.closed, null, 'a leg that answers its probe stays up');
+  }
+  // Dead PC: silent through the turn and the probe.
+  {
+    const desktop = fakeSocket();
+    const entry = { socket: desktop, clients: new Map(), media: new Map(), mediaLane: false };
+    desktopLeg(entry, desktop);
+    runClientLeg(entry, sendJson, fakeSocket(), 'browser-1', { maxFrameBytes: 1024 });
+    await sleep(150);
+    assert.equal(desktop.pings, 1);
+    assert.equal(desktop.closed?.code, DESKTOP_HANDSHAKE_STALLED_CLOSE);
+  }
+});
+
+test('parked phones are told once when the PC leg closes, then once a second per phone while calls go nowhere', (t) => {
+  const sendJson = (target, payload) => target.send(JSON.stringify(payload));
+  const desktop = fakeSocket();
+  const entry = { socket: desktop, clients: new Map(), media: new Map(), mediaLane: false };
+  desktopLeg(entry, desktop);
+  const first = fakeSocket();
+  const second = fakeSocket();
+  runClientLeg(entry, sendJson, first, 'browser-1', { maxFrameBytes: 1024 });
+  runClientLeg(entry, sendJson, second, 'browser-2', { maxFrameBytes: 1024 });
+  const notice = JSON.stringify({ resync: 'desktop-gone' });
+
+  // A live PC: calls are carried and nobody is told anything.
+  first.emit('message', Buffer.from('{"call":1}'), false);
+  assert.deepEqual(first.sent, []);
+
+  // The PC leg closes: every parked phone hears it, in the cleartext resync shape.
+  desktop.readyState = 3;
+  desktop.emit('close', 1006, '');
+  assert.deepEqual(first.sent, [notice]);
+  assert.deepEqual(second.sent, [notice]);
+
+  // Calls into the gap are told again, but never more than once a second.
+  let now = Date.now() + 5_000;
+  t.mock.method(Date, 'now', () => now);
+  first.emit('message', Buffer.from('{"call":2}'), false);
+  first.emit('message', Buffer.from('{"call":3}'), false);
+  first.emit('message', Buffer.from([1, 2, 3]), true);
+  assert.deepEqual(first.sent, [notice, notice]);
+  assert.deepEqual(second.sent, [notice], 'a quiet phone is not told again');
+  now += 1_000;
+  first.emit('message', Buffer.from('{"call":4}'), false);
+  assert.deepEqual(first.sent, [notice, notice, notice]);
+
+  // Pings are still answered by the relay and are not calls.
+  now += 5_000;
+  first.emit('message', Buffer.from('{"ping":1}'), false);
+  assert.equal(first.sent.at(-1), '{"pong":1}');
+  assert.equal(first.sent.length, 4);
+});
+
+test('a superseded PC leg closing does not tell phones the PC is gone', () => {
+  const sendJson = (target, payload) => target.send(JSON.stringify(payload));
+  const old = fakeSocket();
+  const entry = { socket: old, clients: new Map(), media: new Map(), mediaLane: false };
+  desktopLeg(entry, old);
+  const phone = fakeSocket();
+  runClientLeg(entry, sendJson, phone, 'browser-1', { maxFrameBytes: 1024 });
+  const replacement = fakeSocket();
+  desktopLeg(entry, replacement);
+  old.readyState = 3;
+  old.emit('close', 1006, '');
+  assert.deepEqual(phone.sent, []);
 });
 
 test('client-open omits the credential when the leg has none (older desktops)', () => {

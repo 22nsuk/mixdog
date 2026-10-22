@@ -3,6 +3,8 @@
 // context cost of any one tool call is bounded and consistent. Override with
 // MIXDOG_TOOL_OUTPUT_MAX_BYTES. Line-based sub-caps (e.g. bash max lines) stay
 // per-tool; this governs only the byte budget.
+import { capMarker } from './tool-output-marker.mjs';
+export { capMarker, formatCapSize, windowMarker } from './tool-output-marker.mjs';
 // A positive integer from an env var, or `fallback` when unset or invalid.
 export function positiveEnvInt(name, fallback) {
   const v = parseInt(process.env[name], 10);
@@ -22,6 +24,10 @@ export const RECALL_OUTPUT_MAX_BYTES = positiveEnvInt('MIXDOG_RECALL_OUTPUT_MAX_
 // github results after field reduction; the full response stays in a raw
 // artifact. Provisional: reduced pr.list/run.list pages measured ~2k tokens.
 export const GITHUB_OUTPUT_MAX_BYTES = positiveEnvInt('MIXDOG_GITHUB_OUTPUT_MAX_BYTES', 10 * 1024);
+// setup results are compact JSON (a provider index, a 25-row model page, minimal
+// status rows). The same figure is the setup inline-offload threshold, so one
+// result can no longer sit just under the 50KB default (a 34-model catalog did).
+export const SETUP_OUTPUT_MAX_BYTES = positiveEnvInt('MIXDOG_SETUP_OUTPUT_MAX_BYTES', 20 * 1024);
 
 function _prefixByBytes(value, maxBytes) {
   const text = String(value || '');
@@ -49,7 +55,7 @@ export function capLineOrientedToolOutput(result, maxBytes, footerForPrefix) {
   while (lo <= hi) {
     const mid = Math.floor((lo + hi) / 2);
     const kept = lines.slice(0, mid);
-    const footer = String(footerForPrefix?.(kept, lines) || '... [output budget reached; remainder omitted]');
+    const footer = String(footerForPrefix?.(kept, lines) || capMarker({ limit: cap }));
     const candidate = `${kept.join('\n')}${kept.length ? '\n' : ''}${footer}`;
     if (Buffer.byteLength(candidate, 'utf8') <= cap) {
       best = candidate;
@@ -59,5 +65,5 @@ export function capLineOrientedToolOutput(result, maxBytes, footerForPrefix) {
     }
   }
   if (best) return best;
-  return _prefixByBytes(String(footerForPrefix?.([], lines) || '... [output budget reached; remainder omitted]'), cap);
+  return _prefixByBytes(String(footerForPrefix?.([], lines) || capMarker({ limit: cap })), cap);
 }

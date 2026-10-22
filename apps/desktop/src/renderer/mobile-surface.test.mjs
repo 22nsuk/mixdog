@@ -13,6 +13,26 @@ import {
 import { resolveUnreadViewedSessionId } from './app-unread-sessions.ts';
 
 const bootSource = readFileSync(new URL('./public/boot.js', import.meta.url), 'utf8');
+
+// Boot observers fire on the teardown mutations once the document is gone, so
+// every window disconnects the ones its boot script registered before closing.
+const bootObservers = new WeakMap();
+function evalBoot(dom) {
+  const observers = [];
+  const NativeObserver = dom.window.MutationObserver;
+  dom.window.MutationObserver = class extends NativeObserver {
+    constructor(callback) {
+      super(callback);
+      observers.push(this);
+    }
+  };
+  bootObservers.set(dom, observers);
+  dom.window.eval(bootSource);
+}
+function closeWindow(dom) {
+  for (const observer of bootObservers.get(dom) ?? []) observer.disconnect();
+  dom.window.close();
+}
 const mobileChromeSource = readFileSync(new URL('./desktop/07-mobile-chrome.css', import.meta.url), 'utf8');
 const sidebarUsageSource = readFileSync(new URL('./desktop/11-sidebar-usage.css', import.meta.url), 'utf8');
 const railPagesSource = readFileSync(new URL('./desktop/10-rail-pages.css', import.meta.url), 'utf8');
@@ -32,7 +52,14 @@ test('phone draft context keeps Project and its height while Workflow loads', ()
   try {
     const bar = dom.window.document.querySelector('.composer-context-bar');
     const before = dom.window.getComputedStyle(bar);
-    assert.equal(before.minHeight, '28px');
+    // jsdom keeps var() unresolved; the real-browser 48px (36px pill + 12px
+    // gap) is asserted in composer-island.test.mjs at the phone size.
+    assert.equal(before.minHeight, 'var(--island-rest-height)', 'the bar takes the island slot’s resting height');
+    assert.match(
+      composer,
+      /html\[data-mixdog-mobile-tabs\] \.composer-region \{\s*--island-pill-height: 36px;\s*\}/,
+      'the phone sets the pill height the slot and bar derive from'
+    );
     assert.notEqual(before.opacity, '0');
     assert.notEqual(before.pointerEvents, 'none');
     const workflow = dom.window.document.createElement('div');
@@ -40,7 +67,7 @@ test('phone draft context keeps Project and its height while Workflow loads', ()
     bar.append(workflow);
     assert.equal(dom.window.getComputedStyle(bar).minHeight, before.minHeight);
   } finally {
-    dom.window.close();
+    closeWindow(dom);
   }
 });
 
@@ -73,15 +100,15 @@ test('first-paint theme uses the same dark default and explicit System preferenc
         });
       }
       try {
-        dom.window.eval(bootSource);
+        evalBoot(dom);
         const root = dom.window.document.documentElement;
         const scenario = JSON.stringify({ preference, osLight, storageBlocked });
         assert.equal(root.dataset.mixdogTheme === 'light', light, scenario);
         assert.equal(root.style.colorScheme, light ? 'light' : 'dark', scenario);
       } finally {
         // Let boot observers finish before destroying their document.
-        await new Promise((resolve) => setImmediate(resolve));
-        dom.window.close();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        closeWindow(dom);
       }
     }
   }
@@ -123,7 +150,7 @@ test('the Goal tab shows its task drawer only while open and keeps task overflow
     <div class="session-goal-island" data-open="true">
       <button class="session-goal-trigger"></button>
       <div class="session-goal-drawer">
-        <section class="session-goal-panel"><div class="session-goal-body"><div class="session-goal-tasks"><ul><li></li><li></li></ul></div></div></section>
+        <section class="session-goal-panel"><div class="session-goal-body"><div class="session-goal-content"><div class="session-goal-tasks"><ul><li></li><li></li></ul></div></div></div></section>
       </div>
     </div>
     <div class="session-goal-island" data-open="false">
@@ -140,9 +167,10 @@ test('the Goal tab shows its task drawer only while open and keeps task overflow
   );
   assert.equal(style('[data-open="false"] .session-goal-drawer').display, 'none');
   assert.equal(style('.session-goal-body').overflow, 'hidden');
-  assert.equal(style('.session-goal-tasks ul').overflowY, 'auto');
-  assert.notEqual(style('.session-goal-tasks ul').scrollbarGutter, 'stable');
-  dom.window.close();
+  // Only the content scrolls; header and controls stay fixed.
+  assert.equal(style('.session-goal-content').overflowY, 'auto');
+  assert.notEqual(style('.session-goal-content').scrollbarGutter, 'stable');
+  closeWindow(dom);
 });
 
 test('the panel-nested dock view stays in normal flow', () => {
@@ -168,10 +196,10 @@ test('iOS boot preserves device-width and marks the phone before CSS paint', () 
     value: 5,
   });
   try {
-    dom.window.eval(bootSource);
+    evalBoot(dom);
     assertPhoneBoot(dom, { ios: true });
   } finally {
-    dom.window.close();
+    closeWindow(dom);
   }
 });
 
@@ -200,10 +228,10 @@ for (const [device, model] of [
       value: `Mozilla/5.0 (Linux; Android 15; ${model}) AppleWebKit/537.36 Chrome/131 Mobile`,
     });
     try {
-      dom.window.eval(bootSource);
+      evalBoot(dom);
       assertPhoneBoot(dom);
     } finally {
-      dom.window.close();
+      closeWindow(dom);
     }
   });
 }
@@ -241,7 +269,7 @@ test('installed phone boot promotes only its locale and preserves asset priority
     removeEventListener() {},
   });
   try {
-    dom.window.eval(bootSource);
+    evalBoot(dom);
     const promoted = [...dom.window.document.head.children].filter((node) => node.tagName === 'LINK');
     assert.deepEqual(
       promoted.map((link) => new URL(link.href).pathname),
@@ -250,7 +278,7 @@ test('installed phone boot promotes only its locale and preserves asset priority
     assert.equal(promoted[0].getAttribute('fetchpriority'), 'high');
   } finally {
     dom.window.mixdogRevealApp?.();
-    dom.window.close();
+    closeWindow(dom);
   }
 });
 
@@ -266,11 +294,11 @@ test('a directly connected browser tab gets the installed-app boot gate; a plain
     });
     if (marked) dom.window.localStorage.setItem('mixdog.directBrowser', '1');
     try {
-      dom.window.eval(bootSource);
+      evalBoot(dom);
       return dom.window.document.documentElement.hasAttribute('data-mixdog-booting');
     } finally {
       dom.window.mixdogRevealApp?.();
-      dom.window.close();
+      closeWindow(dom);
     }
   };
   assert.equal(gated(true), true);
@@ -295,7 +323,7 @@ test('only the Electron desktop promotes desktop-surface hints', () => {
       removeEventListener() {},
     });
     try {
-      dom.window.eval(bootSource);
+      evalBoot(dom);
       return [...dom.window.document.head.children]
         .filter((node) => node.tagName === 'LINK')
         .map((link) => ({
@@ -307,7 +335,7 @@ test('only the Electron desktop promotes desktop-surface hints', () => {
         }));
     } finally {
       dom.window.mixdogRevealApp?.();
-      dom.window.close();
+      closeWindow(dom);
     }
   };
   assert.deepEqual(headLinks('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/144 Electron/41.0.0'), [
@@ -351,7 +379,19 @@ test('phone finishing rules keep reading, touch and safe-area geometry aligned',
   );
   assert.match(
     mobileChromeSource,
-    /html\[data-mixdog-mobile-tabs\] \.jump-to-latest::before\s*\{[^}]*inset:\s*calc\(\(var\(--mx-touch-main\) - 28px\) \/ -2\);/su
+    /html\[data-mixdog-mobile-tabs\] \.jump-to-latest::before\s*\{[^}]*inset:\s*calc\(\(var\(--mx-touch-main\) - 36px\) \/ -2\);/su
+  );
+  assert.match(
+    mobileChromeSource,
+    /html\[data-mixdog-mobile-tabs\] \.jump-to-latest\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/su
+  );
+  assert.match(
+    mobileChromeSource,
+    /html\[data-mixdog-mobile-tabs\] \.jump-to-latest\s*\{[^}]*bottom:\s*var\(--island-stage-gap\);/su
+  );
+  assert.match(
+    markdownSource,
+    /\n\.jump-to-latest\s*\{[^}]*bottom:\s*var\(--island-stage-gap\);[^}]*width:\s*32px;[^}]*height:\s*32px;/su
   );
   assert.match(mobileChromeSource, /settings-confirm-dialog > footer button,[\s\S]*?min-height:\s*var\(--mx-touch\);/u);
   assert.match(
@@ -451,7 +491,7 @@ function bootDesktopLayout({ userAgent, platform, maxTouchPoints = 0, innerWidth
     removeEventListener() {},
   });
   try {
-    dom.window.eval(bootSource);
+    evalBoot(dom);
     const root = dom.window.document.documentElement;
     return {
       viewport: dom.window.document.querySelector('meta[name="viewport"]').getAttribute('content'),
@@ -462,7 +502,7 @@ function bootDesktopLayout({ userAgent, platform, maxTouchPoints = 0, innerWidth
     };
   } finally {
     dom.window.mixdogRevealApp?.();
-    dom.window.close();
+    closeWindow(dom);
   }
 }
 
@@ -680,7 +720,10 @@ test('desktop shell blocks zoom shortcuts and pinch without blocking normal scro
     actEnvironment: false,
   });
   const zoomCalls = [];
-  dom.window.mixdogDesktop = { setZoomFactor: async (factor) => zoomCalls.push(factor) };
+  dom.window.mixdogDesktop = {
+    bootContext: { bootId: 'boot-test' },
+    setZoomFactor: async (factor) => zoomCalls.push(factor),
+  };
   dom.window.localStorage.setItem('mixdog.web-zoom', '1.2');
   dom.window.document.documentElement.style.zoom = '1.2';
   try {
@@ -694,10 +737,12 @@ test('desktop shell blocks zoom shortcuts and pinch without blocking normal scro
         assert.equal(event.defaultPrevented, true, `${modifier} ${key}`);
       }
     }
+    // The main process pins the host window's zoom, so no blocking wheel
+    // listener holds every scroll on the main thread.
     for (const ctrlKey of [true, false]) {
       const event = new dom.window.WheelEvent('wheel', { ctrlKey, cancelable: true });
       dom.window.dispatchEvent(event);
-      assert.equal(event.defaultPrevented, ctrlKey);
+      assert.equal(event.defaultPrevented, false);
     }
     for (const name of ['gesturestart', 'gesturechange', 'gestureend']) {
       const event = new dom.window.Event(name, { cancelable: true });
@@ -734,9 +779,10 @@ async function blockingTouchListeners(userAgent, tag) {
   }
 }
 
-test('only iOS keeps a blocking document touch listener to stop pinch', async () => {
-  // Android honours user-scalable=no and the root touch-action; a blocking
-  // document listener there only delayed the start of every scroll.
+test('no phone keeps a blocking document touch listener', async () => {
+  // Pinch is refused by the viewport meta, the root touch-action and (iOS
+  // Safari) the gesture listeners; a blocking document touch listener only
+  // delayed the start of every scroll.
   assert.deepEqual(
     await blockingTouchListeners(
       'Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 Chrome/131 Mobile',
@@ -749,7 +795,7 @@ test('only iOS keeps a blocking document touch listener to stop pinch', async ()
       'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15',
       'ios-touch'
     ),
-    ['touchstart', 'touchmove']
+    []
   );
 });
 

@@ -37,8 +37,12 @@ export interface ManagedWorktreeEntry {
 
 /** The worktree manager's registry, the only authority on managed folders. */
 export interface MixdogWorktreesModule {
-  withWorktreeRecoveryStore?<T>(root: string, directory: string,
-    action: 'write' | 'restore' | 'inspect' | 'discard', run: () => Promise<T>): Promise<T>;
+  withWorktreeRecoveryStore?<T>(
+    root: string,
+    directory: string,
+    action: 'write' | 'restore' | 'inspect' | 'discard',
+    run: () => Promise<T>
+  ): Promise<T>;
   /** The registry entry whose folder is `path`, or null when none is. */
   getWorktreeByPath(path: string): ManagedWorktreeEntry | null | Promise<ManagedWorktreeEntry | null>;
   /** The registry entry whose folder is `path` or contains it (a subfolder
@@ -49,21 +53,32 @@ export interface MixdogWorktreesModule {
   registerRootReleaser?(name: string, releaser: (root: string) => unknown): () => void;
 }
 
+export interface StatuslineShellJobsStatus {
+  count?: number;
+  elapsedLabel?: string;
+  jobs?: DesktopShellJobRow[];
+  /** Per-session buckets (omitted by older runtimes). */
+  sessions?: Record<
+    string,
+    {
+      count?: number;
+      elapsedLabel?: string;
+      jobs?: DesktopShellJobRow[];
+      finished?: DesktopShellJobRow[];
+    }
+  >;
+  /** Held shells whose owner session closed: listed for every session that
+   *  sees their folder (shellJobVisibleFrom). */
+  orphaned?: DesktopShellJobRow[];
+}
+
 export interface StatuslineSegmentsModule {
-  shellJobsStatus(options?: { clientHostPid?: number; sessionId?: string }): {
-    count?: number;
-    elapsedLabel?: string;
-    jobs?: DesktopShellJobRow[];
-    /** Per-session buckets (omitted by older runtimes). */
-    sessions?: Record<
-      string,
-      {
-        count?: number;
-        elapsedLabel?: string;
-        jobs?: DesktopShellJobRow[];
-      }
-    >;
-  };
+  /** Same folder or same repository (omitted by older runtimes). */
+  shellJobVisibleFrom?(job: DesktopShellJobRow, sessionCwd: string): boolean;
+  /** Cache-only: answers from the previous scan and kicks the next one. */
+  shellJobsStatus(options?: { clientHostPid?: number; sessionId?: string }): StatuslineShellJobsStatus;
+  /** Awaited fresh scan (omitted by older runtimes, which fall back to the cache read). */
+  shellJobsStatusFresh?(options?: { clientHostPid?: number }): Promise<StatuslineShellJobsStatus>;
 }
 
 export interface MixdogSessionSearchModule {
@@ -82,7 +97,8 @@ export interface MixdogSessionStoreModule {
    *  catalog; returns the unsubscribe function. Optional: older runtimes. */
   subscribeStoredSessionCatalogChanges?(changed: () => void): () => void;
   storedAgentWorkerIndexPath?(): string;
-  listStoredAgentWorkers?(): DesktopAgentPoolRow[];
+  /** The daemon answers asynchronously (its store reads are awaited). */
+  listStoredAgentWorkers?(): DesktopAgentPoolRow[] | Promise<DesktopAgentPoolRow[]>;
 }
 
 /** Items a runtime restores on resume, and the page an old (non-paging)
@@ -94,6 +110,11 @@ export const DESKTOP_TRANSCRIPT_ITEM_LIMIT = 512;
  *  8 items (enforced by the daemon) when single rows are huge, and a viewport
  *  those rows do not fill loads older history on its own. */
 export const DESKTOP_TRANSCRIPT_TAIL_ITEMS = 32;
+/** First-open tail for a session only remote (relay) views show: a phone's
+ *  ~700px transcript paints about 12 rows plus overscan, so 20 items cover its
+ *  first screen and older rows page in as it scrolls up. Fewer bytes cross the
+ *  relay and fewer rows mount before the first paint. */
+export const REMOTE_TRANSCRIPT_TAIL_ITEMS = 20;
 export const DESKTOP_TRANSCRIPT_TAIL_BYTES = 1_000_000;
 /** Serialized bytes of the older rows one history page reveals (the page adds
  *  up to 64 items, the renderer's TRANSCRIPT_TAIL_PAGE_ITEMS); the daemon
@@ -166,6 +187,9 @@ export function normalizedProviderModels(value: unknown): DesktopModelOption[] {
         ...(family ? { family } : {}),
         ...(row.latest === true ? { latest: true } : {}),
         ...(description ? { description } : {}),
+        ...(typeof row.providerName === 'string' && row.providerName.trim()
+          ? { providerName: row.providerName.trim() }
+          : {}),
         ...(row.supportsVision === true ? { supportsVision: true } : {}),
         effortOptions,
         fastCapable,
@@ -176,9 +200,20 @@ export function normalizedProviderModels(value: unknown): DesktopModelOption[] {
         ...(Number.isFinite(savedContextPercent) && savedContextPercent >= 10 && savedContextPercent <= 100
           ? { savedContextPercent }
           : {}),
+        ...(typeof row.savedHidden === 'boolean' ? { savedHidden: row.savedHidden } : {}),
+        ...(row.favorite === true ? { favorite: true } : {}),
         // Marks a quick answer that already holds the full catalog (see
         // fetchProviderModels); absent everywhere else.
         ...(row.catalogComplete === true ? { catalogComplete: true as const } : {}),
+        // Rows of a partial answer (a provider failed or timed out): which
+        // providers are missing and when to ask again.
+        ...(row.catalogPartial === true
+          ? {
+              catalogPartial: true as const,
+              catalogMissing: Array.isArray(row.catalogMissing) ? row.catalogMissing.map(String) : [],
+              ...(Number.isFinite(Number(row.catalogRetryAt)) ? { catalogRetryAt: Number(row.catalogRetryAt) } : {}),
+            }
+          : {}),
         ...(typeof row.defaultEffort === 'string' && row.defaultEffort ? { defaultEffort: row.defaultEffort } : {}),
         ...(row.defaultFast === true ? { defaultFast: true } : {}),
         ...(row.autoEffortCapable === true ? { autoEffortCapable: true } : {}),

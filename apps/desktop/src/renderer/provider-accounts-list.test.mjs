@@ -7,8 +7,54 @@ import { ProviderAccountsList } from './ProviderAccountsList.tsx';
 import { OAuthControl, ProvidersPanel } from './settings/provider-panel.tsx';
 import { SidebarUsage, usagePinEntries } from './SidebarUsage.tsx';
 import { getUsageDashboardSnapshot, publishUsageDashboard } from './usage-dashboard-store.ts';
+import { filterConfiguredModels } from './model-catalog.tsx';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+test('SSH provider settings display PC availability without account or credential controls', async (t) => {
+  const render = harness(t);
+  const show = (setup) =>
+    render(
+      React.createElement(ProvidersPanel, {
+        api: {
+          invokeCapability() {
+            assert.fail('must not read the server account roster');
+          },
+        },
+        pending: '',
+        run: async () => {},
+        confirm: () => assert.fail('no remote credential mutations'),
+        data: { providerSetup: setup },
+      })
+    );
+  const setup = {
+    managedByClient: true,
+    oauth: [
+      { id: 'openai-oauth', name: 'OpenAI OAuth', authenticated: true, usable: true, status: 'Connected' },
+      { id: 'cursor-oauth', name: 'Cursor OAuth', authenticated: true, usable: true, status: 'Connected' },
+    ],
+    api: [{ id: 'openai', name: 'OpenAI API', authenticated: false, status: 'Not connected' }],
+  };
+  await show(setup);
+  const models = [
+    { provider: 'openai-oauth', model: 'gpt-test' },
+    { provider: 'cursor-oauth', model: 'auto' },
+    { provider: 'openai', model: 'gpt-test' },
+  ];
+  assert.deepEqual(filterConfiguredModels(models, setup), models.slice(0, 2));
+  assert.deepEqual(
+    [...document.querySelectorAll('.settings-status')].map((el) => el.textContent),
+    ['Connected', 'Connected', 'Not connected']
+  );
+  assert.match(document.querySelector('main').textContent, /Manage sign-ins and accounts in the local window/);
+  assert.equal(document.querySelector('button, input[type="password"], form, .provider-accounts-list'), null);
+  await show({ ...setup, oauth: [{ ...setup.oauth[0], authenticated: false, status: 'Not connected' }] });
+  assert.equal(document.querySelector('.settings-status').textContent, 'Not connected');
+  await show({ managedByClient: true, unavailable: true, oauth: [], api: [], local: [] });
+  assert.deepEqual(filterConfiguredModels(models, { managedByClient: true, oauth: [], api: [], local: [] }), []);
+  assert.match(document.querySelector('main').textContent, /Connect the desktop to view its providers/);
+  assert.equal(document.querySelector('.settings-status'), null);
+});
 
 function harness(t) {
   const { dom } = installTestDom(null, {
@@ -28,6 +74,34 @@ function harness(t) {
   });
   return async (element) => act(async () => root.render(element));
 }
+
+test('an account reserves its remembered usage rows and repaints its last meters while the read is pending', async (t) => {
+  const render = harness(t);
+  const windows = [
+    { label: '5H', usedPct: 10 },
+    { label: '7D', usedPct: 20 },
+    { label: '7D Opus', usedPct: 30 },
+  ];
+  let withUsage = true;
+  const api = {
+    async invokeCapability() {
+      return {
+        value: {
+          selectedId: 'a',
+          auto: true,
+          accounts: [{ id: 'reserve-a', label: 'a', authenticated: true, usage: withUsage ? { windows } : null }],
+        },
+      };
+    },
+  };
+  await render(React.createElement(ProviderAccountsList, { api, provider: 'reserve-oauth' }));
+  assert.equal(document.querySelectorAll('.provider-account-usage > span').length, 3);
+  withUsage = false;
+  await render(React.createElement(ProviderAccountsList, { api, provider: 'reserve-oauth-2' }));
+  const usage = document.querySelector('.provider-account-usage');
+  assert.equal(usage.style.getPropertyValue('--usage-rows'), '3');
+  assert.equal(usage.querySelectorAll(':scope > span').length, 3);
+});
 
 for (const listOnly of [true, false]) {
   test(`usage updates synchronize automatic account selection in ${listOnly ? 'popup' : 'settings'}`, async (t) => {
@@ -375,92 +449,6 @@ test('switching to an account without usage clears old meters and reset credits 
   );
 });
 
-test('settings isolate OpenCode Go between OAuth and API providers while preserving authentication actions', async (t) => {
-  const render = harness(t);
-  const originalFormData = globalThis.FormData;
-  globalThis.FormData = window.FormData;
-  t.after(() => {
-    globalThis.FormData = originalFormData;
-  });
-  const calls = [];
-  const opened = [];
-  const confirmations = [];
-  window.mixdogDesktop = {
-    async openExternal(url) {
-      opened.push(url);
-    },
-  };
-  const provider = { id: 'opencode-go', name: 'OpenCode Go API', url: 'https://opencode.ai', authenticated: false };
-  const props = {
-    api: {},
-    pending: '',
-    run: async (...args) => {
-      calls.push(args);
-    },
-    confirm: (options) => {
-      confirmations.push(options);
-    },
-  };
-  const show = (current, pending = '') =>
-    render(
-      React.createElement(ProvidersPanel, {
-        ...props,
-        pending,
-        data: {
-          providerSetup: {
-            oauth: [],
-            api: [{ id: 'openai-api', name: 'OpenAI API' }, current, { id: 'anthropic-api', name: 'Anthropic API' }],
-          },
-        },
-      })
-    );
-  await show(provider);
-  const [oauth, go, api, custom] = document.querySelectorAll('main > section');
-  assert.equal(document.querySelectorAll('main > section').length, 4);
-  assert.equal(oauth.querySelector('h3').textContent, 'OAuth providers');
-  assert.equal(go.querySelector('.settings-resource-title b').textContent, 'OpenCode Go API');
-  assert.equal(api.querySelector('h3').textContent, 'API-key providers');
-  assert.equal(custom.querySelector('h3').textContent, 'Custom providers');
-  assert.doesNotMatch(oauth.textContent, /OpenCode Go/);
-  assert.deepEqual(
-    [...api.querySelectorAll('.settings-resource-title b')].map((name) => name.textContent),
-    ['OpenAI API', 'Anthropic API']
-  );
-  assert.equal(document.querySelector('[role="dialog"]'), null);
-  const action = (label) => [...go.querySelectorAll('button')].find((button) => button.textContent === label);
-  await act(async () => action('Get API key ↗').click());
-  assert.deepEqual(opened, ['https://opencode.ai']);
-  const input = go.querySelector('input');
-  assert.equal(input.type, 'password');
-  input.value = 'test-opencode-key';
-  await act(async () =>
-    go.querySelector('form').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
-  );
-  assert.deepEqual(calls.at(-1), [
-    'saveProviderApiKey',
-    ['opencode-go', 'test-opencode-key'],
-    'provider-key-opencode-go',
-  ]);
-  assert.equal(input.value, '');
-
-  const connected = { ...provider, authenticated: true, stored: true, status: 'valid' };
-  await show(connected);
-  assert.equal(go.querySelector('.settings-status').textContent, 'Connected');
-  assert.equal(go.querySelector('form'), null);
-  assert.equal(action('Get API key ↗'), undefined);
-  await act(async () => action('Forget').click());
-  assert.equal(confirmations.length, 1);
-  assert.equal(
-    calls.some(([capability]) => capability === 'forgetProviderAuth'),
-    false
-  );
-  await act(async () => confirmations[0].onConfirm());
-  assert.deepEqual(calls.at(-1), ['forgetProviderAuth', ['opencode-go']]);
-
-  await show(connected, 'provider-auth');
-  assert.ok([...go.querySelectorAll('button')].every((button) => button.disabled));
-});
-
 test('settings omit the separate OpenCode Go card when the provider is unavailable', async (t) => {
   const render = harness(t);
   await render(
@@ -790,4 +778,45 @@ test('credit line renders only with credits, formats Codex count vs Claude USD, 
   assert.equal(line.querySelector('b').textContent, '$25.00');
   assert.match(line.textContent, /Monthly limit \$10/);
   assert.equal(line.querySelector('[role="switch"]').getAttribute('aria-checked'), 'true');
+});
+
+test('model filtering accepts every advertised provider kind and removes disabled entries', () => {
+  const groups = {
+    api: [
+      'openai',
+      'anthropic',
+      'gemini',
+      'deepseek',
+      'xai',
+      'opencode-go',
+      'openrouter',
+      'custom-00000000-0000-4000-8000-000000000001',
+    ],
+    oauth: [
+      'openai-oauth',
+      'anthropic-oauth',
+      'grok-oauth',
+      'muse-code-oauth',
+      'command-code-oauth',
+      'mimo-oauth',
+      'cursor-oauth',
+      'antigravity-oauth',
+    ],
+    local: ['mixdog-local'],
+  };
+  const models = Object.values(groups)
+    .flat()
+    .map((provider) => ({ provider, model: 'test-model' }));
+  for (const enabled of [true, false]) {
+    const setup = {
+      managedByClient: true,
+      ...Object.fromEntries(
+        Object.entries(groups).map(([group, ids]) => [
+          group,
+          ids.map((id) => ({ id, enabled, authenticated: enabled, usable: enabled, detected: enabled })),
+        ])
+      ),
+    };
+    assert.deepEqual(filterConfiguredModels(models, setup), enabled ? models : []);
+  }
 });

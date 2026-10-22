@@ -8,6 +8,7 @@ import { currentProviderAccountId } from '../provider-auth-binding.mjs';
 // fallback, catalog retry) runs its own accounting and its result or error
 // then returns through the enclosing send, which must not write it again.
 const recorded = new WeakSet();
+const UNMEASURED_USAGE = Object.freeze({ inputTokens: null, inputTokensKnown: false });
 const hasTokens = (usage) =>
   ['inputTokens', 'outputTokens', 'cachedTokens', 'cacheWriteTokens'].some((key) => Number(usage?.[key]) > 0);
 // One rule for every reported usage object: tokens, or a provider-reported
@@ -51,7 +52,9 @@ export async function accountProviderSend(provider, instance, send, model, opts 
   // abandoned attempt or a failure shares that clock with the final attempt,
   // so timing it too would count the same seconds twice and understate speed.
   const record = async (result, id, owner, timed) => {
-    if (!result?.usage) return;
+    // A completed call that reported no usage is still a call: it is recorded
+    // as unmeasured (unknown input, unpriced) instead of vanishing from totals.
+    if (!result?.usage && !(timed && result && typeof result === 'object')) return;
     // A nested send (e.g. a fallback model re-send) already stamped its own
     // final attempt's tier; the outer context only saw the abandoned attempt.
     result.requestServiceTier ??= identity.requestServiceTier || '';
@@ -59,7 +62,13 @@ export async function accountProviderSend(provider, instance, send, model, opts 
     if (openingError) throw openingError;
     if (!ledger) return;
     recorded.add(owner);
-    const usage = result.usage;
+    const usage = result.usage || UNMEASURED_USAGE;
+    const durationMs = timed ? Date.now() - startedAt : 0;
+    // The one measured request time: the loop's speed figures read it, so
+    // the composer and the ledger show the same span.
+    if (timed && result && typeof result === 'object') {
+      Object.defineProperty(result, 'usageDurationMs', { value: durationMs, configurable: true, writable: true });
+    }
     const row = makeUsageRecord({
       id: result.responseId ? undefined : id,
       ts: Date.now(),
@@ -68,6 +77,8 @@ export async function accountProviderSend(provider, instance, send, model, opts 
       requestedModel: model,
       pricingModel: result.pricingModel,
       sessionId,
+      // The session this one runs for (an agent's Lead), kept with its spend.
+      ownerSessionId: opts.session?.ownerSessionId || opts.session?.parentSessionId,
       sourceType,
       inputTokens: usage.inputTokens,
       inputTokensKnown: usage.inputTokensKnown,
@@ -83,7 +94,7 @@ export async function accountProviderSend(provider, instance, send, model, opts 
       // The account this send is bound to, so quota history can tell one
       // connected subscription's records from another's.
       account: ACCOUNT_PROVIDERS.includes(provider) ? currentProviderAccountId(provider) : '',
-      durationMs: timed ? Date.now() - startedAt : 0,
+      durationMs,
     });
     // Committed by the ledger worker (batched with concurrent sends); the
     // send still settles only once its row is durable, as before, but the

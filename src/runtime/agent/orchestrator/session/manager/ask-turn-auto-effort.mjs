@@ -11,12 +11,18 @@ import { autoEffortModel, turnEffortConfigurationMode } from '../../providers/ef
 import {
   autoEffortApplicable,
   autoEffortBase,
+  clampAutoEffortBase,
   normalizeAutoEffortMode,
   resolveAutoEffort,
 } from '../../providers/auto-effort.mjs';
 import { builtinFeatureActive } from '../../runtime-core/builtin-features.mjs';
 import { effortOptionsFor, warnEmptyAutoEffortLadder } from '../../runtime-core/effort.mjs';
-import { effortJudgeSupportsSteps, judgeTurn, recordEffortDecision } from '../../../../effort-judge/judge-client.mjs';
+import {
+  effortJudgeSupportsSteps,
+  judgeTurn,
+  prewarmEffortJudge,
+  recordEffortDecision,
+} from '../../../../effort-judge/judge-client.mjs';
 import { promptContentText } from './prompt-utils.mjs';
 
 // Every cache-safe route judges its tool-result steps the same way. Measured
@@ -53,6 +59,30 @@ export function autoEffortMode() {
   }
 }
 
+/** The global "Auto reasoning base" setting; absent or unreadable is medium. */
+export function autoEffortBaseSetting() {
+  try {
+    return autoEffortBase(readSection('agent')?.autoEffortBase);
+  } catch {
+    return autoEffortBase(undefined);
+  }
+}
+
+/**
+ * Starts the judge worker when a session is created or opened on a route that
+ * Auto effort can judge, so the first judged turn does not wait for the cold
+ * load. Fire-and-forget: it never throws and never waits on the load.
+ */
+export function prewarmSessionAutoEffort(session, provider) {
+  try {
+    if (autoEffortMode() === 'off' || session?.autoEffort === false) return false;
+    if (!turnEffortConfigurationMode(session, provider)) return false;
+    return prewarmEffortJudge();
+  } catch {
+    return false;
+  }
+}
+
 function lastText(messages, role) {
   for (let i = (messages?.length || 0) - 1; i >= 0; i--) {
     const message = messages[i];
@@ -82,7 +112,9 @@ export async function resolveTurnAutoEffort({ sessionId, session, provider, inpu
   if (!request || request.startsWith('<')) return null;
   if (!turnEffortConfigurationMode(session, provider)) return null;
   const chosen = String(session.effort || '').toLowerCase();
-  const base = autoEffortBase(chosen);
+  const options = effortOptionsFor(session.provider, autoEffortModel(session.provider, provider, session.model));
+  const setting = autoEffortBaseSetting();
+  const base = clampAutoEffortBase({ base: setting, options }) ?? autoEffortBase(setting);
   const record = {
     at: new Date().toISOString(),
     sessionId,
@@ -93,7 +125,6 @@ export async function resolveTurnAutoEffort({ sessionId, session, provider, inpu
     base,
     requestChars: request.length,
   };
-  const options = effortOptionsFor(session.provider, autoEffortModel(session.provider, provider, session.model));
   // No judged outcome can apply when the base is off the model's ladder, so
   // the judge is not asked (in observe mode too: nothing would be logged).
   if (!autoEffortApplicable({ base, options })) {
