@@ -56,7 +56,7 @@ export interface RoomTurnHost {
   republish(): void;
   /** The member's own session in this room, created on first use. */
   memberSession(member: { id: string; route: unknown }): Promise<string>;
-  submit(sessionId: string, prompt: ReturnType<typeof roomTurnPrompt>): Promise<boolean>;
+  submit(sessionId: string, prompt: ReturnType<typeof roomTurnPrompt>, hop: number): Promise<boolean>;
   readSnapshot(sessionId: string): Promise<SessionSnapshot>;
   abort(sessionId: string): Promise<void>;
   persist(): Promise<void>;
@@ -115,14 +115,19 @@ export async function speakInRoom(
 ): Promise<RoomTurnAnswer> {
   const { now, newId } = host;
   const room = host.room();
+  const storedRequestHop = room.requestHop || 0;
   const member = labels.get(agentId) ?? { id: agentId, name: agentId, route: undefined, description: '' };
   // Whether the user's newest message still has no answer in the room.
   const waiting = state.waiting;
   const rows = await host.rows();
+  const latestRequest = [...rows].reverse().find((row) => row.kind === 'user');
+  // The accepted row survives a failed record save; the record is a fallback
+  // once that request falls outside the bounded log read. A human row resets it.
+  const requestHop = latestRequest ? latestRequest.hop || 0 : storedRequestHop;
   let shown = rowsSinceCursor(rows, room.cursors[agentId], agentId, room.seen?.[agentId]);
   // A user still waiting keeps their newest message in view, as context
   // when this member was already handed it.
-  const asked = waiting ? [...rows].reverse().find((row) => row.kind === 'user') : undefined;
+  const asked = waiting ? latestRequest : undefined;
   if (asked && !shown.some((row) => row.id === asked.id)) shown = [{ ...asked, seen: true }, ...shown];
   // Nothing new, nobody asking for it (the user, a peer's @mention or the
   // supervisor's note) and no user waiting: there is no turn to hand, so
@@ -181,12 +186,20 @@ export async function speakInRoom(
     if (last) room.cursors[agentId] = last.id;
     if (state.stop) return 'stopped';
     if (interrupted()) return await cutShort();
+    room.requestHop = requestHop;
     startedAt = now();
-    if (!(await host.submit(sessionId, prompt))) throw new Error('the turn was not accepted');
+    if (!(await host.submit(sessionId, prompt, requestHop))) throw new Error('the turn was not accepted');
     // The member's session now holds every row up to the newest: a cut
     // short restores the cursor, never this.
     const handed = rows.at(-1)?.id;
     if (handed) room.seen = { ...room.seen, [agentId]: handed };
+    // Stop or a newer request can arrive while intake is still accepting the
+    // turn. Its first abort may have found nothing; cancel the accepted turn.
+    if (state.stop) {
+      await host.abort(sessionId).catch(() => undefined);
+      return 'stopped';
+    }
+    if (interrupted()) return await cutShort();
     let misses = 0;
     while (!answer) {
       if (state.stop) return 'stopped';
@@ -219,7 +232,7 @@ export async function speakInRoom(
     state.approval = null;
     void host.persist();
   }
-  if (!answer || (answer.status === 'cancelled' && state.stop)) return 'stopped';
+  if (!answer || state.stop) return 'stopped';
   if (interrupted()) {
     const cut = await cutShort();
     void host.persist();

@@ -5,6 +5,10 @@ export interface RoomRow {
   at?: number;
   speaker?: string;
   name?: string;
+  /** Sending bot of a user-kind request; its text keeps the bot envelope. */
+  fromAgent?: string;
+  /** Bot handoff depth of a user-kind request; absent for human input. */
+  hop?: number;
   /** The members the row addresses, in order (older rows: one id). */
   to?: string[] | string;
   toName?: string[] | string;
@@ -101,7 +105,7 @@ export function roomUserWaiting(rows?: readonly Partial<RoomRow>[]): boolean;
 export function roomMessageBudget(memberCount: number, maxMessages: number, random?: () => number): number;
 /** One turn as runRoomExchange hands it to `speak`. */
 export interface RoomTurn {
-  /** The members the user addressed, on their own turns; [] otherwise. */
+  /** The members the sender addressed, on their own turns; [] otherwise. */
   addressed: string[];
   /** The supervisor's note on what is wanted ('' for none). */
   instruction: string;
@@ -155,7 +159,7 @@ export function roomTurnPrompt(options: {
   members: readonly RoomMemberLabel[];
   rows: readonly RoomRow[];
   shareTools?: boolean;
-  /** The members the user asked (true: this member alone). */
+  /** The members the sender asked (true: this member alone). */
   addressed?: boolean | readonly string[];
   /** The peer whose @mention gave this member its turn. */
   mentionedBy?: string;

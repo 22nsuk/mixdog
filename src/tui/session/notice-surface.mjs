@@ -55,6 +55,7 @@ export function createNoticeSurface({ getState, set, isDisposed, pushItem, repla
       kind: userRow ? 'user' : 'notice',
       id,
       text: value,
+      ...(userRow && options.room.fromAgent ? { fromAgent: options.room.fromAgent } : {}),
       ...(userRow ? {} : { tone }),
       // A schedule result posted into a home thread (routine-result.mjs).
       ...(options.routine ? { routine: options.routine } : {}),

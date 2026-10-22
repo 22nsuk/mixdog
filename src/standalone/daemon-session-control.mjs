@@ -5,11 +5,14 @@ import { createBotStatus, scanCatalog, scopedBot, sessionBotOf } from '../sessio
 import { handoffContent } from '../session-runtime/handoff-attachments.mjs';
 import { BOT_HOP_LIMIT_ERROR, MAX_BOT_HOPS } from '../runtime/shared/bot-hops.mjs';
 import { rebindDelegation } from '../runtime/agent/orchestrator/session/human-gate/delegation.mjs';
+import { roomIdOfSession } from '../runtime/agent/orchestrator/session/agent-room.mjs';
+import { sendAgentRoomMessage, stopAgentRoom } from '../runtime/shared/agent-room-host.mjs';
 
 const TARGET_ACTIONS = new Set(['status', 'read', 'send', 'cancel', 'delete']);
 const MUTATING_ACTIONS = new Set(['send', 'cancel', 'delete']);
 // Why a send from a conversation that is no bot's reports nothing back.
 const NOT_BOT_REASON = 'only a bot conversation gets session results reported back; check that session for the result';
+const ROOM_REPORT_REASON = 'group replies are posted in that room, not reported back; use session read for the replies';
 
 /** Model-facing session operations over the same service used by desktop and TUI. */
 export function createSessionControl({
@@ -85,6 +88,23 @@ export function createSessionControl({
         if (hop > MAX_BOT_HOPS) throw new Error(BOT_HOP_LIMIT_ERROR);
         return hop;
       };
+      if (roomIdOfSession(sessionId)) {
+        // A room is a log, not an agent task. Its controller owns sequencing
+        // and cancellation; no target actor, turn watch or return report is made.
+        const hop = origin || turnHop > 0 ? chained(turnHop + 1) : 0;
+        const accepted =
+          (await sendAgentRoomMessage(sessionId, prompt, {
+            ...(origin ? { sender: { agentId: origin.agentId, name: origin.envelopeName || origin.agentId } } : {}),
+            hop,
+          })) === true;
+        return {
+          sessionId,
+          accepted,
+          reportsBack: false,
+          ...(accepted ? { reportsBackReason: ROOM_REPORT_REASON } : {}),
+          ...(hop > 0 ? { hop } : {}),
+        };
+      }
       if (origin) {
         const hop = chained(origin.target === 'session' ? turnHop + 1 : turnHop);
         if (hop > 0) origin = { ...origin, hop };
@@ -112,6 +132,7 @@ export function createSessionControl({
       };
     }
     if (action === 'cancel') {
+      if (roomIdOfSession(sessionId)) return { sessionId, aborted: (await stopAgentRoom(sessionId)) === true };
       const result = await service.abortSession({ sessionId });
       return { sessionId, aborted: result.aborted === true };
     }

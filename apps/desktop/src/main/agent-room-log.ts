@@ -8,6 +8,7 @@ import {
   roomSessionId,
 } from '../../../../src/runtime/agent/orchestrator/session/agent-room.mjs';
 import { plainPreviewText } from '../../../../src/runtime/shared/plain-preview.mjs';
+import { stripAgentMessageEnvelope } from '../../../../src/runtime/shared/agent-message-envelope.mjs';
 import type { AgentRoomDeps, AgentRoomRecord } from './agent-rooms';
 
 const RECENT_ROWS = 200;
@@ -67,7 +68,7 @@ export function createRoomLog(
       const said = [...rows].reverse().find((row) => row.kind === 'user' || row.kind === 'speech');
       const room = rooms()[roomId];
       if (said && room) {
-        room.lastPreview = plainPreviewText(said.text).slice(0, 200);
+        room.lastPreview = plainPreviewText(said.fromAgent ? stripAgentMessageEnvelope(said.text) : said.text);
         deps.republishCatalog();
       }
     },

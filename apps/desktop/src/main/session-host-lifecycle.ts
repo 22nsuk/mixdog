@@ -892,7 +892,8 @@ export class SessionHostLifecycle {
   async submitToSession(
     sessionId: string,
     prompt: DesktopPromptContent,
-    options: DesktopSubmitOptions = {}
+    options: DesktopSubmitOptions = {},
+    hop = 0
   ): Promise<boolean> {
     const id = sessionIdOf(sessionId);
     const submissionId =
@@ -911,11 +912,15 @@ export class SessionHostLifecycle {
       // The submitting device rides the prompt's transcript metadata. A remote
       // call arrives with the name the host read from the authenticated
       // connection; a local one is this machine.
+      const submitOptions = submitOptionsWithDevice(options, submissionId);
+      // Internal room turns carry the incoming bot chain across every member.
+      // This is not a client option: paired clients cannot supply provenance.
+      if (hop > 0) submitOptions.transcriptMeta = { ...(submitOptions.transcriptMeta as object), hop };
       const result = await this.owner.client.submit(
         {
           sessionId: id,
           prompt,
-          options: submitOptionsWithDevice(options, submissionId),
+          options: submitOptions,
           open: this.owner.openHints(id),
           baseRevision: prior?.revision ?? null,
         },

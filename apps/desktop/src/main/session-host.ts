@@ -7,6 +7,8 @@ import {
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { canonicalPath } from '../../../../src/runtime/shared/worktrees/paths.mjs';
+import { roomIdOfSession } from '../../../../src/runtime/agent/orchestrator/session/agent-room.mjs';
+import { registerAgentRoomHost, type AgentRoomMessageSource } from '../../../../src/runtime/shared/agent-room-host.mjs';
 
 import type {
   DesktopAbortOptions,
@@ -113,6 +115,7 @@ export class SessionHost implements DesktopService {
   private readonly lifecycle: SessionHostLifecycle;
   /** Group rooms: their records, and the members' turns in flight. */
   private readonly agentRooms: AgentRooms;
+  private readonly unregisterAgentRoomHost: () => void;
   private readonly catalog: SessionHostCatalog;
   private readonly sessionViews = new SessionViewRegistry();
   private readonly visibleSessionIds = this.sessionViews.visible;
@@ -294,7 +297,8 @@ export class SessionHost implements DesktopService {
       readItems: async (sessionId) => (await this.readSession(sessionId, false, false))?.items ?? [],
       // A member's turn goes in as any chat prompt does; the user's files in it
       // are already stored references, which the daemon intake takes as they are.
-      submit: (sessionId, prompt) => this.lifecycle.submitToSession(sessionId, prompt as DesktopPromptContent, {}),
+      submit: (sessionId, prompt, hop) =>
+        this.lifecycle.submitToSession(sessionId, prompt as DesktopPromptContent, {}, hop),
       readSnapshot: (sessionId) => this.readSession(sessionId, false, false),
       decideTurn: async (input) =>
         ((await this.transport.invokeControl('decideRoomTurn', [input])) as
@@ -321,6 +325,13 @@ export class SessionHost implements DesktopService {
         if (this.sessionCatalogLoaded) this.publishSessionCatalog(this.sessionCatalog());
         else void this.catalog.publishCatalogs();
       },
+    });
+    this.unregisterAgentRoomHost = registerAgentRoomHost({
+      hasRoom: (sessionId: string) => this.agentRooms.hasRoom(sessionId),
+      isRunning: (sessionId: string) => this.agentRooms.isRunning(roomIdOfSession(sessionId)),
+      send: (sessionId: string, prompt: unknown, source: AgentRoomMessageSource) =>
+        this.agentRooms.send(sessionId, prompt as DesktopPromptContent, '', {}, source),
+      stop: (sessionId: string) => this.agentRooms.stop(sessionId),
     });
   }
 
@@ -1032,6 +1043,7 @@ export class SessionHost implements DesktopService {
   dispose(): Promise<void> {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    this.unregisterAgentRoomHost();
     this.publication.clearListeners();
     this.disposePromise = (async () => {
       try {

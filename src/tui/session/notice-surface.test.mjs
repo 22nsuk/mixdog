@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
+import { roomRowItem, roomRowMessage } from '../../runtime/agent/orchestrator/session/agent-room.mjs';
 import { createNoticeSurface } from './notice-surface.mjs';
 
 function createSurface() {
@@ -74,6 +75,23 @@ test('a live room user row carries its message id; member rows get a fresh id', 
   const memberId = surface.pushNotice('ok', 'info', { transcript: true, room: speech, messageId: 'm1' });
   assert.notEqual(memberId, 'm1');
   assert.equal(pushed[1].id, memberId);
+});
+
+test('a bot room request has the same sender and body when delivered live or restored', () => {
+  const restored = roomRowItem(
+    roomRowMessage({ id: 'b1', kind: 'user', fromAgent: 'lead', name: 'Lead', hop: 2, text: 'Review this.', at: 5 })
+  );
+  const { surface, pushed } = createSurface();
+  // The live delivery carries the room payload, without a separate sender.
+  surface.pushNotice(restored.text, 'info', {
+    transcript: true,
+    room: restored.room,
+    messageId: restored.messageId,
+  });
+  assert.equal(pushed[0].id, 'b1');
+  assert.equal(pushed[0].fromAgent, 'lead');
+  assert.equal(pushed[0].text, restored.text);
+  assert.deepEqual(pushed[0].room, restored.room);
 });
 
 test('setProgressHint clamps the percent and clears on empty text', () => {

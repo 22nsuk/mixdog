@@ -23,6 +23,9 @@ import type {
   RoomDecision,
   RoomSupervisorInput,
 } from '../../../../src/runtime/agent/orchestrator/session/agent-room-supervisor.mjs';
+import { isAttachmentReference } from '../../../../src/runtime/attachments/store.mjs';
+import { wrapAgentMessage } from '../../../../src/runtime/shared/agent-message-envelope.mjs';
+import type { AgentRoomMessageSource } from '../../../../src/runtime/shared/agent-room-host.mjs';
 import { readJsonState, writeJsonAtomicAsync } from '../../../../src/runtime/shared/atomic-file.mjs';
 import { type AgentCatalogRow, MIXY_AGENT_ID, contactAgentRows } from '../shared/agent-contacts';
 import type {
@@ -63,6 +66,9 @@ export interface AgentRoomRecord extends RoomConfig {
   owed?: string[] | null;
   /** Submission ids of accepted user messages, newest last (bounded). */
   submissions?: string[];
+  /** The newest request's bot handoff depth, kept across Continue and restart
+   *  even after its row leaves the bounded log read. A human message resets it. */
+  requestHop?: number;
 }
 
 export interface AgentRoomStoreDoc {
@@ -92,7 +98,7 @@ export interface AgentRoomDeps {
   readItems(sessionId: string): Promise<unknown[]>;
   /** A member's turn: its prompt, text or parts with the user's stored files
    *  (submitted like a chat prompt). */
-  submit(sessionId: string, prompt: ReturnType<typeof roomTurnPrompt>): Promise<boolean>;
+  submit(sessionId: string, prompt: ReturnType<typeof roomTurnPrompt>, hop: number): Promise<boolean>;
   /** One supervisor step on the Maintainer model (the daemon's
    *  `decideRoomTurn`): the next speaker, finish, null for no usable answer, or
    *  `unmanaged` when no Maintainer model is configured. */
@@ -126,7 +132,7 @@ const SUBMISSION_IDS = 64;
 function promptText(prompt: DesktopPromptContent): string {
   if (typeof prompt === 'string') return prompt.trim();
   return prompt
-    .map((part) => (part.type === 'text' ? part.text : ''))
+    .map((part) => (part.type === 'text' && !isAttachmentReference(part) ? part.text : ''))
     .filter(Boolean)
     .join('\n')
     .trim();
@@ -138,7 +144,8 @@ function roomUpload(
   prompt: DesktopPromptContent,
   pasted: Pick<DesktopSubmitOptions, 'pastedImages' | 'pastedTexts'>
 ): NonNullable<RoomRow['upload']> | null {
-  const parts = typeof prompt === 'string' ? [] : prompt.filter((part) => part.type !== 'text');
+  const parts =
+    typeof prompt === 'string' ? [] : prompt.filter((part) => part.type !== 'text' || isAttachmentReference(part));
   const pastedImages = Object.keys(pasted.pastedImages ?? {}).length ? pasted.pastedImages : undefined;
   const pastedTexts = Object.keys(pasted.pastedTexts ?? {}).length ? pasted.pastedTexts : undefined;
   const hasUpload = parts.length || pastedImages || pastedTexts;
@@ -227,7 +234,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     post: (rows) => post(roomId, rows),
     republish: () => deps.republish(roomSessionId(roomId)),
     memberSession: (member) => ensureMemberSession(roomId, member),
-    submit: (sessionId, prompt) => deps.submit(sessionId, prompt),
+    submit: (sessionId, prompt, hop) => deps.submit(sessionId, prompt, hop),
     readSnapshot: (sessionId) => deps.readSnapshot(sessionId),
     abort: (sessionId) => deps.abort(sessionId),
     persist,
@@ -351,6 +358,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     roomLog.forget(roomId);
     room.cursors = {};
     delete room.seen;
+    delete room.requestHop;
     room.owed = null;
     delete room.lastSpeaker;
     delete room.lastPreview;
@@ -372,14 +380,15 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     return { archivedSessionId };
   }
 
-  /** A message the user sent into the room (any surface's composer), with the
+  /** A message sent into the room (a composer or another bot), with the
    *  files it carries: image and file parts, and the pasted / attached texts
    *  its tokens name (`pasted`, the submit options' side tables). */
   async function send(
     sessionId: string,
     prompt: DesktopPromptContent,
     submissionId = '',
-    pasted: Pick<DesktopSubmitOptions, 'pastedImages' | 'pastedTexts'> = {}
+    pasted: Pick<DesktopSubmitOptions, 'pastedImages' | 'pastedTexts'> = {},
+    source: AgentRoomMessageSource = {}
   ): Promise<boolean> {
     await ready();
     const roomId = roomIdOfSession(sessionId);
@@ -401,12 +410,14 @@ export function createAgentRooms(deps: AgentRoomDeps) {
       id: /^[A-Za-z0-9_-]{1,100}$/.test(submissionId) ? submissionId : `user_${newId()}`,
       kind: 'user',
       at: now(),
-      text: parsed.text,
+      text: source.sender ? wrapAgentMessage(parsed.text, source.sender) : parsed.text,
+      ...(source.sender ? { fromAgent: source.sender.agentId, name: source.sender.name } : {}),
+      ...(source.hop !== undefined && source.hop > 0 ? { hop: source.hop } : {}),
       ...(parsed.to.length ? { to: parsed.to, toName: parsed.to.map((id) => labels.get(id)?.name ?? id) } : {}),
       ...(upload ? { upload } : {}),
     };
     await post(roomId, [row]);
-    Object.assign(room, { lastSpeaker: 'user', lastAt: row.at });
+    Object.assign(room, { lastSpeaker: source.sender?.agentId || 'user', lastAt: row.at, requestHop: source.hop || 0 });
     // Recorded only once the row is in the log, and saved with the room
     // before the submission is acknowledged.
     if (submissionId) room.submissions = [...(room.submissions ?? []), submissionId].slice(-SUBMISSION_IDS);
@@ -503,6 +514,12 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     decorate,
     withRooms,
     recover,
+    hasRoom: async (sessionId: string): Promise<boolean> => {
+      const roomId = roomIdOfSession(sessionId);
+      if (!roomId) return false;
+      await loadRecords();
+      return Boolean(records.rooms()[roomId]);
+    },
     isRoom: (sessionId: string) => Boolean(roomIdOfSession(sessionId)),
     isRunning: (roomId: string) => running.has(roomId),
   };

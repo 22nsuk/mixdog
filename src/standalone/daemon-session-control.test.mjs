@@ -8,6 +8,7 @@ import { AGENT_MESSAGE_NOTE } from '../runtime/shared/agent-message-envelope.mjs
 import { createAgentTaskSessions } from '../session-runtime/agent-task-sessions.mjs';
 import { createAgentHomeDelivery, createRoutineResultQueue } from '../session-runtime/agent-home-delivery.mjs';
 import { createWorkspaceToolHandlers } from '../session-runtime/internal-tool-executor/workspace-tools.mjs';
+import { registerAgentRoomHost } from '../runtime/shared/agent-room-host.mjs';
 
 // Told to a caller that is no bot conversation, so it never guesses why.
 const NOT_BOT_REASON = 'only a bot conversation gets session results reported back; check that session for the result';
@@ -92,6 +93,65 @@ test('send, cancel and delete call existing addressed service operations', async
     },
     { revision: 1 },
   ]);
+});
+
+test('a non-bot session sends and cancels through the room controller, preserving an inherited chain', async (t) => {
+  const h = fixture();
+  const room = 'sess_room_release1';
+  const seen = [];
+  t.after(
+    registerAgentRoomHost({
+      hasRoom: async (id) => id === room,
+      isRunning: () => false,
+      send: async (...args) => {
+        seen.push(args);
+        return true;
+      },
+      stop: () => false,
+    })
+  );
+  const sent = await h.run({ action: 'send', session_id: room, prompt: '/ask Release verify' });
+  assert.equal(sent.accepted, true);
+  assert.equal(sent.reportsBack, false);
+  assert.match(sent.reportsBackReason, /replies are posted in that room/);
+  assert.deepEqual(seen[0], [room, '/ask Release verify', { hop: 0 }]);
+  const inherited = await h.execute(
+    { action: 'send', session_id: room, prompt: 'continue' },
+    { callerSessionId: 'caller', callerHop: 2 }
+  );
+  assert.equal(inherited.hop, 3);
+  assert.deepEqual(seen[1][2], { hop: 3 });
+  await assert.rejects(
+    h.execute({ action: 'send', session_id: room, prompt: 'again' }, { callerSessionId: 'caller', callerHop: 3 }),
+    /chain limit reached/i
+  );
+  assert.equal(seen.length, 2);
+  assert.deepEqual(await h.run({ action: 'cancel', session_id: room }), { sessionId: room, aborted: false });
+  assert.deepEqual(h.calls, [], 'the room log is never submitted or aborted as an ordinary session');
+});
+
+test('room controller absence, refusal and errors never fall back to a room-log turn', async (t) => {
+  const h = fixture();
+  const room = 'sess_room_release1';
+  const send = { action: 'send', session_id: room, prompt: 'review' };
+  await assert.rejects(h.run(send), /controller is unavailable/);
+  await assert.rejects(h.run({ action: 'cancel', session_id: room }), /controller is unavailable/);
+  let fail = false;
+  t.after(
+    registerAgentRoomHost({
+      hasRoom: async (id) => id === room,
+      isRunning: () => false,
+      send: async () => {
+        if (fail) throw new Error('room append failed');
+        return false;
+      },
+      stop: () => false,
+    })
+  );
+  assert.deepEqual(await h.run(send), { sessionId: room, accepted: false, reportsBack: false });
+  fail = true;
+  await assert.rejects(h.run(send), /room append failed/);
+  assert.deepEqual(h.calls, []);
 });
 
 test("a bot's send to a session it did not create reports the turn to its home and wakes it", async (t) => {

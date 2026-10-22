@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 
+import { roomIdOfSession } from '../../../../src/runtime/agent/orchestrator/session/agent-room.mjs';
+import { AGENT_MESSAGE_NOTE } from '../../../../src/runtime/shared/agent-message-envelope.mjs';
+import { registerAgentRoomHost } from '../../../../src/runtime/shared/agent-room-host.mjs';
+import { createAgentTaskSessions } from '../../../../src/session-runtime/agent-task-sessions.mjs';
+import { createSessionControl } from '../../../../src/standalone/daemon-session-control.mjs';
 import { createAgentRooms } from './agent-rooms.ts';
 
 /** The log's intake (agent-room-delivery.mjs): a user row's files come back
@@ -11,7 +16,9 @@ function storedRow({ upload, ...row }) {
   const ref = (data) => createHash('sha256').update(data).digest('hex');
   return {
     ...row,
-    parts: upload.parts.map((part) => ({ type: part.type, attachmentRef: ref(part.data), mimeType: part.mimeType })),
+    parts: upload.parts.map((part) =>
+      part.attachmentRef ? part : { type: part.type, attachmentRef: ref(part.data), mimeType: part.mimeType }
+    ),
   };
 }
 
@@ -44,6 +51,9 @@ function harness({
   readWindow = 0,
   // Called on every republish of a room's log view.
   onRepublish = () => {},
+  busy = () => false,
+  onAbort = () => {},
+  readGate = () => undefined,
 } = {}) {
   const logs = [];
   /** Every session created, with its create params. */
@@ -94,10 +104,10 @@ function harness({
       readWindow > 0
         ? log.slice(-readWindow).map(({ text, upload: _upload, artifactsFrom: _from, ...row }) => ({ room: row, text }))
         : [],
-    submit: async (id, prompt) => {
+    submit: async (id, prompt, hop) => {
       const agentId = id.split('_').at(-1);
       touched.add(id);
-      prompts.push({ agentId, prompt });
+      prompts.push({ agentId, prompt, hop });
       const text = await script(agentId, prompt);
       answers.set(id, { text, at: clock + 1 });
       return true;
@@ -107,9 +117,10 @@ function harness({
       return decide(input);
     },
     readSnapshot: async (id) => {
+      await readGate();
       const answer = answers.get(id);
       return {
-        busy: false,
+        busy: busy(id),
         items: [
           { id: 'u', kind: 'user', text: 'p' },
           { id: 'a', kind: 'assistant', text: answer.text || ' ' },
@@ -119,6 +130,7 @@ function harness({
     },
     abort: async (id) => {
       aborts.push(id);
+      onAbort(id);
     },
     approve: async () => true,
     deleteSession: async () => {
@@ -166,6 +178,260 @@ async function room(h, extra = {}) {
   });
   return { sessionId, roomId };
 }
+
+/** The real tool and task-origin reader, with no ordinary actor allowed to
+ *  run the room's log or create a watcher waiting for its nonexistent turn. */
+function sessionTool(t, h) {
+  const forbidden = () => assert.fail('a room log must never run an ordinary session turn or task watch');
+  const service = { submitSession: forbidden, abortSession: forbidden, materializeSession: forbidden };
+  const agentTasks = createAgentTaskSessions({
+    getSessionService: () => service,
+    loadSession: async (id) => ({ id, title: 'Release check' }),
+    agentName: async () => 'Mixy',
+    watches: { add: forbidden, list: async () => [], remove: forbidden },
+  });
+  t.after(
+    registerAgentRoomHost({
+      hasRoom: (id) => h.rooms.hasRoom(id),
+      isRunning: (id) => h.rooms.isRunning(roomIdOfSession(id)),
+      send: (id, prompt, source) => h.rooms.send(id, prompt, '', {}, source),
+      stop: (id) => h.rooms.stop(id),
+    })
+  );
+  return createSessionControl({ getSessionService: () => service, agentTasks });
+}
+
+const BOT_CALLER = { callerSessionId: 'sess_home_lead', callerAgentId: 'lead' };
+
+test('session send drives the addressed members, supervisor and cap, with bot provenance and forwarded files', async (t) => {
+  const h = harness({ decide: ROTATE, script: (id) => `answer from ${id}` });
+  const { sessionId, roomId } = await room(h, { maxMessages: 3 });
+  const execute = sessionTool(t, h);
+  const parts = [
+    { type: 'image', attachmentRef: 'a'.repeat(64), mimeType: 'image/png', filename: 'chart.png', sizeBytes: 100 },
+    { type: 'file', attachmentRef: 'b'.repeat(64), mimeType: 'application/pdf', filename: 'spec.pdf', sizeBytes: 200 },
+    {
+      type: 'text',
+      attachmentRef: 'c'.repeat(64),
+      mimeType: 'text/markdown',
+      filename: 'notes.md',
+      sizeBytes: 300,
+      textKind: 'file',
+    },
+  ];
+  const result = await execute(
+    { action: 'send', session_id: sessionId, prompt: '/ask gh, rel inspect the evidence' },
+    { ...BOT_CALLER, attachmentParts: parts }
+  );
+  assert.equal(result.accepted, true);
+  assert.equal(result.reportsBack, false, 'member answers are posted in the room, not reported as a log turn');
+  assert.match(result.reportsBackReason, /room/i);
+  assert.equal(result.hop, 1);
+  await h.idle(roomId);
+  assert.equal(h.rooms.isRunning(roomId), false);
+  assert.deepEqual(
+    h.prompts.map(({ agentId }) => agentId),
+    ['gh', 'rel', 'bench']
+  );
+  const requests = h.log.filter((row) => row.kind === 'user');
+  assert.equal(requests.length, 1, 'the send is posted once through the room intake');
+  assert.deepEqual(requests[0].to, ['gh', 'rel'], '/ask is parsed before the bot envelope');
+  assert.equal(requests[0].fromAgent, 'lead');
+  assert.match(requests[0].text, /<agent-message from="Mixy" agent_id="lead">/);
+  assert.ok(requests[0].text.includes(AGENT_MESSAGE_NOTE));
+  assert.deepEqual(requests[0].upload.parts, parts);
+  for (const { prompt, hop } of h.prompts.slice(0, 2)) {
+    assert.deepEqual(filesOf(prompt), parts, 'each addressed member receives the authorized stored files');
+    assert.equal(hop, 1);
+  }
+  assert.deepEqual(filesOf(h.prompts[2].prompt), [], 'an unaddressed member is not handed those files');
+  assert.deepEqual(
+    h.log.filter((row) => row.kind === 'speech').map(({ speaker, text }) => [speaker, text]),
+    [
+      ['gh', 'answer from gh'],
+      ['rel', 'answer from rel'],
+      ['bench', 'answer from bench'],
+    ]
+  );
+  assert.equal(h.log.at(-1).kind, 'cap');
+  assert.equal(h.log.at(-1).limit, 'messages');
+  assert.deepEqual(h.logs, []);
+});
+
+test('room session send keeps the bot hop limit and a new UI request starts at zero', async (t) => {
+  const h = harness();
+  const { sessionId, roomId } = await room(h);
+  const execute = sessionTool(t, h);
+  const result = await execute(
+    { action: 'send', session_id: sessionId, prompt: '/ask gh, rel last allowed hop' },
+    { ...BOT_CALLER, callerHop: 2 }
+  );
+  assert.equal(result.hop, 3);
+  await h.idle(roomId);
+  assert.deepEqual(
+    h.prompts.map(({ hop }) => hop),
+    [3, 3]
+  );
+  assert.equal(h.saved.doc.rooms[roomId].requestHop, 3);
+  const before = structuredClone(h.log);
+  await assert.rejects(
+    execute({ action: 'send', session_id: sessionId, prompt: '/ask bench too far' }, { ...BOT_CALLER, callerHop: 3 }),
+    /hop|chain/i
+  );
+  assert.deepEqual(h.log, before, 'an over-limit send neither posts a request nor starts a member');
+  assert.equal(h.prompts.length, 2);
+  await h.rooms.send(sessionId, '/ask bench a fresh user request');
+  await h.idle(roomId);
+  assert.equal(h.prompts.at(-1).agentId, 'bench');
+  assert.equal(h.prompts.at(-1).hop, 0);
+  assert.equal(h.saved.doc.rooms[roomId].requestHop, 0);
+  assert.equal(h.log.findLast((row) => row.kind === 'user').fromAgent, undefined);
+});
+
+test('session send names the bot in the room list without showing its envelope', async (t) => {
+  const gate = Promise.withResolvers();
+  const h = harness({
+    script: async () => {
+      await gate.promise;
+      return 'answer';
+    },
+  });
+  const { sessionId, roomId } = await room(h);
+  try {
+    const result = await sessionTool(t, h)(
+      { action: 'send', session_id: sessionId, prompt: '/ask gh inspect the evidence' },
+      BOT_CALLER
+    );
+    assert.equal(result.accepted, true);
+    assert.equal(h.saved.doc.rooms[roomId].lastSpeaker, 'lead', 'the list must not attribute the bot to the user');
+    assert.equal(h.saved.doc.rooms[roomId].lastPreview, 'inspect the evidence', 'the list shows the message');
+  } finally {
+    gate.resolve();
+    await h.idle(roomId);
+  }
+  assert.equal(h.rooms.isRunning(roomId), false);
+});
+
+test('Continue retains the request hop after restart even when the request is outside the log tail', async (t) => {
+  const first = harness();
+  const { sessionId, roomId } = await room(first, { maxMessages: 1 });
+  await sessionTool(t, first)(
+    { action: 'send', session_id: sessionId, prompt: '/ask gh, rel, bench review it' },
+    { ...BOT_CALLER, callerHop: 2 }
+  );
+  await first.idle(roomId);
+  const restored = harness({ doc: first.saved.doc, readWindow: 3 });
+  // Only peer speech remains in the daemon's read window; the original
+  // host's in-memory row cache is gone after this restart.
+  for (let i = 0; i < 201; i += 1) {
+    restored.log.push({ id: `old-${i}`, kind: 'speech', speaker: 'gh', name: 'GitHub', text: 'context', at: i });
+  }
+  await restored.rooms.recover();
+  await restored.rooms.proceed(roomId);
+  await restored.idle(roomId);
+  assert.equal(restored.rooms.isRunning(roomId), false);
+  assert.deepEqual(
+    restored.prompts.map(({ agentId, hop }) => [agentId, hop]),
+    [['rel', 3]]
+  );
+  await restored.rooms.reset(roomId);
+  assert.equal(restored.saved.doc.rooms[roomId].requestHop, undefined, 'reset drops the old request ancestry');
+});
+
+test('a durable bot request retains its hop when saving the room record fails', async (t) => {
+  let failSave = false;
+  const first = harness({ saveFails: () => failSave });
+  const { sessionId, roomId } = await room(first, { maxMessages: 1 });
+  failSave = true;
+  await assert.rejects(
+    sessionTool(t, first)(
+      { action: 'send', session_id: sessionId, prompt: '/ask gh recover this request' },
+      { ...BOT_CALLER, callerHop: 2 }
+    ),
+    /disk full/
+  );
+  await first.idle(roomId);
+  assert.equal(first.saved.doc.rooms[roomId].requestHop ?? 0, 0, 'the record predates the accepted row');
+  const restored = harness({ doc: first.saved.doc, readWindow: 3 });
+  restored.log.push(...first.log);
+  await restored.rooms.recover();
+  await restored.rooms.proceed(roomId);
+  await restored.idle(roomId);
+  assert.deepEqual(
+    restored.prompts.map(({ hop }) => hop),
+    [3],
+    'the durable request row supplies its ancestry'
+  );
+  assert.equal(restored.saved.doc.rooms[roomId].requestHop, 3, 'later turns retain it even outside the log tail');
+  assert.deepEqual(restored.logs, []);
+});
+
+test('session cancel stops the current member and pending exchange across submit and read completion', async (t) => {
+  for (const phase of ['running', 'submitting', 'reading']) {
+    await t.test(phase, { timeout: 5000 }, async (t) => {
+      const started = Promise.withResolvers();
+      const acceptance = Promise.withResolvers();
+      let memberRunning = false;
+      const h = harness({
+        script: async () => {
+          if (phase === 'submitting') {
+            started.resolve();
+            await acceptance.promise;
+          }
+          memberRunning = true;
+          return 'answer that must not reach the room';
+        },
+        busy: () => {
+          started.resolve();
+          return memberRunning;
+        },
+        readGate: async () => {
+          if (phase === 'reading') {
+            started.resolve();
+            await acceptance.promise;
+          }
+        },
+        onAbort: () => {
+          memberRunning = false;
+        },
+      });
+      const { sessionId, roomId } = await room(h);
+      const execute = sessionTool(t, h);
+      t.after(async () => {
+        h.rooms.stop(sessionId);
+        acceptance.resolve();
+        await h.idle(roomId);
+      });
+      // Start from the composer: the tool must stop that same controller,
+      // independently of how session send itself is routed.
+      await h.rooms.send(sessionId, '/ask gh, rel first');
+      await started.promise;
+      await h.rooms.send(sessionId, '/ask bench pending');
+      assert.deepEqual(await execute({ action: 'cancel', session_id: sessionId }, BOT_CALLER), {
+        sessionId,
+        aborted: true,
+      });
+      acceptance.resolve();
+      await h.idle(roomId);
+      assert.equal(h.rooms.isRunning(roomId), false);
+      assert.equal(memberRunning, false, 'a submit accepted after cancellation is also aborted');
+      assert.deepEqual(
+        h.prompts.map(({ agentId }) => agentId),
+        ['gh'],
+        'neither rel nor the pending bench turn starts'
+      );
+      assert.deepEqual(
+        h.log.map(({ kind }) => kind),
+        ['user', 'user', 'stopped']
+      );
+      assert.deepEqual(await execute({ action: 'cancel', session_id: sessionId }, BOT_CALLER), {
+        sessionId,
+        aborted: false,
+      });
+      assert.deepEqual(h.logs, []);
+    });
+  }
+});
 
 test("a room's log is created on a member's model: a model-less session is never stored", async () => {
   // Mixy first with no route of its own: the next member's model carries it.
@@ -1077,7 +1343,8 @@ test('accepted submissions survive a restart', async () => {
 
 const b64 = (text) => Buffer.from(text).toString('base64');
 /** The files a member's turn was handed. */
-const filesOf = (prompt) => (Array.isArray(prompt) ? prompt.filter((part) => part.type !== 'text') : []);
+const filesOf = (prompt) =>
+  Array.isArray(prompt) ? prompt.filter((part) => part.type !== 'text' || part.attachmentRef) : [];
 
 test('files go to the members a message addresses, once each, as stored references', async () => {
   const h = harness();
