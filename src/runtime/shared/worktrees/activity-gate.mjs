@@ -116,8 +116,8 @@ function writeState(path, mirror, before, next) {
   }
   // Publish a recoverable grant before admitting its caller. If the ledger
   // write fails, retract the ungranted mirror entry while still holding the
-  // lock. A failed rollback remains conservative; the intact ledger wins on
-  // the next mutation and resynchronizes the mirror.
+  // lock. If rollback also fails, mutate retains the ungranted additions as
+  // pending releases, including when no intact primary can retract them.
   writeMirror(mirror, next);
   try {
     writeJsonAtomicSync(path, next, { compact: true });
@@ -129,8 +129,9 @@ function writeState(path, mirror, before, next) {
   }
 }
 
-// Live leases are republished if lost. A failed release stays here with
-// releasing=true until both copies are cleared, even if its caller moves on.
+// Live leases are republished if lost. Completed leases and failed grants
+// stay here with releasing=true until both copies are cleared, even when
+// admission failed before a caller could receive its release handle.
 const held = new Map();
 let healTimer = null;
 
@@ -138,8 +139,8 @@ let healTimer = null;
 // identified by token and path.
 const leaseKey = (lease) => `${lease.token}\0${lease.path}`;
 
-function track(commonDir, lease) {
-  held.set(leaseKey(lease), { commonDir, lease });
+function track(commonDir, lease, { releasing = false } = {}) {
+  held.set(leaseKey(lease), { commonDir, lease, releasing });
   healTimer ??= setInterval(healHeld, healIntervalMs());
   healTimer.unref?.();
 }
@@ -260,6 +261,13 @@ function mutate(commonDir, update, onNewer = refuseUnreadable) {
       try {
         writeState(path, mirror, state, next);
       } catch {
+        // Publication and its immediate rollback may both fail. Own cleanup
+        // before unlocking: recovery must not adopt these unacquired leases.
+        // Existing/recovered ownership belongs to state and stays protected.
+        const existing = new Set(state.leases.map(leaseKey));
+        for (const lease of next.leases) {
+          if (!existing.has(leaseKey(lease))) track(commonDir, lease, { releasing: true });
+        }
         return refuseUnreadable();
       }
       if (refusal) throw refusal;

@@ -155,6 +155,68 @@ function failMirrorRelease(t, repo) {
 }
 
 for (const [name, setup] of Object.entries(ENTRY_POINTS)) {
+  test(`${name}: a failed first grant and rollback do not strand the next turn or merge`, async (t) => {
+    const repo = makeRepo();
+    const { source, merge } = await setup(repo);
+    commitFile(source.path, 'feature.txt', 'feature\n');
+    const head = git(repo, 'rev-parse', 'HEAD');
+    const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+    const mirror = `${path}.management`;
+    // Provisioning may have used admission. Start the operation with no
+    // durable ledger, after checking that setup left no ownership behind.
+    for (const copy of [path, mirror]) {
+      if (!existsSync(copy)) continue;
+      assert.deepEqual(JSON.parse(readFileSync(copy, 'utf8')).leases, []);
+      fs.unlinkSync(copy);
+    }
+    const rename = fs.renameSync;
+    let published = false;
+    let primaryFailures = 0;
+    let rollbackFailures = 0;
+    const fault = t.mock.method(fs, 'renameSync', (from, to, ...args) => {
+      if (samePath(to, path)) {
+        primaryFailures += 1;
+        throw Object.assign(new Error('injected first grant failure'), { code: 'EIO' });
+      }
+      if (samePath(to, mirror) && published) {
+        rollbackFailures += 1;
+        throw Object.assign(new Error('injected grant rollback failure'), { code: 'EIO' });
+      }
+      const result = rename(from, to, ...args);
+      if (samePath(to, mirror)) published = true;
+      return result;
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(merge(), {
+        code: 'WORKTREE_BUSY_JOBS',
+        details: { reason: 'workspace-admission-unreadable' },
+      });
+      assert.equal(primaryFailures, 1);
+      assert.equal(rollbackFailures, 1);
+      assert.equal(existsSync(path), false);
+      assert.ok(JSON.parse(readFileSync(mirror, 'utf8')).leases.length > 0);
+      assert.equal(git(repo, 'rev-parse', 'HEAD'), head, 'the failed grant must precede the Git mutation');
+    } finally {
+      fault.mock.restore();
+      syncBuiltinESMExports();
+    }
+
+    for (const folder of [repo, source.path]) {
+      const leave = await admitTurn({
+        sessionId: 'after-failed-grant',
+        cwd: () => folder,
+        signal: AbortSignal.timeout(5000),
+      });
+      leave();
+    }
+    for (const copy of [path, mirror]) assert.deepEqual(JSON.parse(readFileSync(copy, 'utf8')).leases, []);
+    const result = await merge();
+    assert.equal(result.merged, true, 'management resumes without a release handle from the failed grant');
+    assert.equal(result.admissionReleasePending, undefined);
+    assert.equal(git(repo, 'rev-parse', 'HEAD^2'), git(source.path, 'rev-parse', 'HEAD'));
+  });
+
   test(`${name}: a failed mirror release cannot resurrect completed merge ownership`, async (t) => {
     const repo = makeRepo();
     const { source, merge } = await setup(repo);

@@ -52,6 +52,13 @@ Mixdog keeps turn, command and management leases in the repository's shared
 compatibility; new copies cover all three lease kinds. Both copies are written
 under the same lock before a new admission succeeds.
 
+If primary grant publication fails, admission attempts to retract the unacquired
+entries from its recovery copy. If that rollback also fails, the runtime retains those
+leases as pending cleanup, even on the first grant when no primary ledger
+exists. The heal timer or the next admission retries removing them from both
+copies before publishing another grant. Existing live leases and unknown ownership
+remain protected; callers need no release handle for a grant that failed.
+
 If a release cannot update both copies, the runtime remembers that the work
 finished. The low-level release still throws; management operations preserve
 their actual result and report `admissionReleasePending: true` separately.
