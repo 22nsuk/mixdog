@@ -88,43 +88,6 @@ export function defaultEffectiveContextWindowPercent(_provider) {
   return 100;
 }
 
-function autoCompactTokenLimit(provider, rawContextWindow, contextWindow, info = {}, seed = {}) {
-  // routeInfo.autoCompactTokenLimit is an EXPLICIT auto-compaction limit only.
-  // It must NOT be derived from the effective/raw context window: the runtime
-  // (manager.mjs resolveSessionContextMeta / loop.mjs resolveWorkerCompactPolicy)
-  // treats autoCompactTokenLimit as the compaction trigger. Deriving it from the
-  // full boundary makes autoTriggerTokens == boundary, collapses the compaction
-  // buffer to 0, and auto-compaction only fires once the window is already full
-  // (where semantic compact overflows and the turn is lost). The boundary/window
-  // fallback that status + gateway env still need lives in compactBoundaryForRoute
-  // / autoCompactWindowForRoute, which read contextWindow/rawContextWindow
-  // directly. Return null when there is no explicit provider/catalog/seed limit.
-  const explicit = num(
-    seed.autoCompactTokenLimit
-      ?? seed.auto_compact_token_limit
-      ?? info.autoCompactTokenLimit
-      ?? info.auto_compact_token_limit,
-    0,
-  );
-  if (!(explicit > 0)) return null;
-  // An explicit limit is only a real auto-compaction trigger when it sits
-  // STRICTLY BELOW the boundary/window. A legacy seed/info value equal to or
-  // above the boundary is a derived full-window artifact — returning
-  // Math.min(explicit, derived) would still surface the boundary, which the
-  // runtime then treats as the trigger and collapses the compaction buffer.
-  // Drop those to null so display + downstream fall back to the default
-  // boundary trigger.
-  const derived = num(contextWindow, 0) || num(rawContextWindow, 0);
-  if (derived > 0) return explicit < derived ? explicit : null;
-  // No boundary known: keep the positive explicit value (cannot be proven to
-  // be a full-window artifact), but never derive one.
-  return explicit;
-}
-
-// Test-only export of the explicit-vs-derived auto-compact-limit resolver
-// (see scripts/compact-trigger-migration-smoke.mjs).
-export const _autoCompactTokenLimit = autoCompactTokenLimit;
-
 function routeIdentityKey(routeInfo = {}) {
   return [
     routeInfo.provider || '',
@@ -149,7 +112,7 @@ function shouldTrackDollarSpend(routeInfo = {}) {
   return kind === 'api' || kind === 'quota-api';
 }
 
-// Boundary denominator for status %, overflow checks, and gateway env window.
+// Boundary denominator for status percentages and usage telemetry.
 // Order: explicit boundary (routeInfo or compact) → contextWindow → budgetWindow
 // → rawContextWindow. autoCompactTokenLimit / compactLimitTokens are triggers
 // only and are never read here.
@@ -174,23 +137,6 @@ export function compactBoundaryDenominator(routeInfo = {}, compact = null) {
   if (contextWindow > 0) return contextWindow;
   if (budgetWindow > 0) return budgetWindow;
   return rawContextWindow > 0 ? rawContextWindow : 0;
-}
-
-function compactBoundaryForRoute(routeInfo = {}, compact = null) {
-  return compactBoundaryDenominator(routeInfo, compact);
-}
-
-// Single source of truth for the value synced to host env
-// CLAUDE_CODE_AUTO_COMPACT_WINDOW. BOTH the --enable-time write
-// (scripts/gateway-model.mjs) and the runtime sync (src/gateway/server.mjs)
-// must derive the window the SAME way, or they disagree on the value written to
-// settings.json. Denominator order: compactBoundaryTokens / boundaryTokens (route
-// or compact) → contextWindow → budgetWindow → rawContextWindow. Never
-// autoCompactTokenLimit or compactLimitTokens (trigger-only). Returns a positive
-// integer, or null when unknown.
-export function autoCompactWindowForRoute(routeInfo) {
-  const n = compactBoundaryForRoute(routeInfo);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 }
 
 function promptFootprintTokens(provider, usage) {
