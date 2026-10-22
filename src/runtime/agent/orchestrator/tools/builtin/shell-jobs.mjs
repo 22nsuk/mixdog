@@ -22,10 +22,7 @@ import {
   waitNativeTask,
 } from '../lib/native-spawn-client.mjs';
 import { attachJobInsights, shellJobPublicTaskResult } from './lib/shell-job-insights.mjs';
-import { tryAdmitWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
-import { worktreeError } from '../../../../shared/worktrees/contract.mjs';
 import {
-  adoptShellWorkspaceAdmission,
   clearTerminationHold,
   completeShellJobRecord,
   listShellJobRecords,
@@ -112,14 +109,10 @@ function trackShellJobRecord(task, options) {
   const jobId = String(task?.jobId || '').trim();
   if (!jobId) return;
   publishShellJobRecord(task, options);
-  if (task?.cwd) {
-    // The record's own reader is filed under the job's root pid, which the
-    // gate drops the moment that pid dies. Survivors must keep the folder
-    // reserved, so this runtime holds it under its own live pid as well.
-    const hold = tryAdmitWorkspaceActivity(options?.ownerSessionId || jobId, task.cwd, { kind: 'command' });
-    if (!hold) throw worktreeError('WORKTREE_BUSY_JOBS', 'The command folder is being managed.');
-    adoptShellWorkspaceAdmission(jobId, hold);
-  }
+  // Both readers belong to the record before it becomes a tracked promotion;
+  // an acquisition failure leaves no promoted id behind for the next attempt.
+  // Add before settlement, which can immediately remove an already ended job.
+  promotedJobIds.add(jobId);
   const tracker = task?.cwd ? createProcessTreeTracker({ pid: task.pid }) : null;
   let resolveTerminated = null;
   const entry = {
@@ -564,8 +557,6 @@ export async function promoteForegroundShellJob({
     native.stdoutPath = stdoutPath || null;
     native.stderrPath = stderrPath || null;
   }
-  // Added before tracking: the record's settlement removes it again.
-  promotedJobIds.add(native.jobId);
   trackShellJobRecord(native, { ownerSessionId, clientHostPid, startedAtMs: started, timeoutMs });
   return native;
 }

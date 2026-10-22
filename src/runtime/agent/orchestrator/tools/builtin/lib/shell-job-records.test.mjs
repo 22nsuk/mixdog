@@ -221,9 +221,9 @@ function hasBackgroundRecord(root, jobId) {
   }
 }
 
-// Mirrors the real promotion: the foreground marker is published, then
-// clearForegroundRecord retires it, then (after the registry round trip) the
-// promoted job publishes under the same id. Each retire is parked mid-removal.
+// A caller can retire an earlier incarnation and publish again under the same
+// id. Each retire is parked mid-removal to verify the per-job queue preserves
+// the later record (promotion itself now replaces its foreground record).
 async function promoteBehindParkedRetire(root, jobIds, { foregroundSettled }) {
   const gate = holdJsonRemovals(root);
   try {

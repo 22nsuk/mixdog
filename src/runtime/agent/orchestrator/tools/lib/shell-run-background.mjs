@@ -13,7 +13,7 @@
 //
 //   shell-run-background/promote-job.mjs       — registry promotion, lease release, kill fallback
 //   shell-run-background/promotion-results.mjs — the ExecResult of each promotion outcome
-import { clearForegroundRecord, clearForegroundTimers, elapsedSinceStart } from './shell-run-state.mjs';
+import { clearForegroundTimers, elapsedSinceStart } from './shell-run-state.mjs';
 import { readCapturedOutput } from './shell-run-settle.mjs';
 import { handOverLease, killAfterFailedPromotion, promoteWithRetry } from './shell-run-background/promote-job.mjs';
 import {
@@ -90,9 +90,11 @@ export function createAutoBackground({
     // runaway background producer even with no active task waiter.
     const stdoutPath = taskOutput.spilled ? taskOutput.stdoutPath : null;
     const stderrPath = taskOutput.spilled ? taskOutput.stderrPath : null;
-    // The promoted job publishes its own record under the real task id; drop
-    // the foreground marker first so the command is never counted twice.
-    clearForegroundRecord(run);
+    // Keep the foreground record until promotion commits. The background
+    // record replaces it under the same id, so there is no duplicate to retire.
+    // On failure normal foreground settlement still owns its cleanup.
+    clearTimeout(run.foregroundRecordTimer);
+    run.foregroundRecordTimer = null;
     const remainingBackgroundTimeoutMs = remainingBackgroundTimeout(run, reason, {
       promotedTimeoutMs,
       backgroundDeadlineMs,
@@ -108,6 +110,7 @@ export function createAutoBackground({
     }
     const jobId = job.jobId;
     run.autoBackgroundJobId = jobId;
+    run.foregroundRecordPublished = false;
     await handOverLease(run);
     // Snapshot the partial output captured so far for the immediate result.
     const { stdout, stderr } = await readCapturedOutput(taskOutput);

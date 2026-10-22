@@ -74,8 +74,12 @@ Shell settlement follows the same rule for runtime and child-PID leases,
 foreground completion, promotion, background records and surviving descendants.
 One failed release cannot skip another handle or turn a command's successful
 exit into a failure. Record retirement and confirmed-termination cleanup finish
-even if admission persistence is pending. A promotion first admits its background
-owner, so retiring foreground ownership never opens a protection gap. Live or
+even if admission persistence is pending. Promotion acquires the child-PID and
+runtime-PID admissions together before adopting either or publishing its background
+record. If either grant fails, only that attempt's admissions are rolled back;
+the foreground record and ownership stay available for retry or termination.
+On success the background record replaces the foreground record under the same
+job ID, and foreground admission is released after that handoff. Live or
 unverified descendant processes still retain their leases until confirmed gone
 or explicitly released; pending disk cleanup does not establish process exit.
 

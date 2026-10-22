@@ -179,14 +179,24 @@ export function publishShellJobRecord(
   const jobId = String(task?.jobId || '').trim();
   if (!jobId) return;
   if (task?.cwd) {
-    const leave = tryAdmitWorkspaceActivity(ownerSessionId || jobId, task.cwd, {
-      pid: Number(task.pid) || process.pid,
-      kind: 'command',
-    });
-    if (!leave) throw worktreeError('WORKTREE_BUSY_JOBS', 'The command folder is being managed.');
-    // A descendant handoff can reuse the job id with a different live pid.
-    // Acquire its reader before releasing any predecessor's admission.
-    adoptShellWorkspaceAdmission(jobId, leave);
+    // A background root can exit before its descendants. Acquire both its
+    // reader and the runtime's reader before publishing or adopting anything;
+    // a failed promotion must leave the foreground owner intact for retry or
+    // termination. Only this attempt's handles belong to its rollback.
+    const pids = [Number(task.pid) || process.pid];
+    if (!foreground) pids.push(process.pid);
+    const acquired = [];
+    try {
+      for (const pid of pids) {
+        const leave = tryAdmitWorkspaceActivity(ownerSessionId || jobId, task.cwd, { pid, kind: 'command' });
+        if (!leave) throw worktreeError('WORKTREE_BUSY_JOBS', 'The command folder is being managed.');
+        acquired.push(leave);
+      }
+    } catch (error) {
+      finishWorkspaceActivity(...acquired);
+      throw error;
+    }
+    for (const leave of acquired) adoptShellWorkspaceAdmission(jobId, leave);
   }
   const ownerPid = Number(clientHostPid ?? task?.clientHostPid) || process.pid;
   const dir = jobsDir();
