@@ -17,6 +17,17 @@ Useful environment variables:
 - `MIXDOG_MODE=ship|dev` — select shipping or development diagnostics.
 - `MIXDOG_DIAGNOSTICS=1` — force diagnostic trace and log output.
 
+### User-data backups
+
+Each data directory keeps its newest 40 completed snapshots in its own backup
+scope. A snapshot is complete after its final `backup.json` manifest is
+published; snapshots containing only schedules, webhooks or workflows count
+too. If copying or completion fails, Mixdog attempts to remove only that
+call's reserved directory and reports the original failure. Any incomplete
+directory left by a failed cleanup does not displace completed backups.
+Completed snapshots remain preserved if later reporting fails. Configuration
+saves retain their existing best-effort backup policy.
+
 ## Core technology
 
 | Layer | Stack |

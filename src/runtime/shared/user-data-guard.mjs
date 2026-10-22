@@ -30,6 +30,7 @@ const USER_DATA_DIRS = ['schedules', 'webhooks', 'workflows'];
 // Written into every backup; a backup without one (legacy, or interrupted
 // mid-copy) is never restored.
 const BACKUP_MANIFEST = 'backup.json';
+const BACKUP_LIMIT = 40;
 
 // Lives INSIDE the data dir: deleting or recreating the profile drops it, so a
 // recreated profile at the same path is fresh. Its instanceId ties backups to
@@ -130,12 +131,12 @@ async function reserveBackupDirAsync(scopeDir, reason) {
   }
 }
 
-// The names past the newest `keep`, never the just-written backup.
-function backupsToPrune(names, own, keep = 40) {
+// The completed names past the retention limit, never the just-written backup.
+function backupsToPrune(names, own) {
   return [...names]
     .sort()
     .reverse()
-    .slice(keep)
+    .slice(BACKUP_LIMIT)
     .filter((name) => name !== own);
 }
 
@@ -389,15 +390,6 @@ function copyTree(src, dst, copied) {
   copied.push(dst);
 }
 
-/** Prune one data dir's scope only; other scopes and legacy entries stay. */
-function pruneBackups(scopeDir, names, own) {
-  for (const name of backupsToPrune(names, own)) {
-    try {
-      rmSync(join(scopeDir, name), { recursive: true, force: true });
-    } catch {}
-  }
-}
-
 /**
  * Create a missing init marker; return its instanceId, or null if the data dir
  * is gone or the missing marker cannot be created. Never creates the data dir.
@@ -452,39 +444,6 @@ function finishBackup(dataDir, backupDir, reason) {
   legacyEvidenceCache.delete(normalizeDataDir(dataDir));
 }
 
-/** `dirs`: more data-dir folders this one snapshot also carries (a one-time
- *  migration's, e.g. agents/ and bots/); routine snapshots keep to
- *  USER_DATA_DIRS so the ring stays small. */
-export function backupUserData(dataDir, reason = 'snapshot', { dirs = [] } = {}) {
-  if (skipBackups()) return { dir: null, copied: [] };
-  if (!dataDir || !existsSync(dataDir)) return { dir: null, copied: [] };
-  const scopeDir = scopeDirFor(dataDir);
-  const { backupDir, names } = reserveBackupDir(scopeDir, reason);
-  const copied = [];
-  for (const rel of USER_DATA_FILES) {
-    const src = join(dataDir, rel);
-    if (existsSync(src)) copyTree(src, join(backupDir, rel), copied);
-  }
-  for (const rel of [...USER_DATA_DIRS, ...dirs]) {
-    const src = join(dataDir, rel);
-    if (existsSync(src)) copyTree(src, join(backupDir, rel), copied);
-  }
-  if (copied.length > 0) {
-    finishBackup(dataDir, backupDir, reason);
-    pruneBackups(scopeDir, names, basename(backupDir));
-    if (process.env.MIXDOG_SETUP_QUIET !== '1') {
-      process.stderr.write(`[user-data-backup] ${reason}: copied ${copied.length} file(s) to ${backupDir}\n`);
-    }
-  } else {
-    rmSync(backupDir, { recursive: true, force: true });
-  }
-  return { dir: copied.length > 0 ? backupDir : null, copied };
-}
-
-// ── Async backup variant (fs.promises) ──────────────────────────────
-// Byte-for-byte the same policy/skip guards/prune behavior as backupUserData,
-// but every filesystem op yields via fs.promises so a debounced config flush
-// on the UI event loop never blocks on the copy tree or the prune sweep.
 async function copyTreeAsync(src, dst, copied) {
   const st = await statP(src);
   if (st.isDirectory()) {
@@ -498,36 +457,88 @@ async function copyTreeAsync(src, dst, copied) {
   copied.push(dst);
 }
 
-async function pruneBackupsAsync(scopeDir, names, own) {
-  for (const name of backupsToPrune(names, own)) {
-    try {
-      await rmP(join(scopeDir, name), { recursive: true, force: true });
-    } catch {}
-  }
-}
-
-export async function backupUserDataAsync(dataDir, reason = 'snapshot') {
+// Both entry points run this lifecycle. Reservation, copying and pruning use
+// their own I/O mode; marker/manifest publication retains finishBackup's
+// existing synchronous path. Rollback and the commit boundary have one owner.
+function* backupSteps(dataDir, reason, dirs, io) {
   if (skipBackups()) return { dir: null, copied: [] };
   if (!dataDir || !existsSync(dataDir)) return { dir: null, copied: [] };
   const scopeDir = scopeDirFor(dataDir);
-  const { backupDir, names } = await reserveBackupDirAsync(scopeDir, reason);
+  const { backupDir, names } = yield io.reserve(scopeDir, reason);
   const copied = [];
-  for (const rel of USER_DATA_FILES) {
-    const src = join(dataDir, rel);
-    if (existsSync(src)) await copyTreeAsync(src, join(backupDir, rel), copied);
-  }
-  for (const rel of USER_DATA_DIRS) {
-    const src = join(dataDir, rel);
-    if (existsSync(src)) await copyTreeAsync(src, join(backupDir, rel), copied);
-  }
-  if (copied.length > 0) {
-    finishBackup(dataDir, backupDir, reason);
-    await pruneBackupsAsync(scopeDir, names, basename(backupDir));
-    if (process.env.MIXDOG_SETUP_QUIET !== '1') {
-      process.stderr.write(`[user-data-backup] ${reason}: copied ${copied.length} file(s) to ${backupDir}\n`);
+  try {
+    for (const rel of [...USER_DATA_FILES, ...USER_DATA_DIRS, ...dirs]) {
+      const src = join(dataDir, rel);
+      if (existsSync(src)) yield io.copy(src, join(backupDir, rel), copied);
     }
-  } else {
-    rmSync(backupDir, { recursive: true, force: true });
+    if (copied.length > 0) finishBackup(dataDir, backupDir, reason);
+  } catch (error) {
+    // Only this call owns this reservation. A cleanup failure must preserve
+    // the original error; any leftover is incomplete and consumes no slot.
+    try {
+      yield io.remove(backupDir, { recursive: true, force: true });
+    } catch {}
+    throw error;
   }
-  return { dir: copied.length > 0 ? backupDir : null, copied };
+  if (copied.length === 0) {
+    yield io.remove(backupDir, { recursive: true, force: true });
+    return { dir: null, copied };
+  }
+
+  // The manifest is published: pruning or reporting must not roll this backup
+  // back. Count completed snapshots in this scope, including schedule-only
+  // ones. Other scopes, legacy entries and incomplete reservations stay.
+  if (names.length > BACKUP_LIMIT) {
+    const completed = [];
+    for (const name of names) {
+      try {
+        if ((yield io.stat(join(scopeDir, name, BACKUP_MANIFEST))).isFile()) completed.push(name);
+      } catch {}
+    }
+    for (const name of backupsToPrune(completed, basename(backupDir))) {
+      try {
+        yield io.remove(join(scopeDir, name), { recursive: true, force: true });
+      } catch {}
+    }
+  }
+  if (process.env.MIXDOG_SETUP_QUIET !== '1') {
+    process.stderr.write(`[user-data-backup] ${reason}: copied ${copied.length} file(s) to ${backupDir}\n`);
+  }
+  return { dir: backupDir, copied };
+}
+
+/** `dirs`: more data-dir folders this one snapshot also carries (a one-time
+ *  migration's, e.g. agents/ and bots/); routine snapshots keep to
+ *  USER_DATA_DIRS so the ring stays small. */
+export function backupUserData(dataDir, reason = 'snapshot', { dirs = [] } = {}) {
+  const steps = backupSteps(dataDir, reason, dirs, {
+    reserve: reserveBackupDir,
+    copy: copyTree,
+    stat: statSync,
+    remove: rmSync,
+  });
+  let step = steps.next();
+  while (!step.done) step = steps.next(step.value);
+  return step.value;
+}
+
+export async function backupUserDataAsync(dataDir, reason = 'snapshot') {
+  const steps = backupSteps(dataDir, reason, [], {
+    reserve: reserveBackupDirAsync,
+    copy: copyTreeAsync,
+    stat: statP,
+    remove: rmP,
+  });
+  let step = steps.next();
+  while (!step.done) {
+    let value;
+    try {
+      value = await step.value;
+    } catch (error) {
+      step = steps.throw(error);
+      continue;
+    }
+    step = steps.next(value);
+  }
+  return step.value;
 }
