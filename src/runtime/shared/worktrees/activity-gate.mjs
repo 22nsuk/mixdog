@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isAbsolute, join } from 'node:path';
-import { parseJsonText, withFileLockSync, writeFileAtomicSync, writeJsonAtomicSync } from '../atomic-file.mjs';
+import {
+  parseJsonText,
+  quarantinePath,
+  withFileLockSync,
+  writeFileAtomicSync,
+  writeJsonAtomicSync,
+} from '../atomic-file.mjs';
 import { isPidAliveOrUnknown } from '../pid-liveness.mjs';
 import { findGitLayout } from './git-head.mjs';
 import { canonicalPath, isWithin, samePath } from './paths.mjs';
@@ -63,6 +69,7 @@ const healIntervalMs = () => envMs('MIXDOG_ADMISSION_HEAL_MS', 2_000);
 // All reads, damage preservation and both writes run under the ledger's one
 // lock. Copy damaged bytes before replacing them: moving the only copy aside
 // would turn a failed recovery write into an apparently fresh workspace.
+// Never restore an older .bak, which could resurrect leases long released.
 function readSnapshot(path) {
   let content;
   try {
@@ -82,7 +89,7 @@ function readSnapshot(path) {
 }
 
 function keepAside(path, content) {
-  const aside = `${path}.corrupt-${Date.now()}-${randomUUID()}`;
+  const aside = quarantinePath(path);
   writeFileAtomicSync(aside, content);
   process.stderr.write(`[state] ${path} is damaged; kept as ${aside}\n`);
 }
@@ -199,17 +206,13 @@ function mutate(commonDir, update, onNewer = refuseUnreadable) {
         : emptyLedger();
       const restore = [
         ...(recovering && hasLedgerShape(saved.state) ? saved.state.leases.filter(isLease) : []),
-        ...[...held.values()]
-          .filter((own) => own.commonDir === commonDir && !own.releasing)
-          .map((own) => own.lease),
+        ...[...held.values()].filter((own) => own.commonDir === commonDir && !own.releasing).map((own) => own.lease),
       ];
       // An absent pair is a fresh workspace. An absent ledger with a mirror
       // is recovery, including a crash between the two durable writes.
       const unknown =
         hasUnknownLeases(state) ||
-        (recovering &&
-          (hasUnknownLeases(saved.state) ||
-            (!fullMirror && (current.damaged || saved.content !== null))));
+        (recovering && (hasUnknownLeases(saved.state) || (!fullMirror && (current.damaged || saved.content !== null))));
       if (unknown) {
         if (!Number.isFinite(state.recoveredAt)) state.recoveredAt = Date.now();
       } else delete state.recoveredAt;
@@ -229,9 +232,7 @@ function mutate(commonDir, update, onNewer = refuseUnreadable) {
         if (current.damaged) keepAside(path, current.content);
         if (saved.damaged) keepAside(mirror, saved.content);
         const releasing = new Set(
-          [...held.values()]
-            .filter((own) => own.commonDir === commonDir && own.releasing)
-            .map((own) => own.lease.token)
+          [...held.values()].filter((own) => own.commonDir === commonDir && own.releasing).map((own) => own.lease.token)
         );
         if (releasing.size) {
           const released = { ...state, leases: state.leases.filter((lease) => !releasing.has(lease.token)) };

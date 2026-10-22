@@ -59,7 +59,7 @@ the caller to keep the release handle. Completed leases are not republished as
 live ownership; other running leases remain protected.
 
 A damaged or missing ledger is rebuilt from the complete recovery copy.
-Damaged bytes are preserved as `.corrupt-<timestamp>-<id>`. Live holders remain
+Damaged bytes are preserved as `.corrupt-<timestamp>` copies. Live holders remain
 protected even when their runtime is paused or cannot run its heal timer.
 Readers continue unless a management lease holds their checkout. Management
 resumes when conflicting leases are released or their processes are confirmed
@@ -75,6 +75,10 @@ not establish that missing holders stopped. If both copies are lost, missing
 management holds cannot be reconstructed either; use the recovery procedure
 below. A real read or write access failure refuses admission until access is
 restored.
+
+If either admission file was written by a newer Mixdog version, it is left
+untouched. Prompts and shell commands continue unrecorded, while workspace
+changes are refused until you run the newer version again.
 
 Automatic recovery requires participating runtimes to write the full recovery
 copy. Finish or restart older runtimes using this repository and its linked

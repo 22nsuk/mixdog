@@ -243,8 +243,10 @@ for (const [name, setup] of Object.entries(ENTRY_POINTS)) {
   });
 }
 
+// Five merges (four refused, one clean) plus setup: each costs a dozen git
+// processes, so a slow Windows host needs far more than a Linux runner.
 test('mergeProjectBranch preserves a live foreign turn when its shared ledger is damaged', {
-  timeout: 20000,
+  timeout: 90000,
 }, async (t) => {
   const repo = makeRepo();
   const { source, merge } = await ENTRY_POINTS.mergeProjectBranch(repo);
@@ -297,7 +299,10 @@ test('mergeProjectBranch preserves a live foreign turn when its shared ledger is
   const assertMergeBlocked = async () => {
     await assert.rejects(merge(), (error) => {
       assert.equal(error.code, 'WORKTREE_BUSY_JOBS');
-      assert.ok(['workspace-admission-unreadable', 'folder-in-use'].includes(error.details.reason), error.details.reason);
+      assert.ok(
+        ['workspace-admission-unreadable', 'folder-in-use'].includes(error.details.reason),
+        error.details.reason
+      );
       return true;
     });
     assert.equal(git(repo, 'rev-parse', 'HEAD'), head);

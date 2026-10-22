@@ -309,7 +309,9 @@ function withFailedRename(path, run) {
 }
 
 for (const missing of [false, true]) {
-  test(`repeated management refusals preserve a foreign reader after ledger ${missing ? 'removal' : 'damage'}`, { timeout: 20000 }, async (t) => {
+  test(`repeated management refusals preserve a foreign reader after ledger ${missing ? 'removal' : 'damage'}`, {
+    timeout: 20000,
+  }, async (t) => {
     const repo = makeRepo();
     const child = reader(t, repo, false, false, { MIXDOG_ADMISSION_HEAL_MS: '600000' });
     assert.equal((await once(child, 'message'))[0], 'active');
@@ -327,7 +329,9 @@ for (const missing of [false, true]) {
 }
 
 for (const command of [false, true]) {
-  test(`recovery does not expire a delayed live ${command ? 'command' : 'turn'} holder`, { timeout: 20000 }, async (t) => {
+  test(`recovery does not expire a delayed live ${command ? 'command' : 'turn'} holder`, {
+    timeout: 20000,
+  }, async (t) => {
     await withShortRecovery(async () => {
       const repo = makeRepo();
       const child = reader(t, repo, false, command, { MIXDOG_ADMISSION_HEAL_MS: '600000' });
@@ -411,6 +415,7 @@ test('damage without recovery evidence admits readers but keeps management refus
   writeFileSync(join(repo, '.git', 'mixdog-workspace-admission.json'), Buffer.alloc(64));
   assertManagementBusy(repo, 'the first refusal must retain the unresolved recovery state');
   assertManagementBusy(repo, 'retrying cannot turn lost ownership evidence into an empty workspace');
+  assert.ok(Number.isFinite(ledgerOf(repo).recoveredAt), 'the refused writer persists unresolved ownership');
   const leave = tryAdmitWorkspaceActivity('reader', repo);
   assert.ok(leave, 'readers can continue while earlier ownership is unknown');
   leave();
@@ -421,6 +426,98 @@ test('damage without recovery evidence admits readers but keeps management refus
     details: { reason: 'workspace-admission-unreadable' },
   });
   assertManagementBusy(repo, 'elapsed time and repeated refusals cannot clear unknown ownership');
+});
+
+// Runs once at the instant another process can acquire the ledger lock.
+// The lock swallows release errors, so the interleaved writer records its result.
+function afterLedgerLockRelease(interleave) {
+  const unlink = fs.unlinkSync;
+  let fired = false;
+  fs.unlinkSync = function (path, ...rest) {
+    const result = unlink.call(this, path, ...rest);
+    if (!fired && String(path).endsWith('mixdog-workspace-admission.json.lock')) {
+      fired = true;
+      interleave();
+    }
+    return result;
+  };
+  syncBuiltinESMExports();
+  return () => {
+    fs.unlinkSync = unlink;
+    syncBuiltinESMExports();
+  };
+}
+
+test('a writer at the recovery lock release still sees unresolved ownership', (t) => {
+  const repo = makeRepo();
+  writeFileSync(join(repo, '.git', 'mixdog-workspace-admission.json'), Buffer.alloc(64));
+  let interleaved = { error: new Error('no writer ran at the lock release') };
+  const stop = afterLedgerLockRelease(() => {
+    try {
+      interleaved = { release: holdWorkspaceActivity([repo]) };
+    } catch (error) {
+      interleaved = { error };
+    }
+  });
+  try {
+    holdWorkspaceActivity([repo])();
+  } catch {
+    // The first writer refuses; the writer entering at lock release is under test.
+  } finally {
+    stop();
+  }
+  interleaved.release?.();
+  assert.equal(
+    interleaved.error?.details?.reason,
+    'workspace-admission-unreadable',
+    `the interleaved writer must not see a missing ledger as empty: ${interleaved.error?.message ?? 'admitted'}`
+  );
+  assert.ok(Number.isFinite(ledgerOf(repo).recoveredAt), 'the recovery marker is published');
+  const now = Date.now.bind(Date);
+  t.mock.method(Date, 'now', () => now() + 24 * 60 * 60 * 1000);
+  assertManagementBusy(repo, 'elapsed time does not resolve the recovered ownership');
+});
+
+test('a crash between keeping the damaged ledger aside and publishing recovery still refuses management', (t) => {
+  const repo = makeRepo();
+  const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+  const damaged = Buffer.alloc(64);
+  writeFileSync(path, damaged);
+  const crashed = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+        import fs from 'node:fs';
+        import { syncBuiltinESMExports } from 'node:module';
+        import { holdWorkspaceActivity } from ${JSON.stringify(moduleUrl)};
+        const rename = fs.renameSync;
+        // Exit at the actual publication boundary, after the damaged bytes are kept.
+        fs.renameSync = (from, to) => {
+          if (String(to).endsWith('mixdog-workspace-admission.json')) process.exit(86);
+          return rename(from, to);
+        };
+        syncBuiltinESMExports();
+        holdWorkspaceActivity([process.argv[1]]);
+      `,
+      repo,
+    ],
+    { encoding: 'utf8', env: { ...process.env, MIXDOG_DATA_DIR: tempDir() } }
+  );
+  assert.equal(crashed.status, 86, crashed.stderr);
+  assert.deepEqual(readFileSync(path), damaged, 'the crash leaves the primary evidence in place');
+  assert.ok(
+    asideCopies(repo).some((copy) => readFileSync(copy).equals(damaged)),
+    'the damaged bytes were kept before the crash'
+  );
+  assert.throws(() => holdWorkspaceActivity([repo]), {
+    code: 'WORKTREE_BUSY_JOBS',
+    details: { reason: 'workspace-admission-unreadable' },
+  });
+  const now = Date.now.bind(Date);
+  t.mock.method(Date, 'now', () => now() + 24 * 60 * 60 * 1000);
+  assertManagementBusy(repo, 'a crash and elapsed time cannot erase unknown ownership');
 });
 
 for (const [name, primary, mirror] of [
@@ -584,9 +681,8 @@ test('a failed primary grant is retracted from the recovery mirror', () => {
       withFailedRename(path, () => {
         assert.throws(
           () => {
-            unexpectedRelease = kind === 'turn'
-              ? tryAdmitWorkspaceActivity('failed-primary-grant', repo)
-              : holdWorkspaceActivity([repo]);
+            unexpectedRelease =
+              kind === 'turn' ? tryAdmitWorkspaceActivity('failed-primary-grant', repo) : holdWorkspaceActivity([repo]);
           },
           { code: 'WORKTREE_BUSY_JOBS', details: { reason: 'workspace-admission-unreadable' } }
         );
@@ -629,7 +725,10 @@ for (const failedCopy of ['primary', 'mirror']) {
       const leave = tryAdmitWorkspaceActivity('after-failed-release', repo);
       try {
         assert.ok(leave, 'the completed management lease must not be republished');
-        assert.equal(ledgerOf(repo).leases.some((lease) => lease.kind === 'management'), false);
+        assert.equal(
+          ledgerOf(repo).leases.some((lease) => lease.kind === 'management'),
+          false
+        );
       } finally {
         leave?.();
       }
@@ -686,7 +785,10 @@ for (const kind of ['turn', 'command']) {
     withFailedRename(mirror, () => assert.throws(leave, { code: 'WORKTREE_BUSY_JOBS' }));
     t.mock.timers.tick(2000);
     for (const state of [ledgerOf(repo), JSON.parse(readFileSync(mirror, 'utf8'))]) {
-      assert.deepEqual(state.leases.map((lease) => lease.sessionId), ['still-running']);
+      assert.deepEqual(
+        state.leases.map((lease) => lease.sessionId),
+        ['still-running']
+      );
     }
     assertManagementBusy(repo, 'a pending release cannot remove another live lease');
     live();
@@ -719,7 +821,7 @@ test('a release can retry a failed mirror write without leaving stale ownership'
       { encoding: 'utf8', timeout: 10000, env: { ...process.env, MIXDOG_DATA_DIR: tempDir() } }
     );
     assert.equal(next.error, undefined);
-    assert.equal(next.status, 0, 'a healthy primary takes precedence over a stale mirror: ' + next.stderr);
+    assert.equal(next.status, 0, `a healthy primary takes precedence over a stale mirror: ${next.stderr}`);
   } finally {
     leave();
   }
