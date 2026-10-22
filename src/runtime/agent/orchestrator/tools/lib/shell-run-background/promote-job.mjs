@@ -5,6 +5,7 @@
  */
 import { promoteForegroundShellJob } from '../../builtin/shell-jobs.mjs';
 import { treeKillForceSettle } from '../shell-run-state.mjs';
+import { finishWorkspaceActivity } from '../../../../../shared/worktrees/activity-gate.mjs';
 
 export async function promoteWithRetry(
   { run, command, cwd, clientHostPid, ownerSessionId },
@@ -92,6 +93,6 @@ export async function handOverLease(run) {
   const lease = run.resourceLease;
   run.resourceLease = null;
   await lease?.release();
-  run.workspaceAdmission?.();
+  finishWorkspaceActivity(run.workspaceAdmission);
   run.workspaceAdmission = null;
 }

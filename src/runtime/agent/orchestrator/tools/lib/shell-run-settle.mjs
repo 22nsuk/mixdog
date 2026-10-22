@@ -5,6 +5,7 @@
 import { ExecResult, SHELL_OUTPUT_INLINE_CAP } from '../shell-exec-output.mjs';
 import { createProcessTreeTracker, probeShellDescendants, watchTermination } from './shell-descendants.mjs';
 import { unregisterOwnedShellTree } from './owned-shell-trees.mjs';
+import { finishWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
 import {
   adoptShellWorkspaceAdmission,
   clearTerminationHold,
@@ -41,8 +42,8 @@ function treeSettled(run) {
  *  `run.workspaceAdmission` and retire the live record only once the root AND
  *  every descendant identity captured before the kill are confirmed gone. One
  *  observation loop at the termination cadence; running, unknown (incomplete
- *  snapshot, failed table read) and a failing release all re-check, and no
- *  timer ever releases on its own. */
+ *  snapshot, failed table read) all re-check, and no timer releases on its own.
+ *  After termination, admission owns persistence retries separately. */
 export function releaseAdmissionOnConfirmedTermination(run, { markNow = true, sweep = run.killed === true } = {}) {
   const { child } = run;
   if (!child || run.stopTerminationWatch) return;
@@ -53,7 +54,7 @@ export function releaseAdmissionOnConfirmedTermination(run, { markNow = true, sw
   if (markNow) keepTerminationUnconfirmedRecord(run);
   treeSettled(run);
   const release = () => {
-    run.workspaceAdmission?.();
+    finishWorkspaceActivity(run.workspaceAdmission);
     run.workspaceAdmission = null;
     run.stopTerminationWatch?.();
     clearTerminationHold(run.foregroundRecordId);
@@ -248,15 +249,9 @@ export function createSettle(run, releasePromotedCapture) {
     // finds a captured identity still alive or cannot tell.
     if (confirmKill) releaseAdmissionOnConfirmedTermination(run, { markNow: false });
     if (!lifecycleHeld && !descendantsUnknown && run.workspaceAdmission) {
-      try {
-        if (descendants) adoptShellWorkspaceAdmission(run.foregroundRecordId, run.workspaceAdmission);
-        else run.workspaceAdmission();
-        run.workspaceAdmission = null;
-      } catch (error) {
-        taskOutput.writeError = taskOutput.writeError || error;
-        exitCode = exitCode || 1;
-        run.failureReason = 'workspace admission cleanup failed';
-      }
+      if (descendants) adoptShellWorkspaceAdmission(run.foregroundRecordId, run.workspaceAdmission);
+      else finishWorkspaceActivity(run.workspaceAdmission);
+      run.workspaceAdmission = null;
     }
     run.resolveResult(
       new ExecResult({

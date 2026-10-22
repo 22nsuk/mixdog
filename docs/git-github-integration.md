@@ -62,11 +62,22 @@ The heal timer or the next admission retries that release before granting new
 activity, without requiring the caller to keep the release handle. Completed
 leases are not republished as live ownership; other running leases remain protected.
 
-Worker asks also preserve their completed result and hand drained follow-up
-inputs to the turn queue when release fails, logging the pending release
-separately. Provider failures and cancellation keep their original outcome.
+All completed owners use the same settlement boundary: attempt every release
+handle, log pending persistence separately, and let admission own its retries.
+Lead turns preserve their final answer, completion events and post-turn work;
+worker asks preserve their result and hand drained follow-up inputs to the
+turn queue. Provider failures, startup failures and cancellation keep their original outcome.
 If the release still cannot be persisted when a follow-up tries to start,
 that admission refuses and the unstarted input is requeued for retry.
+
+Shell settlement follows the same rule for runtime and child-PID leases,
+foreground completion, promotion, background records and surviving descendants.
+One failed release cannot skip another handle or turn a command's successful
+exit into a failure. Record retirement and confirmed-termination cleanup finish
+even if admission persistence is pending. A promotion first admits its background
+owner, so retiring foreground ownership never opens a protection gap. Live or
+unverified descendant processes still retain their leases until confirmed gone
+or explicitly released; pending disk cleanup does not establish process exit.
 
 A damaged or missing ledger is rebuilt from the complete recovery copy.
 Damaged bytes are preserved as `.corrupt-<timestamp>` copies. Live holders remain

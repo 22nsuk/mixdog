@@ -16,7 +16,7 @@
 import { worktreeError, worktreeRefusal } from '../../runtime/shared/worktrees/contract.mjs';
 import { throwIfAborted } from '../../runtime/shared/worktrees/git.mjs';
 import { isWithin } from '../../runtime/shared/worktrees/paths.mjs';
-import { tryAdmitWorkspaceActivity } from '../../runtime/shared/worktrees/activity-gate.mjs';
+import { releaseAll, tryAdmitWorkspaceActivity } from '../../runtime/shared/worktrees/activity-gate.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 /** @type {Map<string, { txId: string, settled: Promise<void> }>} Lead session id → in-flight transition. */
@@ -160,16 +160,11 @@ export async function admitTurn({ sessionId, cwd, signal }) {
     const leases = [release];
     turns.set(token, { sessionId: id, cwd, leases });
     return once(() => {
-      const errors = [];
-      for (const leave of leases) {
-        try {
-          leave();
-        } catch (error) {
-          errors.push(error);
-        }
+      try {
+        releaseAll(leases);
+      } finally {
+        turns.delete(token);
       }
-      turns.delete(token);
-      if (errors.length) throw new AggregateError(errors, 'Workspace admission could not be released.');
     });
   }
 }

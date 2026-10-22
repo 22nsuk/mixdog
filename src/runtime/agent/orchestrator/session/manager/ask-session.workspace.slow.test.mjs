@@ -57,7 +57,7 @@ async function withWorkspaceAsk(t, run, { diagnosticFailure = false } = {}) {
   syncBuiltinESMExports();
   const stderr = process.stderr.write;
   const log = t.mock.method(process.stderr, 'write', function (chunk, ...args) {
-    if (String(chunk).includes('[agent-ask] workspace lease release pending')) {
+    if (String(chunk).includes('[workspace-admission] release pending')) {
       warnings.push(String(chunk));
       if (diagnosticFailure) throw new Error('diagnostic sink unavailable');
       return true;

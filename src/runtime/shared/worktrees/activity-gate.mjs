@@ -385,7 +385,7 @@ export function holdWorkspaceActivity(folders, { sessionId = null } = {}) {
       releases.push(release(commonDir, token));
     }
   } catch (error) {
-    releaseAll(releases);
+    finishWorkspaceActivity(...releases);
     throw error;
   }
   return () => releaseAll(releases);
@@ -402,4 +402,25 @@ export function releaseAll(releases) {
     }
   }
   if (failure) throw failure;
+}
+
+/**
+ * Finish ownership after work settled (or was handed to an admitted owner).
+ * Attempt every handle: release() records failed persistence for heal/mutate
+ * to retry. Cleanup must not replace the operation's result/error or prevent
+ * later cleanup. Return the failure for surfaces that display pending cleanup;
+ * admission/grant failures still throw, as does the low-level release handle.
+ */
+export function finishWorkspaceActivity(...releases) {
+  try {
+    releaseAll(releases.filter((leave) => leave != null));
+    return null;
+  } catch (error) {
+    try {
+      process.stderr.write(`[workspace-admission] release pending code=${error?.code || 'unknown'}\n`);
+    } catch {
+      /* diagnostics must not interrupt settlement */
+    }
+    return error;
+  }
 }

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import test, { after, mock } from 'node:test';
 import { holdWorkspaceActivity, tryAdmitWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
 import { cleanupTempDirs, makeRepo } from '../../../../shared/worktrees/test-support.mjs';
+import { admissionWriteFault } from '../../../../shared/worktrees/admission-fault-fixture.mjs';
 
 import { processTable, scriptedChildTree } from './process-table-fixture.mjs';
 
@@ -94,6 +95,43 @@ const settleAndFlush = async (run) => {
   await createSettle(run, () => {})(1, 'SIGKILL');
   await flush();
 };
+
+test('confirmed termination ends its watch and retires its record even while admission release is pending', async (t) => {
+  const repo = makeRepo();
+  const fault = admissionWriteFault(t, repo);
+  const child = runningChild();
+  const { run } = unconfirmedRun(repo, child);
+  const leave = run.workspaceAdmission;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  records.retired.length = 0;
+  try {
+    tree.state.next = () => processTable([{ pid: ROOT }]);
+    await capturedBeforeKill(run, [{ pid: ROOT }]);
+    await settleAndFlush(run);
+    assert.equal(isHeld(repo), true);
+    fault.arm();
+    exitChild(child);
+    tree.state.next = () => processTable([]);
+    t.mock.timers.tick(5000);
+    await flush();
+    assert.ok(fault.count > 0);
+    assert.equal(run.workspaceAdmission, null);
+    await run.treeSettled;
+    assert.deepEqual(records.retired, ['job_unconfirmed_kill']);
+    const reads = tree.state.reads;
+    t.mock.timers.tick(10000);
+    await flush();
+    assert.equal(tree.state.reads, reads, 'finished processes no longer need a termination watch');
+    fault.stop();
+    holdWorkspaceActivity([repo])();
+    fault.assertEmpty();
+  } finally {
+    fault.stop();
+    leave();
+    run.stopTerminationWatch?.();
+    t.mock.timers.reset();
+  }
+});
 // The identities a kill path records while the root is still alive.
 async function capturedBeforeKill(run, rows) {
   tree.state.next = () => processTable(rows);

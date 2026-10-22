@@ -2,8 +2,9 @@ import './isolated-test-env.mjs';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test, { after, mock } from 'node:test';
-import { holdWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
+import { finishWorkspaceActivity, holdWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
 import { cleanupTempDirs, makeRepo } from '../../../../shared/worktrees/test-support.mjs';
+import { admissionWriteFault } from '../../../../shared/worktrees/admission-fault-fixture.mjs';
 import { processTable, scriptedChildTree } from './process-table-fixture.mjs';
 
 let child = Object.assign(new EventEmitter(), { pid: 4243, exitCode: null, signalCode: null });
@@ -13,6 +14,7 @@ const published = [];
 // terminal status.
 let nativeKill = () => {};
 let nativeDetail = { nativeStatus: 'running' };
+let onSpawn = () => startup.abort();
 
 // Everything below the spawn call is scripted: the child is created, the
 // startup then fails, and the native task reports `nativeDetail`.
@@ -40,7 +42,7 @@ mock.module('./native-spawn-client.mjs', {
 mock.module('./shell-spawn-retry.mjs', {
   namedExports: {
     spawnShellWithRetry: async () => {
-      startup.abort(); // fails the startup right after the child exists
+      onSpawn(); // defaults to failing startup right after the child exists
       return { child, attachErrorHandler() {} };
     },
   },
@@ -51,9 +53,82 @@ const childOnly = () => processTable(child.exitCode == null ? [{ pid: child.pid 
 tree.state.next = childOnly;
 mock.module('../../mcp/child-tree.mjs', { namedExports: tree.namedExports });
 const { spawnShellChild } = await import('./shell-run-spawn.mjs');
+const { createSettle } = await import('./shell-run-settle.mjs');
+const { unregisterOwnedShellTree } = await import('./owned-shell-trees.mjs');
 const { forceReleaseTerminationHold } = await import('../builtin/lib/shell-job-records.mjs');
 
 after(cleanupTempDirs);
+
+for (const copy of ['primary', 'mirror']) {
+  for (const outcome of ['success', 'spawn failure']) {
+    test(`foreground ${outcome} preserves its outcome after ${copy} release failure`, async (t) => {
+      const repo = makeRepo();
+      const fault = admissionWriteFault(t, repo, copy);
+      const expected = new Error('native spawn failed');
+      child = Object.assign(new EventEmitter(), { pid: process.pid, exitCode: null, signalCode: null });
+      startup = new AbortController();
+      onSpawn = () => {
+        if (outcome === 'spawn failure') {
+          fault.arm();
+          throw expected;
+        }
+      };
+      const run = {
+        foregroundRecordId: `job_foreground_release_${copy}_${outcome.replaceAll(' ', '_')}`,
+        stdoutDecoder: { end: () => '' },
+        stderrDecoder: { end: () => '' },
+        taskOutput: {
+          spilled: false,
+          getStdout: async () => 'command output',
+          getStderr: async () => '',
+          closeFds() {},
+          writeStdout() {},
+          writeStderr() {},
+        },
+      };
+      const input = {
+        run,
+        cwd: repo,
+        shell: process.execPath,
+        directArgv: ['-e', ''],
+        command: 'node',
+        abortSignal: startup.signal,
+      };
+      try {
+        if (outcome === 'spawn failure') {
+          await assert.rejects(spawnShellChild(input), (error) => error === expected);
+        } else {
+          await spawnShellChild(input);
+          child.exitCode = 0;
+          tree.state.next = () => processTable([]);
+          let result;
+          run.resolveResult = (value) => {
+            result = value;
+          };
+          fault.arm();
+          await createSettle(run, () => {})(0, null);
+          assert.equal(result.exitCode, 0);
+          assert.equal(result.stdout, 'command output');
+          assert.ok(!result.outputCaptureError);
+        }
+        assert.ok(fault.count > 0);
+        assert.equal(run.workspaceAdmission, null);
+        fault.stop();
+        holdWorkspaceActivity([repo])();
+        fault.assertEmpty();
+      } finally {
+        fault.stop();
+        finishWorkspaceActivity(run.workspaceAdmission);
+        clearTimeout(run.foregroundRecordTimer);
+        unregisterOwnedShellTree(run.foregroundRecordId, run.ownedTree);
+        onSpawn = () => startup.abort();
+        child = Object.assign(new EventEmitter(), { pid: 4243, exitCode: null, signalCode: null });
+        startup = new AbortController();
+        tree.state.next = childOnly;
+      }
+    });
+  }
+}
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const isHeld = (repo) => {

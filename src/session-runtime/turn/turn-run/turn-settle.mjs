@@ -1,4 +1,5 @@
 import { throwIfAborted } from '../../../runtime/shared/abort-race.mjs';
+import { finishWorkspaceActivity } from '../../../runtime/shared/worktrees/activity-gate.mjs';
 
 /** The StopFailure hook's error class, read from the failure message. */
 function stopFailureType(message) {
@@ -92,11 +93,7 @@ export function createTurnSettlement({
     } catch (error) {
       settleError = error;
     }
-    try {
-      turn.releaseWorkspace?.();
-    } catch (error) {
-      settleError = settleError ? new AggregateError([settleError, error], 'Turn cleanup failed.') : error;
-    }
+    finishWorkspaceActivity(turn.releaseWorkspace);
     try {
       turn.unregister?.();
     } catch {}

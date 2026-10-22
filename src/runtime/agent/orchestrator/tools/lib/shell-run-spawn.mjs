@@ -18,7 +18,12 @@ import { _maybeEncodePowerShellCommand } from '../shell-powershell.mjs';
 import { spawnShellWithRetry as _spawnShellWithRetry } from './shell-spawn-retry.mjs';
 import { STANDBY_ARGS, takeWarmShellStandby } from './shell-warm-standby.mjs';
 import { SHELL_OUTPUT_DISK_CAP } from '../shell-exec-output.mjs';
-import { admitWorkspaceActivity, tryAdmitWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
+import {
+  admitWorkspaceActivity,
+  finishWorkspaceActivity,
+  releaseAll,
+  tryAdmitWorkspaceActivity,
+} from '../../../../shared/worktrees/activity-gate.mjs';
 import { worktreeError } from '../../../../shared/worktrees/contract.mjs';
 import { capturePreKill, registerForegroundOwnedTree, treeKillForceSettle } from './shell-run-state.mjs';
 import { releaseAdmissionOnConfirmedTermination } from './shell-run-settle.mjs';
@@ -229,10 +234,7 @@ async function spawnAdmittedShellChild({
     kind: 'command',
   });
   if (!childAdmission) throw worktreeError('WORKTREE_BUSY_JOBS', 'The command workspace changed during spawn.');
-  run.workspaceAdmission = () => {
-    childAdmission();
-    parentAdmission();
-  };
+  run.workspaceAdmission = () => releaseAll([parentAdmission, childAdmission]);
   spawned.attachErrorHandler(onChildError);
   // Feed the script only after the error handler is attached; server
   // messages cannot be processed before this synchronous block yields.
@@ -278,7 +280,7 @@ export async function spawnShellChild(input) {
     return await spawnAdmittedShellChild(input);
   } catch (error) {
     if (!input.run.child) {
-      input.run.workspaceAdmission();
+      finishWorkspaceActivity(input.run.workspaceAdmission);
       input.run.workspaceAdmission = null;
     } else {
       try {

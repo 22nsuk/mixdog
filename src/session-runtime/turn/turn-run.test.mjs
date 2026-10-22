@@ -19,6 +19,10 @@ import { reportNativeWebSearchUsage } from '../native-web-search-usage.mjs';
 import { dispatchWebSearchRuntimeTool } from '../runtime-tool-routing.mjs';
 import { setInternalToolsProvider } from '../../runtime/agent/orchestrator/internal-tools.mjs';
 import { executeTool } from '../../runtime/agent/orchestrator/session/loop/tool-exec.mjs';
+import { admitTurn, holdCheckoutFolder } from '../workspace/admission-gate.mjs';
+import { holdWorkspaceActivity, tryAdmitWorkspaceActivity } from '../../runtime/shared/worktrees/activity-gate.mjs';
+import { cleanupTempDirs, makeRepo } from '../../runtime/shared/worktrees/test-support.mjs';
+import { admissionWriteFault } from '../../runtime/shared/worktrees/admission-fault-fixture.mjs';
 
 function makeHarness(overrides = {}) {
   const calls = [];
@@ -502,6 +506,64 @@ test('a refused workspace (recovery, large-repo confirm) never runs the turn and
   );
   assert.equal(h.state.activeTurns, 0);
 });
+
+for (const copy of ['primary', 'mirror']) {
+  for (const outcome of ['success', 'provider failure', 'cancellation']) {
+    test(`Lead settlement preserves ${outcome} after ${copy} release failure`, async (t) => {
+      const repo = makeRepo();
+      const fault = admissionWriteFault(t, repo, copy);
+      const expected = new Error(outcome);
+      let controller;
+      let leave;
+      const h = makeHarness({
+        admitTurnWorkspace: async ({ signal }) => {
+          leave = await admitTurn({ sessionId: 'sess_new', cwd: () => repo, signal });
+          return leave;
+        },
+        registerActiveTurnController: (value) => {
+          controller = value;
+          return () => h.calls.push(['controller.unregister']);
+        },
+        takePendingCompact: () => true,
+        runPendingCompact: (id) => h.calls.push(['compact', id]),
+      });
+      h.state.cwd = repo;
+      h.askResult = async () => {
+        fault.arm();
+        if (outcome === 'provider failure') throw expected;
+        if (outcome === 'cancellation') controller.abort(expected);
+        return { content: 'completed answer' };
+      };
+      try {
+        if (outcome === 'success') {
+          assert.equal((await h.runner.ask('work')).result.content, 'completed answer');
+          assert.deepEqual(h.named('transcript.assistant'), [['transcript.assistant', 'completed answer']]);
+          assert.equal(h.named('emit').filter((row) => row[1] === 'turn:end').length, 1);
+        } else {
+          await assert.rejects(h.runner.ask('work'), (error) => error === expected);
+          assert.equal(h.named('emit').filter((row) => row[1] === 'turn:error').length, 1);
+        }
+        assert.ok(fault.count > 0);
+        assert.equal(h.state.activeTurns, 0);
+        assert.equal(h.state.firstTurnCompleted, true);
+        assert.equal(h.named('controller.unregister').length, 1);
+        assert.deepEqual(h.named('compact'), [['compact', 'sess_new']]);
+        // Local turn ownership ended, but a new durable grant must still fail.
+        holdCheckoutFolder(null, repo)();
+        assert.throws(() => tryAdmitWorkspaceActivity('next', repo), {
+          details: { reason: 'workspace-admission-unreadable' },
+        });
+        fault.stop();
+        holdWorkspaceActivity([repo])();
+        fault.assertEmpty();
+      } finally {
+        fault.stop();
+        leave?.();
+        cleanupTempDirs();
+      }
+    });
+  }
+}
 
 test('getTurnLiveness projects the manager progress snapshot for the current session', () => {
   const h = makeHarness();

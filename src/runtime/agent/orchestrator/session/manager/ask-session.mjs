@@ -6,7 +6,7 @@
 // abort-aware call wrapper is ask-call-interrupt. This file owns the lock,
 // the loop and the runtime bookkeeping around each turn.
 import { createHash } from 'node:crypto';
-import { admitWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
+import { admitWorkspaceActivity, finishWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
 import {
   persistedAssistantTranscriptMetadata,
   persistedUserTranscriptMetadata,
@@ -127,20 +127,7 @@ async function runAskTurn({ sessionId, opened, input, askOpts, onToolCall, cwdOv
     });
     throw err;
   } finally {
-    try {
-      releaseWorkspace?.();
-    } catch (error) {
-      // Admission retains failed releases for its heal/next-mutation retry.
-      // Cleanup must not replace a published result and its drained inputs,
-      // or mask the provider/cancellation error already being propagated.
-      try {
-        process.stderr.write(
-          `[agent-ask] workspace lease release pending session=${sessionId} code=${error?.code || 'unknown'}\n`
-        );
-      } catch {
-        /* diagnostics must not break result or pending-input delivery */
-      }
-    }
+    finishWorkspaceActivity(releaseWorkspace);
   }
 }
 

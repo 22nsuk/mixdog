@@ -35,7 +35,7 @@ import { readGitHead } from '../../runtime/shared/worktrees/git-head.mjs';
 import {
   holdWorkspaceActivity,
   isExternalCheckout,
-  releaseAll,
+  finishWorkspaceActivity,
 } from '../../runtime/shared/worktrees/activity-gate.mjs';
 import { mergeConfirmedTarget } from '../../runtime/shared/worktrees/branch-management.mjs';
 import {
@@ -432,9 +432,8 @@ export function createWorkspaceTransitions({
       }
       result = await run([...consumers.keys()]);
     } catch (error) {
-      try {
-        releaseAll(release);
-      } catch (releaseError) {
+      const releaseError = finishWorkspaceActivity(...release);
+      if (releaseError) {
         // Keep the operation's failure, not a misleading admission refusal
         // from cleanup. The release intent remains queued in activity-gate.
         error.cause ??= releaseError;
@@ -442,9 +441,7 @@ export function createWorkspaceTransitions({
       }
       throw error;
     }
-    try {
-      releaseAll(release);
-    } catch {
+    if (finishWorkspaceActivity(...release)) {
       // Git has already settled. Preserve its actual result (including a
       // conflict or partial removal) while reporting the pending release.
       return { ...result, admissionReleasePending: true };

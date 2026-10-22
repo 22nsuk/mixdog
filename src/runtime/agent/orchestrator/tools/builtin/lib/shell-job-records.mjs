@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { holdsNoData, writeJsonAtomicAsync } from '../../../../../shared/atomic-file.mjs';
 import { isPidAlive } from '../../../../../shared/pid-liveness.mjs';
 import { displayShellCommand } from '../../../../../shared/shell-display.mjs';
-import { tryAdmitWorkspaceActivity } from '../../../../../shared/worktrees/activity-gate.mjs';
+import { finishWorkspaceActivity, tryAdmitWorkspaceActivity } from '../../../../../shared/worktrees/activity-gate.mjs';
 import { worktreeError } from '../../../../../shared/worktrees/contract.mjs';
 import { workspaceSees } from '../../../../../shared/worktrees/workspace-visibility.mjs';
 
@@ -35,16 +35,9 @@ const workspaceLeases = new Map();
 
 /** Transfer a foreground reader to a surviving-descendant task without a lease gap. */
 export function adoptShellWorkspaceAdmission(jobId, leave) {
-  const prior = workspaceLeases.get(jobId);
-  workspaceLeases.set(
-    jobId,
-    prior
-      ? () => {
-          prior();
-          leave();
-        }
-      : leave
-  );
+  // A new array preserves the handles captured by an already queued completion
+  // or retire, without hiding later handles behind an earlier release failure.
+  workspaceLeases.set(jobId, [...(workspaceLeases.get(jobId) || []), leave]);
 }
 
 // A record whose owner process is gone is garbage. Age alone never deletes a
@@ -333,10 +326,10 @@ export async function forceReleaseTerminationHold(jobId, { callerSessionId = nul
  *  are confirmed gone. */
 export function releaseShellJobWorkspace(jobId) {
   const key = String(jobId || '').trim();
-  const leave = workspaceLeases.get(key);
-  if (!leave) return;
-  leave();
-  if (workspaceLeases.get(key) === leave) workspaceLeases.delete(key);
+  const leases = workspaceLeases.get(key);
+  if (!leases) return;
+  finishWorkspaceActivity(...leases);
+  if (workspaceLeases.get(key) === leases) workspaceLeases.delete(key);
 }
 
 /** Flag a still-open job record as "termination unconfirmed" for the readouts. */
@@ -361,7 +354,7 @@ function patchRunningShellJobRecord(jobId, patch) {
 export function completeShellJobRecord(jobId, detail) {
   const key = validJobId(jobId);
   if (!key) return Promise.resolve(false);
-  const leaveWorkspace = workspaceLeases.get(key);
+  const leases = workspaceLeases.get(key);
   const dir = jobsDir();
   const jsonPath = join(dir, `${key}.json`);
   const donePath = join(dir, `${key}.done`);
@@ -384,8 +377,8 @@ export function completeShellJobRecord(jobId, detail) {
       // Callers complete a record only once its processes are confirmed gone
       // (or explicitly released): the workspace admission follows that, not
       // the record write, so a failed write cannot strand it with no handle.
-      leaveWorkspace?.();
-      if (workspaceLeases.get(key) === leaveWorkspace) workspaceLeases.delete(key);
+      finishWorkspaceActivity(...(leases || []));
+      if (workspaceLeases.get(key) === leases) workspaceLeases.delete(key);
     }
     await removePaths(ownerPaths);
     paths.set(key, [jsonPath, donePath]);
@@ -470,7 +463,7 @@ export async function listShellJobRecords({ strict = false } = {}) {
 export function retireShellJobRecord(jobId) {
   const key = String(jobId || '').trim();
   if (!key) return;
-  const leaveWorkspace = workspaceLeases.get(key);
+  const leases = workspaceLeases.get(key);
   workspaceLeases.delete(key);
   const list = paths.get(key);
   paths.delete(key);
@@ -480,6 +473,6 @@ export function retireShellJobRecord(jobId) {
     records.delete(key);
     incarnations.delete(key);
     await removePaths(list);
-    leaveWorkspace?.();
+    finishWorkspaceActivity(...(leases || []));
   });
 }
