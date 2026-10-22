@@ -403,6 +403,7 @@ export function createWorkspaceTransitions({
    */
   async function withManagementFolders(folders, removing, run, { actor = null } = {}) {
     const release = [];
+    let result;
     try {
       for (const folder of [...new Set(folders)].sort()) {
         release.push(holdProjectFolder(actor, folder, { hold: !isExternalCheckout(folder) }));
@@ -429,10 +430,26 @@ export function createWorkspaceTransitions({
       if ((await countOwnShellJobs(affected.map((session) => session.id))) > 0) {
         throw worktreeRefusal('folder-shell-jobs');
       }
-      return await run([...consumers.keys()]);
-    } finally {
-      releaseAll(release);
+      result = await run([...consumers.keys()]);
+    } catch (error) {
+      try {
+        releaseAll(release);
+      } catch (releaseError) {
+        // Keep the operation's failure, not a misleading admission refusal
+        // from cleanup. The release intent remains queued in activity-gate.
+        error.cause ??= releaseError;
+        error.details = { ...error.details, admissionReleasePending: true };
+      }
+      throw error;
     }
+    try {
+      releaseAll(release);
+    } catch {
+      // Git has already settled. Preserve its actual result (including a
+      // conflict or partial removal) while reporting the pending release.
+      return { ...result, admissionReleasePending: true };
+    }
+    return result;
   }
 
   const steps = createTransitionSteps({
@@ -869,7 +886,13 @@ export function createWorkspaceTransitions({
         () => removeWorktree({ force: false }, { ownTurn }),
         { actor: session.id }
       );
-      return { ...merged, cleanup: removed.removed, revision: removed.revision, workspace: removed.workspace };
+      return {
+        ...merged,
+        cleanup: removed.removed,
+        revision: removed.revision,
+        workspace: removed.workspace,
+        ...(removed.admissionReleasePending ? { admissionReleasePending: true } : {}),
+      };
     } catch (error) {
       // The merge stands: a refused or incomplete cleanup (in use, dirty,
       // unmerged, retained file recovery data, partly removed, …) is
@@ -886,6 +909,7 @@ export function createWorkspaceTransitions({
         },
         revision: workspace.revision,
         workspace,
+        ...(error?.details?.admissionReleasePending ? { admissionReleasePending: true } : {}),
       };
     }
   }

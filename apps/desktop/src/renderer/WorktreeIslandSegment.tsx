@@ -28,7 +28,13 @@ import { useMobileBack } from './mobile-back';
 import { ProgressSpinner } from './ProgressSpinner';
 import { SettingsConfirmDialog } from './settings/capability-controls';
 import type { SettingsConfirmation } from './settings/capability-data';
-import { branchRows, invokeWorktree, worktreeFailure, worktreeFailureText } from './worktree-branch-model';
+import {
+  branchRows,
+  invokeWorktree,
+  worktreeFailure,
+  worktreeFailureText,
+  worktreeReleaseNotice,
+} from './worktree-branch-model';
 
 /** A git checkout the segment can name. A project-folder workspace may carry
  *  its branch without repoCommonDir; a detached HEAD is told from "not a
@@ -251,7 +257,12 @@ export function BranchIslandSegment({
         // The preflight found conflicts; nothing changed.
         failed(
           t("Couldn't merge"),
-          worktreeFailureText({ code: 'MERGE_CONFLICT', message: '', details: { files: result.conflicts ?? [] } })
+          [
+            worktreeFailureText({ code: 'MERGE_CONFLICT', message: '', details: { files: result.conflicts ?? [] } }),
+            worktreeReleaseNotice(result),
+          ]
+            .filter(Boolean)
+            .join(' ')
         );
         return;
       }
@@ -263,6 +274,8 @@ export function BranchIslandSegment({
       if (kept && !result.upToDate) {
         text = t('Merged {{source}} into {{target}}; the worktree was kept', { source: branch, target });
       }
+      const releaseNotice = worktreeReleaseNotice(result);
+      if (releaseNotice) text = `${text}. ${releaseNotice}`;
       onFlash?.({ key: `worktree-merge:${result.commit ?? ''}:${workspace.revision}`, text }, sessionId);
     });
   const remove = () =>

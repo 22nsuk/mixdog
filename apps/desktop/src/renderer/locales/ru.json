@@ -5400,6 +5400,7 @@
   "Works with pull requests, issues and Actions.": "Работает с пул-реквестами, задачами и Actions.",
   "Workspace": "Рабочая область",
   "Workspace activity cannot be verified. Nothing was changed.": "Невозможно проверить активность рабочей области. Ничего не изменилось.",
+  "Workspace activity cleanup is pending and will be retried automatically.": "Очистка активности рабочей области ещё не завершена и будет автоматически повторена.",
   "Worktree": "Worktree",
   "Worktree missing": "Worktree отсутствует",
   "Worktrees are not available yet.": "Worktree пока недоступны.",

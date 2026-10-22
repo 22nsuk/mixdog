@@ -23,6 +23,13 @@ export interface WorktreeFailure {
   details: Record<string, unknown>;
 }
 
+/** Cleanup after an operation must not read as a refusal to start it. */
+export function worktreeReleaseNotice(result: { admissionReleasePending?: unknown }): string {
+  return result.admissionReleasePending === true
+    ? t('Workspace activity cleanup is pending and will be retried automatically.')
+    : '';
+}
+
 const CODE_PATTERN = new RegExp(`\\b(${DESKTOP_WORKTREE_ERROR_CODES.join('|')})\\b`, 'u');
 /** main/worktree-validation.ts WORKTREE_DETAILS_MARKER. */
 const DETAILS_MARKER = '\n[worktree-details] ';
@@ -195,6 +202,13 @@ export function worktreeRefusalText(reason: unknown): string | null {
  *  `carry`: the request brought the uncommitted changes along, so a
  *  WORKTREE_DIRTY without a known reason is a refused carry. */
 export function worktreeFailureText(
+  failure: WorktreeFailure,
+  options: { checkout?: boolean; carry?: boolean } = {}
+): string {
+  return [operationFailureText(failure, options), worktreeReleaseNotice(failure.details)].filter(Boolean).join(' ');
+}
+
+function operationFailureText(
   failure: WorktreeFailure,
   { checkout = false, carry = false }: { checkout?: boolean; carry?: boolean } = {}
 ): string {

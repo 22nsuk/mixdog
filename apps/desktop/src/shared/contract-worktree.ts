@@ -129,6 +129,8 @@ export interface DesktopWorkspaceTransitionResult {
  *  returns `merged: false` with the files; a cleanup that ran adds the
  *  workspace as it is now (the session never moves). */
 export interface DesktopMergeWorkspaceResult {
+  /** The operation's result stands; the runtime will retry releasing its activity lease. */
+  admissionReleasePending?: boolean;
   merged: boolean;
   target: string;
   /** The merge commit created on `target` (its HEAD when already up to date). */
@@ -245,6 +247,8 @@ export interface DesktopMergeProjectBranchInput {
 }
 
 export interface DesktopMergeProjectBranchResult {
+  /** The operation's result stands; the runtime will retry releasing its activity lease. */
+  admissionReleasePending?: boolean;
   merged: boolean;
   commit: string | null;
   target: string;

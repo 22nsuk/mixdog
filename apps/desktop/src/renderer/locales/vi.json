@@ -5223,6 +5223,7 @@
   "Works with pull requests, issues and Actions.": "Làm việc với pull request, issue và Actions.",
   "Workspace": "Không gian làm việc",
   "Workspace activity cannot be verified. Nothing was changed.": "Không thể xác minh hoạt động trên không gian làm việc. Không có gì được thay đổi.",
+  "Workspace activity cleanup is pending and will be retried automatically.": "Việc dọn dẹp hoạt động của không gian làm việc đang chờ xử lý và sẽ được tự động thử lại.",
   "Worktree": "Worktree",
   "Worktree missing": "Thiếu worktree",
   "Worktrees are not available yet.": "Worktree chưa khả dụng.",

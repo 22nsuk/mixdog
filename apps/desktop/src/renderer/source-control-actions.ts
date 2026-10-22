@@ -15,7 +15,7 @@ import { t } from './i18n';
 import { resetModePrompt } from './source-control-confirmations';
 import { emptySummary, gitRemoteWebUrl, isDirtyResetRefusal, reasonText } from './source-control-support';
 import type { GitActionRunner } from './use-source-control-runner';
-import { invokeWorktree, worktreeFailure, worktreeFailureText } from './worktree-branch-model';
+import { invokeWorktree, worktreeFailure, worktreeFailureText, worktreeReleaseNotice } from './worktree-branch-model';
 
 type SourceControlActionContext = {
   api: Window['mixdogDesktop'];
@@ -175,13 +175,21 @@ export async function mergeProjectBranch(projectPath: string, branch: string, ta
     if (failure.code) throw new Error(worktreeFailureText(failure));
     throw reason;
   }
-  if (result.upToDate) return 'Already up to date.';
+  const releaseNotice = worktreeReleaseNotice(result);
+  if (result.upToDate) return ['Already up to date.', releaseNotice].filter(Boolean).join(' ');
   if (!result.merged) {
     throw new Error(
-      worktreeFailureText({ code: 'MERGE_CONFLICT', message: '', details: { files: result.conflicts ?? [] } })
+      [
+        worktreeFailureText({ code: 'MERGE_CONFLICT', message: '', details: { files: result.conflicts ?? [] } }),
+        releaseNotice,
+      ]
+        .filter(Boolean)
+        .join(' ')
     );
   }
-  return `Merged ${branch} into ${result.target} (${String(result.commit).slice(0, 8)}).`;
+  return [`Merged ${branch} into ${result.target} (${String(result.commit).slice(0, 8)}).`, releaseNotice]
+    .filter(Boolean)
+    .join(' ');
 }
 
 // ONE implementation per branch action, shared by the branch row's inline

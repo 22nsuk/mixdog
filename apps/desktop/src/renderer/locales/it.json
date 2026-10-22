@@ -5339,6 +5339,7 @@
   "Works with pull requests, issues and Actions.": "Lavora con pull request, issue e Actions.",
   "Workspace": "Area di lavoro",
   "Workspace activity cannot be verified. Nothing was changed.": "impossibile verificare l'attività dell'area di lavoro. Niente è stato cambiato.",
+  "Workspace activity cleanup is pending and will be retried automatically.": "La pulizia dell’attività dell’area di lavoro è in sospeso e verrà ritentata automaticamente.",
   "Worktree": "Worktree",
   "Worktree missing": "Worktree mancante",
   "Worktrees are not available yet.": "I worktree non sono ancora disponibili.",

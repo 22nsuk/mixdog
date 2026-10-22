@@ -138,6 +138,22 @@ function externalSource(repo) {
   return { path, branch: 'feature/external' };
 }
 
+function failMirrorRelease(t, repo) {
+  const mirror = join(repo, '.git', 'mixdog-workspace-admission.json.management');
+  const rename = fs.renameSync;
+  const fault = t.mock.method(fs, 'renameSync', (from, to, ...args) => {
+    if (samePath(to, mirror) && JSON.parse(readFileSync(from, 'utf8')).leases.length === 0) {
+      throw Object.assign(new Error('injected mirror release failure'), { code: 'EIO' });
+    }
+    return rename(from, to, ...args);
+  });
+  syncBuiltinESMExports();
+  return () => {
+    fault.mock.restore();
+    syncBuiltinESMExports();
+  };
+}
+
 for (const [name, setup] of Object.entries(ENTRY_POINTS)) {
   test(`${name}: a failed mirror release cannot resurrect completed merge ownership`, async (t) => {
     const repo = makeRepo();
@@ -145,25 +161,17 @@ for (const [name, setup] of Object.entries(ENTRY_POINTS)) {
     commitFile(source.path, 'feature.txt', 'feature\n');
     const path = join(repo, '.git', 'mixdog-workspace-admission.json');
     const mirror = `${path}.management`;
-    const rename = fs.renameSync;
-    const fault = t.mock.method(fs, 'renameSync', (from, to, ...args) => {
-      if (samePath(to, mirror) && JSON.parse(readFileSync(from, 'utf8')).leases.length === 0) {
-        throw Object.assign(new Error('injected mirror release failure'), { code: 'EIO' });
-      }
-      return rename(from, to, ...args);
-    });
-    syncBuiltinESMExports();
+    const restore = failMirrorRelease(t, repo);
     try {
-      await assert.rejects(merge(), {
-        code: 'WORKTREE_BUSY_JOBS',
-        details: { reason: 'workspace-admission-unreadable' },
-      });
+      const result = await merge();
+      assert.equal(result.merged, true, 'release failure must not replace the completed merge');
+      assert.equal(result.commit, git(repo, 'rev-parse', 'HEAD'));
+      assert.equal(result.admissionReleasePending, true, 'the release failure is still reported');
       assert.equal(git(repo, 'rev-parse', 'HEAD^2'), git(source.path, 'rev-parse', 'HEAD'));
       assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).leases, []);
       assert.equal(JSON.parse(readFileSync(mirror, 'utf8')).leases.length, 2);
     } finally {
-      fault.mock.restore();
-      syncBuiltinESMExports();
+      restore();
     }
     // withManagementFolders has discarded the release handle. Admission owns
     // the retry, including both paths sharing the management token.
@@ -176,7 +184,9 @@ for (const [name, setup] of Object.entries(ENTRY_POINTS)) {
       }
     }
     commitFile(source.path, 'next.txt', 'next merge\n');
-    assert.equal((await merge()).merged, true, 'subsequent management also resumes');
+    const next = await merge();
+    assert.equal(next.merged, true, 'subsequent management also resumes');
+    assert.equal(next.admissionReleasePending, undefined, 'successful release needs no warning');
   });
 
   test(`${name}: a dirty source or one with a Git operation in progress is refused`, async () => {
@@ -240,6 +250,39 @@ for (const [name, setup] of Object.entries(ENTRY_POINTS)) {
     };
     assert.equal((await merge()).merged, true);
     assert.ok(probed);
+  });
+}
+
+for (const outcome of ['conflict', 'dirty-source']) {
+  test(`a failed mirror release preserves the ${outcome} outcome without claiming a merge`, async (t) => {
+    const repo = makeRepo();
+    const { source, merge } = await ENTRY_POINTS.manageProjectBranch(repo);
+    commitFile(source.path, 'README.md', 'feature\n');
+    if (outcome === 'conflict') commitFile(repo, 'README.md', 'main\n');
+    else writeFile(source.path, 'scratch.txt', 'unsaved\n');
+    const head = git(repo, 'rev-parse', 'HEAD');
+    const restore = failMirrorRelease(t, repo);
+    try {
+      if (outcome === 'conflict') {
+        const result = await merge();
+        assert.equal(result.merged, false);
+        assert.deepEqual(result.conflicts, ['README.md']);
+        assert.equal(result.admissionReleasePending, true);
+      } else {
+        await assert.rejects(merge(), (error) => {
+          assert.equal(error.code, 'WORKTREE_DIRTY', 'the source refusal must not be replaced by release failure');
+          assert.equal(error.details.admissionReleasePending, true);
+          assert.equal(error.cause?.details?.reason, 'workspace-admission-unreadable');
+          return true;
+        });
+      }
+      assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
+    } finally {
+      restore();
+    }
+    const leave = tryAdmitWorkspaceActivity('after-refused-merge', repo);
+    assert.ok(leave);
+    leave();
   });
 }
 
@@ -355,6 +398,36 @@ test('mergeWorkspace never moves its session: cleanup is refused while the sessi
   assert.deepEqual(f.state.moves, []);
   assert.equal(existsSync(source.path), false);
 });
+
+for (const dirty of [false, true]) {
+  test(`merge cleanup preserves its outcome when only its lease release fails (dirty=${dirty})`, async (t) => {
+    const repo = makeRepo();
+    const { f, source, merge } = await ENTRY_POINTS.mergeWorkspace(repo, { autoCleanup: true });
+    commitFile(source.path, 'feature.txt', 'feature\n');
+    await f.api.selectBranch({ branch: 'main' });
+    let admissions = 0;
+    let restore;
+    f.state.probe = () => {
+      if (++admissions !== 2) return; // Merge released normally; fail only the cleanup's release.
+      restore = failMirrorRelease(t, repo);
+      if (dirty) writeFile(source.path, 'scratch.txt', 'unsaved\n');
+    };
+    try {
+      const result = await merge({ cleanup: true });
+      assert.equal(result.merged, true);
+      assert.equal(result.commit, git(repo, 'rev-parse', 'HEAD'));
+      assert.equal(result.cleanup.removed, !dirty);
+      assert.equal(existsSync(source.path), dirty);
+      if (dirty) assert.equal(result.cleanup.code, 'WORKTREE_DIRTY');
+      assert.equal(result.admissionReleasePending, true);
+    } finally {
+      restore?.();
+    }
+    const leave = tryAdmitWorkspaceActivity('after-merge-cleanup', repo);
+    assert.ok(leave);
+    leave();
+  });
+}
 
 test('session-less merges never move or rewrite a session using the source folder', async () => {
   for (const name of ['manageProjectBranch', 'mergeProjectBranch']) {

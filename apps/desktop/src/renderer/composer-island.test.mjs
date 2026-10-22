@@ -2133,6 +2133,18 @@ test('the worktree menu runs Merge through the confirm popup, shows conflicts in
   await act(async () => footer()[1].click());
   assert.equal(popup(), null);
   assert.equal(document.querySelector('.composer-island-flash').textContent, 'Merged mixdog/fix-login into main');
+  // Lease cleanup failure follows a completed merge, so it still flashes
+  // completion rather than opening the failure dialog.
+  await act(async () => sleep(2_700));
+  reply = { merged: true, target: 'main', commit: 'fed456', admissionReleasePending: true };
+  await act(async () => segment().click());
+  await act(async () => item('merge').click());
+  await act(async () => footer()[1].click());
+  assert.equal(popup(), null, 'completed merge is not reported as a refusal');
+  assert.equal(
+    document.querySelector('.composer-island-flash').textContent,
+    'Merged mixdog/fix-login into main. Workspace activity cleanup is pending and will be retried automatically.'
+  );
   // A refused cleanup keeps the worktree but the merge still reads as done.
   await act(async () => sleep(2_700));
   reply = { merged: true, target: 'main', commit: 'fed789', cleanup: { removed: false, code: 'WORKTREE_DIRTY' } };

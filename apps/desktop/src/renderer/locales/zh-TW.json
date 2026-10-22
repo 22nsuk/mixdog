@@ -5223,6 +5223,7 @@
   "Works with pull requests, issues and Actions.": "處理拉取要求、議題和 Actions。",
   "Workspace": "工作區",
   "Workspace activity cannot be verified. Nothing was changed.": "無法驗證工作區活動。一切都沒有改變。",
+  "Workspace activity cleanup is pending and will be retried automatically.": "工作區活動清理尚未完成，將自動重試。",
   "Worktree": "工作樹",
   "Worktree missing": "工作樹遺失",
   "Worktrees are not available yet.": "工作樹尚無法使用。",

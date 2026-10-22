@@ -127,6 +127,52 @@ test('refusals read exactly like the runtime (TUI, remote) in English and are tr
   }
 });
 
+for (const [language, upToDate, expected] of [
+  [
+    'en',
+    false,
+    'Merged feature/login into main. Workspace activity cleanup is pending and will be retried automatically.',
+  ],
+  ['ko', false, 'feature/login를 main에 병합했습니다. 작업공간 활동 정리가 보류 중이며 자동으로 재시도됩니다.'],
+  ['en', true, 'Nothing to merge into main. Workspace activity cleanup is pending and will be retried automatically.'],
+]) {
+  test(`a completed merge with pending lease release refreshes the row (${language}, upToDate=${upToDate})`, async (t) => {
+    const f = await fixture(t);
+    setUiLanguagePreference(language);
+    await initUiLanguage();
+    t.after(() => setUiLanguagePreference('en'));
+    overrideConfirmAction(() => true);
+    t.after(() => overrideConfirmAction(null));
+    window.mixdogDesktop.invokeCapability = async () => ({
+      value: { merged: true, target: 'main', commit: 'c'.repeat(40), upToDate, admissionReleasePending: true },
+      snapshot: null,
+    });
+    await act(async () => document.body.querySelector('[data-action-id="merge"]').click());
+    assert.equal(f.refreshed(), 1, 'the changed branch state is reloaded');
+    assert.equal(document.body.querySelector('[role="menu"]'), null);
+    assert.deepEqual(f.toasts, [expected]);
+  });
+}
+
+for (const outcome of ['conflict', 'refusal']) {
+  test(`pending release does not report a ${outcome} as a completed merge`, async (t) => {
+    const f = await fixture(t);
+    overrideConfirmAction(() => true);
+    t.after(() => overrideConfirmAction(null));
+    window.mixdogDesktop.invokeCapability = async () => {
+      if (outcome === 'refusal') {
+        throw new Error('WORKTREE_DIRTY: dirty\n[worktree-details] {"admissionReleasePending":true}');
+      }
+      return { value: { merged: false, conflicts: ['a.txt'], admissionReleasePending: true } };
+    };
+    await act(async () => f.button('Merge into main').click());
+    assert.equal(f.refreshed(), 0);
+    assert.deepEqual(f.toasts, [
+      `${outcome === 'conflict' ? 'Nothing was merged. Conflicting files: a.txt' : 'The worktree has uncommitted changes.'} Workspace activity cleanup is pending and will be retried automatically.`,
+    ]);
+  });
+}
+
 test('right-click or a touch long-press on the row opens the same menu at the press point', async (t) => {
   const f = await fixture(t);
   await act(async () => f.node.querySelector('.branch-row-more').click());

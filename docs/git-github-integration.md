@@ -52,11 +52,15 @@ Mixdog keeps turn, command and management leases in the repository's shared
 compatibility; new copies cover all three lease kinds. Both copies are written
 under the same lock before a new admission succeeds.
 
-If a release cannot update both copies, its error still reaches the caller,
-but the runtime remembers that the work finished. The heal timer or the next
-admission retries that release before granting new activity, without requiring
-the caller to keep the release handle. Completed leases are not republished as
-live ownership; other running leases remain protected.
+If a release cannot update both copies, the runtime remembers that the work
+finished. The low-level release still throws; management operations preserve
+their actual result and report `admissionReleasePending: true` separately.
+The UI refreshes a completed merge and shows the pending cleanup notice instead
+of claiming that nothing changed. A failed operation keeps its original error,
+with the release failure attached as its cause and pending status in details.
+The heal timer or the next admission retries that release before granting new
+activity, without requiring the caller to keep the release handle. Completed
+leases are not republished as live ownership; other running leases remain protected.
 
 A damaged or missing ledger is rebuilt from the complete recovery copy.
 Damaged bytes are preserved as `.corrupt-<timestamp>` copies. Live holders remain

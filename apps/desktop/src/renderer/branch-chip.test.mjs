@@ -1130,12 +1130,20 @@ test('the dock merge goes through mergeProjectBranch with the confirmed target, 
           );
         }
         if (input.branch === 'clash') return { merged: false, commit: null, target: 'main', conflicts: ['a.txt'] };
+        if (input.branch === 'released-later') {
+          return { merged: true, commit: 'abcdef0123456789', target: 'main', admissionReleasePending: true };
+        }
         return { merged: true, commit: 'abcdef0123456789', target: 'main' };
       },
     };
     actions.mergeIntoCurrent(branch('feature'));
     actions.mergeIntoCurrent(branch('moved'));
     actions.mergeIntoCurrent(branch('clash'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Promise.all(runs);
+    // Complete the separate warning case without depending on the relative
+    // scheduling of successful and rejected capability calls.
+    actions.mergeIntoCurrent(branch('released-later'));
     await new Promise((resolve) => setTimeout(resolve, 0));
     await Promise.all(runs);
   } finally {
@@ -1147,12 +1155,18 @@ test('the dock merge goes through mergeProjectBranch with the confirmed target, 
       { projectPath: '/p', branch: 'feature', target: 'main' },
       { projectPath: '/p', branch: 'moved', target: 'main' },
       { projectPath: '/p', branch: 'clash', target: 'main' },
+      { projectPath: '/p', branch: 'released-later', target: 'main' },
     ]
   );
   assert.deepEqual(results, [
     ['branch-merge:feature', 'ok', 'Merged feature into main (abcdef01).'],
     ['branch-merge:moved', 'error', 'The project folder switched to another branch. Check the target and merge again.'],
     ['branch-merge:clash', 'error', 'Nothing was merged. Conflicting files: a.txt'],
+    [
+      'branch-merge:released-later',
+      'ok',
+      'Merged released-later into main (abcdef01). Workspace activity cleanup is pending and will be retried automatically.',
+    ],
   ]);
 });
 

@@ -6,7 +6,7 @@ import { showDesktopToast } from './desktop-toasts';
 import { confirmAction } from './app-confirm';
 import { t } from './i18n';
 import { ScmContextMenu, type ScmContextMenuItem } from './ScmContextMenu';
-import { invokeWorktree, worktreeFailure, worktreeFailureText } from './worktree-branch-model';
+import { invokeWorktree, worktreeFailure, worktreeFailureText, worktreeReleaseNotice } from './worktree-branch-model';
 
 /** A branch row's shell: the row itself, its "…" trigger, and the same menu on
  *  right-click or a touch long-press (touch screens show no "…"). */
@@ -87,9 +87,11 @@ export function BranchRowActions({
     try {
       const result = await invokeWorktree<{
         merged?: boolean;
+        upToDate?: boolean;
         conflicts?: string[];
         removed?: boolean;
         remaining?: Array<{ error?: string }>;
+        admissionReleasePending?: boolean;
       }>('manageProjectBranch', [
         {
           projectPath,
@@ -101,22 +103,41 @@ export function BranchRowActions({
           confirmed: true,
         },
       ]);
+      const releaseNotice = worktreeReleaseNotice(result);
       if (result.merged === false) {
-        setNotice(t('Nothing was merged. Conflicting files: {{files}}', { files: result.conflicts?.join(', ') || '' }));
+        setNotice(
+          [
+            t('Nothing was merged. Conflicting files: {{files}}', { files: result.conflicts?.join(', ') || '' }),
+            releaseNotice,
+          ]
+            .filter(Boolean)
+            .join(' ')
+        );
       } else if (result.removed === false) {
         const reasons = result.remaining
           ?.map((item) => item.error)
           .filter(Boolean)
           .join('\n');
         setNotice(
-          reasons ||
-            t(
-              'The worktree could not be removed completely because a file is still in use. Close it and remove the worktree again.'
-            )
+          [
+            reasons ||
+              t(
+                'The worktree could not be removed completely because a file is still in use. Close it and remove the worktree again.'
+              ),
+            releaseNotice,
+          ]
+            .filter(Boolean)
+            .join(' ')
         );
       } else {
         await onChanged();
         setOpen(false);
+        if (releaseNotice) {
+          const completed = result.upToDate
+            ? t('Nothing to merge into {{target}}', { target: state.target ?? '' })
+            : t('Merged {{source}} into {{target}}', { source: branch, target: state.target ?? '' });
+          setNotice(action === 'merge' ? `${completed}. ${releaseNotice}` : releaseNotice);
+        }
       }
     } catch (error) {
       fail(error);
