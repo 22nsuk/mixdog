@@ -695,6 +695,64 @@ test('a failed primary grant is retracted from the recovery mirror', () => {
   }
 });
 
+test('cancellation after admission keeps its reason when release persistence fails', async (t) => {
+  const repo = makeRepo();
+  const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+  const controller = new AbortController();
+  const cancelled = new Error('cancelled at the admission boundary');
+  const rename = fs.renameSync;
+  let faults = 0;
+  const fault = t.mock.method(fs, 'renameSync', (from, to, ...args) => {
+    if (samePath(to, `${path}.management`) && controller.signal.aborted) {
+      faults += 1;
+      throw Object.assign(new Error('injected release failure'), { code: 'EIO' });
+    }
+    const result = rename(from, to, ...args);
+    // Controlled scheduling at the final durable grant write: cancellation
+    // must win even though admission has already created a release handle.
+    if (samePath(to, path) && !controller.signal.aborted) controller.abort(cancelled);
+    return result;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(admitWorkspaceActivity('cancelled', repo, controller.signal), (error) => error === cancelled);
+    assert.ok(faults > 0);
+  } finally {
+    fault.mock.restore();
+    syncBuiltinESMExports();
+    holdWorkspaceActivity([repo])();
+  }
+  assert.deepEqual(ledgerOf(repo).leases, []);
+});
+
+test('a refused multi-repository hold preserves its reason while rolling back an earlier hold', (t) => {
+  const [first, second] = [makeRepo(), makeRepo()].sort((a, b) => a.localeCompare(b));
+  const live = tryAdmitWorkspaceActivity('live-reader', second);
+  const mirror = join(first, '.git', 'mixdog-workspace-admission.json.management');
+  const rename = fs.renameSync;
+  let faults = 0;
+  const fault = t.mock.method(fs, 'renameSync', (from, to, ...args) => {
+    if (samePath(to, mirror) && JSON.parse(readFileSync(from, 'utf8')).leases.length === 0) {
+      faults += 1;
+      throw Object.assign(new Error('injected rollback release failure'), { code: 'EIO' });
+    }
+    return rename(from, to, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => holdWorkspaceActivity([first, second]), { details: { reason: 'folder-in-use' } });
+    assert.ok(faults > 0);
+  } finally {
+    fault.mock.restore();
+    syncBuiltinESMExports();
+    holdWorkspaceActivity([first])();
+    live();
+  }
+  holdWorkspaceActivity([first, second])();
+  assert.deepEqual(ledgerOf(first).leases, []);
+  assert.deepEqual(ledgerOf(second).leases, []);
+});
+
 for (const failedCopy of ['primary', 'mirror']) {
   for (const recovery of ['timer', 'mutation', 'missing ledger']) {
     test(`a failed ${failedCopy} management release is completed by ${recovery} without its handle`, (t) => {

@@ -334,7 +334,7 @@ export async function admitWorkspaceActivity(sessionId, cwd, signal, options) {
     const leave = tryAdmitWorkspaceActivity(sessionId, cwd, options);
     if (leave) {
       if (signal?.aborted) {
-        leave();
+        finishWorkspaceActivity(leave);
         signal.throwIfAborted();
       }
       return leave;
