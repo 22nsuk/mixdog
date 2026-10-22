@@ -372,14 +372,14 @@ function withinDeadline(promise, label, ms = 20_000) {
   ]).finally(() => clearTimeout(timer));
 }
 
-/** The record once no seal of it is in flight. */
-async function settledChanges(sessionId, checkpointId) {
+/** Wait for a non-pending reply that includes the expected revision. */
+async function settledChanges(sessionId, checkpointId, minimumRevision = 0) {
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const reply = await getTurnChanges(sessionId, { checkpointId });
-    if (reply.status !== 'pending') return reply;
+    if (reply.status !== 'pending' && reply.revision >= minimumRevision) return reply;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error(`deadlock: ${checkpointId} stayed pending`);
+  throw new Error(`deadlock: ${checkpointId} did not settle at revision ${minimumRevision} or later`);
 }
 
 const workerPatch = 'diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-b\n+B\n';
@@ -644,7 +644,8 @@ test('a late worker re-seal racing an Undo stays consistent in either order', { 
   assert.equal(completeAgentTurnReview(second, [workerPatch.replaceAll('b.txt', 'b2.txt')]), true);
   reply = await withinDeadline(undo, 'undo ahead of re-seal');
   assert.equal(readTree(repo, ['a.txt'])['a.txt'], 'a\n');
-  reply = await settledChanges(sessionId, 'cp');
+  reply = await settledChanges(sessionId, 'cp', reply.revision + 1);
+  assert.equal(reply.revision, 4);
   assert.deepEqual(statesOf(reply), [
     ['a.txt', 'M', 'reverted'],
     ['b.txt', 'M', 'applied'],
