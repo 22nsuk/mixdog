@@ -94,6 +94,49 @@ test('sort output options are mutations, including in a redirected stage', async
   }
 });
 
+test('Git output options cannot inherit a read-only command classification', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'git diff --output=changes.patch -- file.txt',
+    'git diff --output changes.patch -- file.txt',
+    'git show --output=changes.patch HEAD',
+    'git log -p --output=changes.patch',
+    'git diff --output=changes.patch -- file.txt > capture.txt',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'global', command);
+  }
+});
+
+test('PowerShell callbacks cannot inherit the outer command\'s read-only classification', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'echo beta,alpha | Sort-Object -Property { node key.cjs $_ }',
+    'echo beta,alpha | Sort-Object -Property @{ Expression = { node key.cjs $_ } }',
+    'echo beta,alpha | Sort-Object -Property { node key.cjs $_ } > sorted.txt',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'global', command);
+  }
+});
+
+test('plain Git reads, PowerShell sorting and quoted callbacks remain read-only', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'git status --short',
+    'git diff -- file.txt',
+    'git diff --output-indicator-new=x -- file.txt',
+    'git diff -- --output=filename.txt',
+    'git show --stat HEAD',
+    'git log -1',
+    'echo beta,alpha | Sort-Object',
+    'echo beta,alpha | Sort-Object -Property Length',
+    'echo \'{ node key.cjs $_ }\'',
+    'echo "{ literal }"',
+    'echo ${HOME}',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'none', command);
+  }
+});
+
 test('nested shell execution cannot inherit the outer command\'s read-only classification', async (t) => {
   const dir = workDir(t);
   for (const command of [

@@ -2,8 +2,9 @@
 // echo payloads, driven through the public agentLoop entry point (see
 // ./loop/no-tool-turn.mjs and ./loop/assistant-commit.mjs).
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -275,6 +276,69 @@ for (const name of ['shell', 'Bash']) {
     );
     assert.equal(result.terminationReason, 'truncated');
   });
+
+  for (const callback of [false, true]) {
+    test(`${name} ${callback ? 'restores' : 'preserves'} output recovery after PowerShell sorting ${callback ? 'with' : 'without'} a callback`, {
+      skip: process.platform !== 'win32' && 'requires the native PowerShell shell path',
+    }, async (t) => {
+      const fx = toolFixture(t);
+      writeFileSync(
+        join(fx.options.cwd, 'key.cjs'),
+        "require('node:fs').appendFileSync('key-cache.txt', process.argv[2] + '\\n'); console.log(process.argv[2]);"
+      );
+      const command = `echo beta,alpha | Sort-Object${callback ? ' -Property { node key.cjs $_ }' : ''}`;
+      const messages = [{ role: 'user', content: 'sort and explain' }];
+      const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, { command }), emptyCut], {
+        escalated: 128_000,
+      });
+      const result = await run(provider, messages, fx.options);
+      const completed = messages.find((message) => message.toolCallId === 'progress-tool');
+      assert.equal(completed?.toolKind, 'normal');
+      assert.match(completed.content, /alpha\r?\nbeta/);
+      const cacheFile = join(fx.options.cwd, 'key-cache.txt');
+      assert.equal(existsSync(cacheFile), callback);
+      if (callback) {
+        const keys = readFileSync(cacheFile, 'utf8');
+        assert.match(keys, /alpha/);
+        assert.match(keys, /beta/);
+      }
+      assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, callback ? 2 : 1);
+      assert.deepEqual(
+        messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
+        callback ? [1, 1, 2, 3] : [1, 2, 3]
+      );
+      assert.equal(result.terminationReason, 'truncated');
+    });
+  }
+
+  for (const outputFile of [false, true]) {
+    test(`${name} ${outputFile ? 'restores' : 'preserves'} output recovery after git diff ${outputFile ? 'with' : 'without'} --output`, async (t) => {
+      const fx = toolFixture(t);
+      // No commit, hooks or remotes: diff the working file against a fresh index.
+      execFileSync('git', ['init', '--quiet'], { cwd: fx.options.cwd });
+      execFileSync('git', ['-c', 'core.autocrlf=false', 'add', '--', 'file.txt'], { cwd: fx.options.cwd });
+      writeFileSync(fx.file, 'UPDATED\n');
+      const command = `git diff --no-ext-diff --no-textconv${outputFile ? ' --output=changes.patch' : ''} -- file.txt`;
+      const messages = [{ role: 'user', content: 'prepare the diff and explain' }];
+      const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, { command }), emptyCut], {
+        escalated: 128_000,
+      });
+      const result = await run(provider, messages, fx.options);
+      const completed = messages.find((message) => message.toolCallId === 'progress-tool');
+      assert.equal(completed?.toolKind, 'normal');
+      const patchFile = join(fx.options.cwd, 'changes.patch');
+      assert.equal(existsSync(patchFile), outputFile);
+      const patch = outputFile ? readFileSync(patchFile, 'utf8') : completed.content;
+      assert.match(patch, /-ORIGINAL/);
+      assert.match(patch, /\+UPDATED/);
+      assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, outputFile ? 2 : 1);
+      assert.deepEqual(
+        messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
+        outputFile ? [1, 1, 2, 3] : [1, 2, 3]
+      );
+      assert.equal(result.terminationReason, 'truncated');
+    });
+  }
 }
 
 for (const changed of [false, true]) {

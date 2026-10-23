@@ -1020,7 +1020,7 @@ const SHELL_PATH_ARG_MUTATORS = new Set([
   'ln',
 ]);
 
-// find/awk/sort are read-only by default but can delete, exec, or write files.
+// Read-oriented commands can still delete, exec, or write through options.
 // Conservative: any such action makes the stage a mutation.
 const FIND_MUTATING_FLAG_RE = /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/;
 const AWK_MUTATING_PROGRAM_RE = /\bsystem\s*\(|\b(?:print|printf)\b[^;}]*(?:>>?|\|)|\|\s*getline\b/;
@@ -1031,10 +1031,11 @@ function hasMutatingShellOptions(tokens) {
   if (cmd === 'awk' || cmd === 'gawk' || cmd === 'mawk') {
     return tokens.slice(1).some((tok) => AWK_MUTATING_PROGRAM_RE.test(String(tok)));
   }
-  if (cmd === 'sort') {
+  if (cmd === 'sort' || cmd === 'git') {
     for (const token of tokens.slice(1)) {
       if (token === '--') break;
-      if (token === '--output' || token.startsWith('--output=') || /^-[^-]*o/.test(token)) return true;
+      if (token === '--output' || token.startsWith('--output=')) return true;
+      if (cmd === 'sort' && /^-[^-]*o/.test(token)) return true;
     }
   }
   return false;
@@ -1043,7 +1044,9 @@ function hasMutatingShellOptions(tokens) {
 // The stage/token splitters do not analyze nested execution. Do not let an
 // outer read-only command (or its redirect) hide a script's unknown effects.
 // Single-quoted text is literal in both shell families; double quotes still
-// allow command substitution. Backticks are ambiguous across shell families.
+// allow command substitution. Backticks are ambiguous across shell families,
+// and unquoted braces can introduce PowerShell script blocks. Parameter
+// expansion braces (${name}) alone do not execute a command.
 function hasUnanalyzedShellExecution(text) {
   let quote = null;
   for (let i = 0; i < text.length; i++) {
@@ -1063,7 +1066,7 @@ function hasUnanalyzedShellExecution(text) {
       continue;
     }
     if (ch === "'" || ch === '"') quote = ch;
-    else if (ch === '(') return true;
+    else if (ch === '(' || (ch === '{' && text[i - 1] !== '$')) return true;
   }
   return quote !== null;
 }
