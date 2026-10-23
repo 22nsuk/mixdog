@@ -9,8 +9,8 @@ import { cwdRelativePath, normalizeInputPath, normalizeOutputPath, resolveAgains
 import { codeMask } from './bash-tool/bashism-rewrite.mjs';
 
 // Hard-block patterns live exclusively in ../shell-policy.mjs (BLOCKED_PATTERNS /
-// isBlockedCommand). This lighter detector only classifies cache invalidation
-// scope for commands that already passed policy.
+// isBlockedCommand). This lighter detector classifies cache invalidation and
+// execution progress for commands that already passed policy.
 const SHELL_MUTATION_PATTERN =
   /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
 // `source` / `.` removed from read-only set: sourced scripts can mutate
@@ -1020,24 +1020,59 @@ const SHELL_PATH_ARG_MUTATORS = new Set([
   'ln',
 ]);
 
-// find/awk are read-only by default but can delete, exec, or write files.
+// find/awk/sort are read-only by default but can delete, exec, or write files.
 // Conservative: any such action makes the stage a mutation.
 const FIND_MUTATING_FLAG_RE = /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/;
 const AWK_MUTATING_PROGRAM_RE = /\bsystem\s*\(|\b(?:print|printf)\b[^;}]*(?:>>?|\|)|\|\s*getline\b/;
 
-function isMutatingFindOrAwk(tokens) {
+function hasMutatingShellOptions(tokens) {
   const cmd = String(tokens[0] || '').toLowerCase();
   if (cmd === 'find') return tokens.some((tok) => FIND_MUTATING_FLAG_RE.test(String(tok)));
   if (cmd === 'awk' || cmd === 'gawk' || cmd === 'mawk') {
     return tokens.slice(1).some((tok) => AWK_MUTATING_PROGRAM_RE.test(String(tok)));
   }
+  if (cmd === 'sort') {
+    for (const token of tokens.slice(1)) {
+      if (token === '--') break;
+      if (token === '--output' || token.startsWith('--output=') || /^-[^-]*o/.test(token)) return true;
+    }
+  }
   return false;
+}
+
+// The stage/token splitters do not analyze nested execution. Do not let an
+// outer read-only command (or its redirect) hide a script's unknown effects.
+// Single-quoted text is literal in both shell families; double quotes still
+// allow command substitution. Backticks are ambiguous across shell families.
+function hasUnanalyzedShellExecution(text) {
+  let quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (ch === '`') return true;
+    if (ch === '\\' && startsEscape(quote, text[i + 1])) {
+      i++;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '$' && text[i + 1] === '(') return true;
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === '(') return true;
+  }
+  return quote !== null;
 }
 
 export async function analyzeShellCommandEffects(command, cwd) {
   const text = String(command || '').trim();
   let localCwd = resolve(cwd || process.cwd());
   if (!text) return { mutationMode: 'none', paths: [], finalCwd: localCwd };
+  if (hasUnanalyzedShellExecution(text)) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
   const hasRedirect = /(?:^|[^0-9&<>])>>?(?!&)/.test(text) || /\btee\b/.test(text);
   // Classification is per PIPELINE STAGE, never per segment. A segment's
   // first command decided the whole segment before, so a read-only producer
@@ -1058,7 +1093,7 @@ export async function analyzeShellCommandEffects(command, cwd) {
         if (resolved) localCwd = resolved;
         return true;
       }
-      if (isMutatingFindOrAwk(tokens)) return false;
+      if (hasMutatingShellOptions(tokens)) return false;
       return SHELL_READ_ONLY_SEGMENT_RE.test(joined);
     });
     return { mutationMode: readOnly ? 'none' : 'global', paths: [], finalCwd: localCwd };
@@ -1079,7 +1114,7 @@ export async function analyzeShellCommandEffects(command, cwd) {
       else global = true;
       continue;
     }
-    if (isMutatingFindOrAwk(tokens)) {
+    if (hasMutatingShellOptions(tokens)) {
       global = true;
       continue;
     }

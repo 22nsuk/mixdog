@@ -143,6 +143,8 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
     ['mutating', 'shell', 'echo changed > changed.txt'],
     ['mutating', 'Bash', 'echo changed > changed.txt'],
     ['unknown-effect', 'shell', 'node -e "process.stdout.write(\'observed\')"'],
+    ['nested-script', 'shell', process.platform === 'win32' ? 'echo (node --version)' : 'echo "$(node --version)"'],
+    ['nested-script', 'Bash', process.platform === 'win32' ? 'echo (node --version)' : 'echo "$(node --version)"'],
   ]) {
     test(`${kind} ${name} still clears scoped-cache receipts and records an edit (${mode})`, async () => {
       const fx = fixture(mode);

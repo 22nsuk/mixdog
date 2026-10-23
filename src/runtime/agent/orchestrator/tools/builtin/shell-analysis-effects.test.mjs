@@ -79,3 +79,46 @@ test('plain find and awk stay read-only', async (t) => {
     assert.equal(effects.mutationMode, 'none', command);
   }
 });
+
+test('sort output options are mutations, including in a redirected stage', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'sort -o out.txt input.txt',
+    'sort -oout.txt input.txt',
+    'sort -ro out.txt input.txt',
+    'sort --output out.txt input.txt',
+    'sort --output=out.txt input.txt',
+    'sort -o out.txt input.txt > capture.txt',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'global', command);
+  }
+});
+
+test('nested shell execution cannot inherit the outer command\'s read-only classification', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'echo "$(node build.cjs)"',
+    'echo `node build.cjs`',
+    'echo (node build.cjs)',
+    'echo $(node build.cjs)',
+    'cat <(node build.cjs)',
+    'cd "$(node build.cjs)"',
+    'echo "$(node build.cjs)" > capture.txt',
+    'echo (node build.cjs) > capture.txt',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'global', command);
+  }
+});
+
+test('literal shell syntax and sort without output options remain read-only', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'echo \'$(node build.cjs)\'',
+    'echo \'`node build.cjs`\'',
+    'echo "(literal)"',
+    'sort -r input.txt',
+    'sort -- -output.txt',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'none', command);
+  }
+});

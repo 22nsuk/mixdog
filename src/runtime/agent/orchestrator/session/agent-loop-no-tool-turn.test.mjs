@@ -3,7 +3,7 @@
 // ./loop/no-tool-turn.mjs and ./loop/assistant-commit.mjs).
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -244,6 +244,34 @@ for (const { label, name, args, resetsRecovery } of [
     assert.deepEqual(
       messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
       resetsRecovery ? [1, 1, 2, 3] : [1, 2, 3]
+    );
+    assert.equal(result.terminationReason, 'truncated');
+  });
+}
+
+for (const name of ['shell', 'Bash']) {
+  test(`${name} restores output recovery after a build inside an echo expression`, async (t) => {
+    const fx = toolFixture(t);
+    writeFileSync(
+      join(fx.options.cwd, 'build.cjs'),
+      "require('node:fs').writeFileSync('built.txt', 'BUILT'); console.log('build complete');"
+    );
+    const command = process.platform === 'win32' ? 'echo (node build.cjs)' : 'echo "$(node build.cjs)"';
+    const messages = [{ role: 'user', content: 'build and explain' }];
+    const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, { command }), emptyCut], {
+      escalated: 128_000,
+    });
+    const result = await run(provider, messages, fx.options);
+    // The real shell, analysis, telemetry and batch completion all run; only
+    // the provider's output-limit responses are scripted.
+    const completed = messages.find((message) => message.toolCallId === 'progress-tool');
+    assert.equal(completed?.toolKind, 'normal');
+    assert.match(completed.content, /build complete/);
+    assert.equal(readFileSync(join(fx.options.cwd, 'built.txt'), 'utf8'), 'BUILT');
+    assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, 2);
+    assert.deepEqual(
+      messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
+      [1, 1, 2, 3]
     );
     assert.equal(result.terminationReason, 'truncated');
   });
