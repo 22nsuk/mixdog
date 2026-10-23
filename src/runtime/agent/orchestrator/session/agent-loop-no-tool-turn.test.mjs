@@ -235,6 +235,8 @@ test('a failed tool call does not reopen the output escalation or recovery budge
 for (const { label, name, args, resetsRecovery } of [
   { label: 'a known read-only shell', name: 'shell', args: { command: 'echo observed' }, resetsRecovery: false },
   { label: 'a read-only Bash adapter call', name: 'Bash', args: { command: 'echo observed' }, resetsRecovery: false },
+  { label: 'a dynamic cwd read', name: 'shell', args: { command: 'cd "$PWD"; pwd' }, resetsRecovery: false },
+  { label: 'a dynamic cwd Bash read', name: 'Bash', args: { command: 'cd "$PWD"; pwd' }, resetsRecovery: false },
   { label: 'a successful metadata tool', name: 'session', args: {}, resetsRecovery: false },
   { label: 'a mutating shell', name: 'shell', args: { command: 'echo changed > changed.txt' }, resetsRecovery: true },
   {
@@ -302,6 +304,26 @@ for (const name of ['shell', 'Bash']) {
         assert.match(keys, /beta/);
       }
       assertToolRecovery(execution, callback || redirected);
+    });
+  }
+
+  for (const [command, dialect, writes] of [
+    [String.raw`ls ".\"`, 'powershell', false],
+    ['echo “quoted # literal”', 'powershell', false],
+    ['echo 1 <# ignored #>; echo changed > changed.txt', 'powershell', true],
+    [String.raw`echo $'don\'t # literal'; echo changed > changed.txt`, 'posix', true],
+    [String.raw`echo $'hello\n'`, 'posix', false],
+    ['echo observed & echo changed > changed.txt', 'posix', true],
+  ]) {
+    test(`${name} preserves effects through ${dialect} quoting in output recovery (${JSON.stringify(command)})`, {
+      skip: (dialect === 'powershell') !== (process.platform === 'win32') && `requires the native ${dialect} default shell path`,
+    }, async (t) => {
+      const fx = toolFixture(t);
+      const execution = await runToolAfterOutputCut(fx, name, { command });
+      const output = join(fx.options.cwd, 'changed.txt');
+      assert.equal(existsSync(output), writes);
+      if (writes) assert.equal(readFileSync(output, 'utf8').trim(), 'changed');
+      assertToolRecovery(execution, writes);
     });
   }
 

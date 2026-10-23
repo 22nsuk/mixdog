@@ -66,6 +66,16 @@ function verifyEscapedCommentWrite(fx) {
   return () => assert.equal(readFileSync(join(fx.cwd, 'changed.txt'), 'utf8').trim(), 'changed');
 }
 
+function prepareRedirectedScript(fx) {
+  writeFileSync(join(fx.cwd, 'build.cjs'), "require('node:fs').writeFileSync('file.txt', 'CHANGED'); console.log('built');");
+  const version = statSync(fx.file);
+  rawContentCacheSet(fx.file, version, readFileSync(fx.file));
+  return () => {
+    assert.equal(readFileSync(fx.file, 'utf8'), 'CHANGED');
+    assert.equal(rawContentCacheGet(fx.file, version), null, 'stdout redirection does not hide script mutations');
+  };
+}
+
 // Keep ONE loop's crossTurnCalls across model iterations. Tests that reset
 // this map for every batch cannot expose the signature-only bypass.
 // Only the tool implementation is injected: admission, batching, cache
@@ -139,18 +149,24 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
   const commentedRead = process.platform === 'win32'
     ? 'echo beta,alpha | Sort-Object # { records }'
     : 'echo observed # { records }';
-  for (const [name, command, prepare, powershellOnly] of [
+  for (const [name, command, prepare, dialect] of [
     ['shell', 'echo observed'], ['Bash', 'echo observed'],
+    ['shell', 'cd "$PWD"; pwd'], ['Bash', 'cd "$PWD"; pwd'],
     ['shell', commentedRead], ['Bash', commentedRead],
     ['shell', 'git branch --show-current', prepareGitBranch],
     ['Bash', 'git branch --show-current', prepareGitBranch],
-    ['shell', 'echo beta,alpha | sort -Property Length', null, true],
-    ['Bash', 'echo beta,alpha | sort -Property Length', null, true],
-    ['shell', 'echo beta,alpha | sort -Top 1', null, true],
-    ['Bash', 'echo beta,alpha | sort -Top 1', null, true],
+    ['shell', 'echo beta,alpha | sort -Property Length', null, 'powershell'],
+    ['Bash', 'echo beta,alpha | sort -Property Length', null, 'powershell'],
+    ['shell', 'echo beta,alpha | sort -Top 1', null, 'powershell'],
+    ['Bash', 'echo beta,alpha | sort -Top 1', null, 'powershell'],
+    ['shell', String.raw`ls ".\"`, null, 'powershell'],
+    ['Bash', String.raw`ls ".\"`, null, 'powershell'],
+    ['shell', String.raw`echo $'hello\n'`, null, 'posix'],
+    ['Bash', String.raw`echo $'hello\n'`, null, 'posix'],
+    ['shell', 'echo ">"'], ['Bash', 'echo ">"'],
   ]) {
     test(`read-only ${name} preserves read and scoped-cache receipts (${mode}, ${command})`, {
-      skip: powershellOnly && process.platform !== 'win32' && 'requires the native PowerShell shell path',
+      skip: dialect && (dialect === 'powershell') !== (process.platform === 'win32') && `requires the native ${dialect} default shell path`,
     }, async () => {
       const fx = fixture(mode);
       prepare?.(fx);
@@ -177,7 +193,7 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
     });
   }
 
-  for (const [kind, name, command, prepare, posixOnly] of [
+  for (const [kind, name, command, prepare, dialect] of [
     ['mutating', 'shell', 'echo changed > changed.txt'],
     ['mutating', 'Bash', 'echo changed > changed.txt'],
     ['unknown-effect', 'shell', 'node -e "process.stdout.write(\'observed\')"'],
@@ -185,11 +201,17 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
     ['nested-script', 'Bash', process.platform === 'win32' ? 'echo (node --version)' : 'echo "$(node --version)"'],
     ['Git config mutation', 'shell', 'git remote add local ../other', prepareGitRemote],
     ['Git config mutation', 'Bash', 'git remote add local ../other', prepareGitRemote],
-    ['escaped Bash comment', 'shell', String.raw`echo \ #tag; echo changed > changed.txt`, verifyEscapedCommentWrite, true],
-    ['escaped Bash comment', 'Bash', String.raw`echo \ #tag; echo changed > changed.txt`, verifyEscapedCommentWrite, true],
+    ['escaped Bash comment', 'shell', String.raw`echo \ #tag; echo changed > changed.txt`, verifyEscapedCommentWrite, 'posix'],
+    ['escaped Bash comment', 'Bash', String.raw`echo \ #tag; echo changed > changed.txt`, verifyEscapedCommentWrite, 'posix'],
+    ['ANSI-C quoted Bash argument', 'shell', String.raw`echo $'don\'t # literal'; echo changed > changed.txt`, verifyEscapedCommentWrite, 'posix'],
+    ['ANSI-C quoted Bash argument', 'Bash', String.raw`echo $'don\'t # literal'; echo changed > changed.txt`, verifyEscapedCommentWrite, 'posix'],
+    ['PowerShell block comment', 'shell', 'echo 1 <# ignored #>; echo changed > changed.txt', verifyEscapedCommentWrite, 'powershell'],
+    ['PowerShell block comment', 'Bash', 'echo 1 <# ignored #>; echo changed > changed.txt', verifyEscapedCommentWrite, 'powershell'],
+    ['redirected unknown script', 'shell', 'node build.cjs > log.txt', prepareRedirectedScript],
+    ['redirected unknown script', 'Bash', 'node build.cjs > log.txt', prepareRedirectedScript],
   ]) {
     test(`${kind} ${name} still clears scoped-cache receipts and records an edit (${mode})`, {
-      skip: posixOnly && process.platform === 'win32' && 'requires the native POSIX default shell path',
+      skip: dialect && (dialect === 'powershell') !== (process.platform === 'win32') && `requires the native ${dialect} default shell path`,
     }, async () => {
       const fx = fixture(mode);
       const verify = prepare?.(fx);

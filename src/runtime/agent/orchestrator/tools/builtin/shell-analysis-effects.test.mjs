@@ -280,3 +280,90 @@ test('literal shell syntax and sort without output options remain read-only', as
     assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'none', command);
   }
 });
+
+for (const [shellType, command, mode] of [
+  ['powershell', String.raw`ls ".\"`, 'none'],
+  ['powershell', String.raw`ls '.\'`, 'none'],
+  ['powershell', "echo 'don''t # literal'", 'none'],
+  ['powershell', 'echo `"literal`"', 'none'],
+  ['powershell', 'echo “quoted # literal”', 'none'],
+  ['powershell', 'echo ‘quoted # literal’', 'none'],
+  ['powershell', String.raw`echo \ # ignored; echo changed > out.txt`, 'none'],
+  ['posix', String.raw`echo \ # literal; echo changed > out.txt`, 'paths'],
+  ['powershell', 'echo "word"# ignored; echo changed > out.txt', 'none'],
+  ['posix', 'echo "word"# literal; echo changed > out.txt', 'paths'],
+  ['powershell', "echo 'don''t # literal'; echo changed > out.txt", 'paths'],
+  ['powershell', 'echo `"# literal`"; echo changed > out.txt', 'paths'],
+  ['powershell', 'echo “quoted # literal”; echo changed > out.txt', 'paths'],
+  ['powershell', 'echo ‘quoted # literal’; echo changed > out.txt', 'paths'],
+  ['powershell', 'echo word"quoted"#tag; echo changed > out.txt', 'paths'],
+  ['powershell', "echo word'quoted'#tag; echo changed > out.txt", 'paths'],
+  ['powershell', 'echo --flag="quoted"#tag; echo changed > out.txt', 'paths'],
+  ['powershell', 'echo FIRST`\r\necho changed > out.txt', 'global'],
+  ['powershell', 'echo `\r\nchanged > out.txt', 'paths'],
+  ['powershell', 'echo 1 <# ignored #>; echo changed > out.txt', 'global'],
+  ['powershell', "echo @'\n# literal\n'@; echo changed > out.txt", 'global'],
+  ['posix', String.raw`echo $'don\'t # literal'; echo changed > out.txt`, 'paths'],
+  ['posix', String.raw`echo $'hello\n'`, 'none'],
+  ['posix', String.raw`echo $'don\'t # literal'`, 'none'],
+  ['posix', String.raw`echo pre$'a b'post`, 'none'],
+  ['posix', String.raw`echo $'$(touch should-not-exist) # ; >'`, 'none'],
+  ['posix', String.raw`echo changed > $'out\x2etxt'`, 'paths'],
+  ['posix', String.raw`sort $'\055o' out.txt input.txt`, 'global'],
+  ['posix', String.raw`sort $'\x2do' out.txt input.txt`, 'global'],
+  ['posix', 'echo observed & echo changed > out.txt', 'paths'],
+  ['posix', 'cat <<EOF\n# literal\nEOF\necho changed > out.txt', 'global'],
+  ...['powershell', 'posix'].flatMap((shellType) => [
+    [shellType, 'echo ">" out.txt', 'none'],
+    [shellType, 'echo "tee" out.txt', 'none'],
+    [shellType, 'echo "literal; # text"', 'none'],
+    [shellType, 'cd "$PWD"; pwd', 'none'],
+    [shellType, 'cd "$PWD"; echo changed > out.txt', 'global'],
+  ]),
+]) {
+  test(`effect lexing agrees with native ${shellType}: ${JSON.stringify(command)}`, async (t) => {
+    const spec = resolveShellFor(shellType === 'powershell' ? 'powershell' : 'bash');
+    if (!spec) return t.skip(`requires ${shellType}`);
+    const dir = workDir(t);
+    writeFileSync(join(dir, 'input.txt'), 'changed\n');
+    // Bash reads stdin so Windows argv quoting cannot change backslashes.
+    const args = shellType === 'powershell' ? [...spec.shellArgs, command] : ['-s'];
+    execFileSync(spec.shell, args, {
+      input: shellType === 'powershell' ? undefined : command,
+      cwd: dir, timeout: 10_000, windowsHide: true,
+    });
+    const writes = mode !== 'none';
+    assert.equal(existsSync(join(dir, 'out.txt')), writes, 'native file effect');
+    assert.equal(existsSync(join(dir, 'should-not-exist')), false);
+    if (writes) assert.equal(readFileSync(join(dir, 'out.txt'), 'utf8').trim(), 'changed');
+    const effects = await analyzeShellCommandEffects(command, dir, spec);
+    assert.equal(effects.mutationMode, mode);
+    assert.deepEqual(effects.paths, mode === 'paths' ? [join(dir, 'out.txt')] : []);
+  });
+}
+
+test('redirects do not narrow an unknown script to its stdout file', async (t) => {
+  const dir = workDir(t);
+  for (const shellType of ['powershell', 'posix']) {
+    const effects = await analyzeShellCommandEffects('node build.cjs > log.txt', dir, { shellType });
+    assert.equal(effects.mutationMode, 'global');
+  }
+});
+
+test('unsupported ANSI-C byte and control encodings stay conservative', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    String.raw`echo $'\0'`, String.raw`echo $'\400'`, String.raw`echo $'\xff'`,
+    String.raw`echo $'\cA'`, String.raw`echo $'\uD800'`, String.raw`echo $'\U00110000'`,
+    String.raw`sort $'\u002do' out.txt input.txt`, String.raw`sort $'\x{2d}o' out.txt input.txt`,
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir, { shellType: 'posix' })).mutationMode, 'global');
+  }
+});
+
+test('a generic POSIX fallback cannot assume Bash ANSI-C quoting', async (t) => {
+  const dir = workDir(t);
+  const spec = { shellType: 'posix', shell: '/bin/sh' };
+  assert.equal((await analyzeShellCommandEffects(String.raw`echo changed > $'out\x2etxt'`, dir, spec)).mutationMode, 'global');
+  assert.equal((await analyzeShellCommandEffects('echo observed', dir, spec)).mutationMode, 'none');
+});
