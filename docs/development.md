@@ -33,6 +33,15 @@ reporting error never rolls the backup back. Incomplete directories left by a
 crash or a failed cleanup are neither counted nor pruned, so they can
 accumulate and take disk space beyond the 40 completed backups.
 
+The in-directory initialization marker identifies the profile; it does not
+prove that its first backup completed. A readable configuration retries the
+initial snapshot until a published manifest matches its data directory and
+instance ID, including after a restart. The existing marker is preserved.
+Completed snapshots from normal saves or manual backups also satisfy this
+check, so successful initialization does not create repeated snapshots.
+`MIXDOG_SKIP_USER_DATA_BACKUP=1` (or `true`) suppresses backups without recording
+completion; enabling backups later allows initialization to retry.
+
 Useful environment variables:
 
 - `MIXDOG_TUI_MOUSE=0` — use terminal-native mouse behavior.

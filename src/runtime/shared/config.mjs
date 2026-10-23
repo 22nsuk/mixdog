@@ -310,8 +310,8 @@ function persistRestoredConfig(restored) {
 function readAll() {
   const parsed = readConfigFile();
   if (parsed != null) {
-    // A data dir from before the in-dir init marker gets one (plus a first
-    // scoped snapshot) once per process, so its config stays recoverable.
+    // Initialization needs a completed snapshot, not just a profile marker.
+    // A failed backup must leave this readable config available and retry later.
     try {
       ensureUserDataInitialized(resolvePluginData());
     } catch {}

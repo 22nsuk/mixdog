@@ -6,7 +6,7 @@ import {
   rm as rmP,
   stat as statP,
 } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFileAtomicAsync, writeFileAtomicSync, writeJsonAtomicSync } from './atomic-file.mjs';
@@ -298,16 +298,27 @@ function backupDirsNewestFirst(dir) {
 }
 
 /**
- * A backup is restorable only when its manifest names this data dir and this
- * incarnation of it. Legacy unscoped backups carry no manifest, so they stay
- * on disk but never match. A transient read failure throws: skipping the
- * backup would restore an older one instead.
+ * Only a published manifest naming this data dir and incarnation matches.
+ * Missing or invalid manifests are not completion evidence; transient read
+ * failures throw so callers retry instead of caching a missing/older backup.
  */
-function readRestorableConfig(backupDir, dataDirKey, instanceId) {
+function backupMatchesInstance(backupDir, dataDirKey, instanceId) {
   try {
     const manifest = JSON.parse(readFileSync(join(backupDir, BACKUP_MANIFEST), 'utf8'));
-    if (typeof manifest?.dataDir !== 'string' || normalizeDataDir(manifest.dataDir) !== dataDirKey) return null;
-    if (manifest.instanceId !== instanceId) return null;
+    return (
+      typeof manifest?.dataDir === 'string' &&
+      normalizeDataDir(manifest.dataDir) === dataDirKey &&
+      manifest.instanceId === instanceId
+    );
+  } catch (error) {
+    if (isAbsentBackupError(error)) return false;
+    throw error;
+  }
+}
+
+function readRestorableConfig(backupDir, dataDirKey, instanceId) {
+  try {
+    if (!backupMatchesInstance(backupDir, dataDirKey, instanceId)) return null;
     const parsed = JSON.parse(readFileSync(join(backupDir, 'mixdog-config.json'), 'utf8'));
     return isStructurallyCompleteMixdogConfigBackup(parsed) ? parsed : null;
   } catch (error) {
@@ -316,17 +327,22 @@ function readRestorableConfig(backupDir, dataDirKey, instanceId) {
   }
 }
 
-function findRestorableConfig(dataDir, instanceId) {
-  const key = normalizeDataDir(dataDir);
+function* backupDirsForDataDir(dataDir) {
   const scopeDir = scopeDirFor(dataDir);
   for (const name of listBackupDirsNewestFirst(scopeDir)) {
-    const parsed = readRestorableConfig(join(scopeDir, name), key, instanceId);
-    if (parsed) return parsed;
+    yield join(scopeDir, name);
   }
   const root = getBackupRoot();
   for (const name of listBackupDirsNewestFirst(root)) {
     if (name.startsWith(SCOPE_PREFIX)) continue;
-    const parsed = readRestorableConfig(join(root, name), key, instanceId);
+    yield join(root, name);
+  }
+}
+
+function findRestorableConfig(dataDir, instanceId) {
+  const key = normalizeDataDir(dataDir);
+  for (const backupDir of backupDirsForDataDir(dataDir)) {
+    const parsed = readRestorableConfig(backupDir, key, instanceId);
     if (parsed) return parsed;
   }
   return null;
@@ -429,20 +445,50 @@ export function markUserDataInitialized(dataDir) {
   return readInitInstanceId(dataDir);
 }
 
-const ensuredDataDirs = new Set();
+// Only a published manifest establishes completion. The marker owns identity,
+// including when its first backup failed; it is never rewritten to track this.
+const initializedBackupCache = new Map();
+
+// Normal config reads already have a content cache. Validate the marker with
+// metadata too, rather than adding a synchronous content read to every caller.
+function initMarkerVersion(dataDir) {
+  try {
+    const st = statSync(join(dataDir, INIT_MARKER));
+    return [st.dev, st.ino, st.size, st.mtimeMs, st.ctimeMs].join(':');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
 
 /**
- * Called when a readable config is observed. A data dir that predates the
- * in-dir marker (an upgraded install) gets its marker together with a first
- * scoped snapshot, so a later loss of the config stays recoverable. Once per
- * data dir per process.
+ * A readable config needs a completed backup for this profile incarnation.
+ * Retry failed initial snapshots, including across restarts, without replacing
+ * the marker or taking another snapshot after a successful manual/async backup.
  */
 export function ensureUserDataInitialized(dataDir) {
-  if (!dataDir) return;
+  if (!dataDir || skipBackups()) return;
   const key = normalizeDataDir(dataDir);
-  if (ensuredDataDirs.has(key)) return;
-  if (!hasUserDataInitMarker(dataDir)) backupUserData(dataDir, 'initial-snapshot');
-  ensuredDataDirs.add(key);
+  const root = normalizeDataDir(getBackupRoot());
+  const hit = initializedBackupCache.get(key);
+  // Stat before reading identity: a concurrent replacement then leaves an old
+  // version in the cache, which the next call detects rather than trusting it.
+  const markerVersion = initMarkerVersion(dataDir);
+  if (markerVersion && hit?.root === root && hit.markerVersion === markerVersion) return;
+  const instanceId = readInitInstanceId(dataDir);
+  if (instanceId) {
+    if (hit?.root === root && hit.instanceId === instanceId) {
+      hit.markerVersion = markerVersion;
+      return;
+    }
+    for (const backupDir of backupDirsForDataDir(dataDir)) {
+      if (backupMatchesInstance(backupDir, key, instanceId)) {
+        initializedBackupCache.set(key, { root, instanceId, markerVersion });
+        return;
+      }
+    }
+  }
+  backupUserData(dataDir, 'initial-snapshot');
 }
 
 function skipBackups() {
@@ -459,6 +505,12 @@ function finishBackup(dataDir, backupDir, reason) {
     reason,
     createdAt: new Date().toISOString(),
   });
+  if (instanceId) {
+    initializedBackupCache.set(normalizeDataDir(dataDir), {
+      root: normalizeDataDir(dirname(dirname(backupDir))),
+      instanceId,
+    });
+  }
   restoreLookupCache.delete(normalizeDataDir(dataDir));
   legacyEvidenceCache.delete(normalizeDataDir(dataDir));
 }

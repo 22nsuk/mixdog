@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import test from 'node:test';
 
 import { readConfig, updateSection, updateSectionAsync } from './config.mjs';
 import {
   backupUserData,
   backupUserDataAsync,
+  ensureUserDataInitialized,
   loadLatestMixdogConfigFromBackup,
   markUserDataInitialized,
 } from './user-data-guard.mjs';
@@ -62,6 +64,41 @@ function completedManifests(root) {
   return manifests;
 }
 
+function readConfigInFreshProcess(state) {
+  const source = `
+    import { readConfig } from ${JSON.stringify(new URL('./config.mjs', import.meta.url).href)};
+    process.stdout.write(JSON.stringify(readConfig()));
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+    env: {
+      ...process.env,
+      MIXDOG_DATA_DIR: state.dataDir,
+      MIXDOG_USER_DATA_BACKUP_ROOT: state.backupRoot,
+    },
+    encoding: 'utf8',
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+function assertSingleSnapshot(state, config, markerBytes) {
+  const manifests = completedManifests(state.backupRoot);
+  assert.equal(Object.keys(manifests).length, 1, 'exactly one completed snapshot must exist');
+  assertSnapshot(state, Object.entries(manifests)[0], config, markerBytes);
+  return manifests;
+}
+
+function assertSnapshot(state, [path, bytes], config, markerBytes) {
+  const manifest = JSON.parse(bytes);
+  assert.equal(manifest.dataDir, state.dataDir);
+  assert.equal(manifest.instanceId, JSON.parse(markerBytes).instanceId);
+  assert.deepEqual(JSON.parse(readFileSync(join(state.backupRoot, dirname(path), 'mixdog-config.json'))), config);
+  assert.deepEqual(readFileSync(state.markerPath), markerBytes);
+}
+
 function initialized(t) {
   const state = sandbox(t);
   writeFileSync(state.configPath, JSON.stringify(originalConfig));
@@ -87,6 +124,306 @@ function failMarkerReads(t, markerPath, code) {
   };
   t.after(restore);
   return { error, restore };
+}
+
+for (const [label, retry] of [
+  ['the next read in the same process', () => readConfig()],
+  ['a fresh process', readConfigInFreshProcess],
+]) {
+  test(`initial snapshot retries in ${label} after manifest publication fails`, (t) => {
+    const state = sandbox(t);
+    writeFileSync(state.configPath, JSON.stringify(originalConfig));
+    const previous = fs.renameSync;
+    let failedPublications = 0;
+    fs.renameSync = (source, destination, ...args) => {
+      if (basename(String(destination)) === 'backup.json') {
+        failedPublications += 1;
+        throw Object.assign(new Error('EIO: cannot publish backup manifest'), { code: 'EIO' });
+      }
+      return previous(source, destination, ...args);
+    };
+    syncBuiltinESMExports();
+    const restore = () => {
+      fs.renameSync = previous;
+      syncBuiltinESMExports();
+    };
+    t.after(restore);
+
+    assert.deepEqual(readConfig(), originalConfig, 'a backup failure must not hide the readable config');
+    assert.equal(failedPublications, 1, 'the failure must occur while publishing the manifest');
+    assert.deepEqual(completedManifests(state.backupRoot), {});
+    const markerBytes = readFileSync(state.markerPath);
+    assert.ok(JSON.parse(markerBytes).instanceId, 'the identity marker was published before the failure');
+
+    restore();
+    assert.deepEqual(retry(state), originalConfig);
+    const manifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+    assert.equal(JSON.parse(Object.values(manifests)[0]).reason, 'initial-snapshot');
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+    assert.deepEqual(
+      completedManifests(state.backupRoot),
+      manifests,
+      'reads and restarts must not duplicate the snapshot'
+    );
+    assert.deepEqual(readFileSync(state.markerPath), markerBytes);
+
+    rmSync(state.configPath);
+    assert.deepEqual(readConfig(), originalConfig, 'the retried snapshot must recover a later config loss');
+    assert.deepEqual(JSON.parse(readFileSync(state.configPath, 'utf8')), originalConfig);
+    assert.deepEqual(readFileSync(state.markerPath), markerBytes);
+  });
+}
+
+for (const [label, config] of [
+  ['complete', originalConfig],
+  ['sparse', { ui: { theme: 'sparse' } }],
+]) {
+  test(`a successful initial snapshot of a ${label} config is not repeated by reads or restarts`, (t) => {
+    const state = sandbox(t);
+    writeFileSync(state.configPath, JSON.stringify(config));
+    assert.deepEqual(readConfig(), config);
+    const markerBytes = readFileSync(state.markerPath);
+    const manifests = assertSingleSnapshot(state, config, markerBytes);
+
+    // Sparse config is a valid snapshot even when the restore policy would
+    // reject it as a possible single-section wipe remnant.
+    assert.deepEqual(readConfig(), config);
+    assert.deepEqual(readConfig(), config);
+    assert.deepEqual(readConfigInFreshProcess(state), config);
+    assert.deepEqual(readConfigInFreshProcess(state), config);
+    assert.deepEqual(completedManifests(state.backupRoot), manifests);
+    assert.deepEqual(readFileSync(state.markerPath), markerBytes);
+  });
+}
+
+test('repeated normal config reads do not reread an unchanged initialization marker', (t) => {
+  const state = sandbox(t);
+  writeFileSync(state.configPath, JSON.stringify(originalConfig));
+  assert.deepEqual(readConfig(), originalConfig);
+  const markerBytes = readFileSync(state.markerPath);
+  const manifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+  assert.deepEqual(readConfig(), originalConfig);
+
+  const previous = fs.readFileSync;
+  let markerReads = 0;
+  fs.readFileSync = (path, ...args) => {
+    if (String(path) === state.markerPath) markerReads += 1;
+    return previous(path, ...args);
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    fs.readFileSync = previous;
+    syncBuiltinESMExports();
+  });
+
+  for (let i = 0; i < 5; i += 1) assert.deepEqual(readConfig(), originalConfig);
+  assert.equal(markerReads, 0, 'unchanged profile reads must avoid repeated marker content I/O');
+  assert.deepEqual(originalReadFileSync(state.markerPath), markerBytes);
+  assert.deepEqual(completedManifests(state.backupRoot), manifests);
+});
+
+for (const skip of ['1', 'true']) {
+  test(`MIXDOG_SKIP_USER_DATA_BACKUP=${skip} does not cache initial snapshot completion`, (t) => {
+    const state = sandbox(t);
+    writeFileSync(state.configPath, JSON.stringify(originalConfig));
+    process.env.MIXDOG_SKIP_USER_DATA_BACKUP = skip;
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.equal(existsSync(state.markerPath), false);
+    assert.deepEqual(completedManifests(state.backupRoot), {});
+
+    process.env.MIXDOG_SKIP_USER_DATA_BACKUP = '0';
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.equal(existsSync(state.markerPath), true, 'enabling backups must allow initialization in the same process');
+    const markerBytes = readFileSync(state.markerPath);
+    const manifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+    assert.deepEqual(completedManifests(state.backupRoot), manifests);
+  });
+}
+
+for (const [label, damage] of [
+  ['malformed JSON', () => '{"instanceId":'],
+  ['a different data directory', (manifest, state) => JSON.stringify({ ...manifest, dataDir: dirname(state.dataDir) })],
+  ['a different instance', (manifest) => JSON.stringify({ ...manifest, instanceId: 'previous-incarnation' })],
+]) {
+  test(`a cold completion lookup rejects a manifest with ${label}`, (t) => {
+    const state = sandbox(t);
+    writeFileSync(state.configPath, JSON.stringify(originalConfig));
+    // The child creates the snapshot without warming this process's cache.
+    assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+    const markerBytes = readFileSync(state.markerPath);
+    const originalManifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+    const [path, bytes] = Object.entries(originalManifests)[0];
+    const damaged = damage(JSON.parse(bytes), state);
+    writeFileSync(join(state.backupRoot, path), damaged);
+
+    assert.deepEqual(readConfig(), originalConfig);
+    const manifests = completedManifests(state.backupRoot);
+    assert.equal(Object.keys(manifests).length, 2, 'an invalid manifest must not count as completed initialization');
+    assert.equal(manifests[path], damaged, 'the existing backup must remain untouched');
+    const added = Object.entries(manifests).filter(([candidate]) => candidate !== path);
+    assertSnapshot(state, added[0], originalConfig, markerBytes);
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+    assert.deepEqual(completedManifests(state.backupRoot), manifests);
+  });
+}
+
+test('a matching unscoped manifest satisfies a cold completion lookup', (t) => {
+  const state = sandbox(t);
+  writeFileSync(state.configPath, JSON.stringify(originalConfig));
+  assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+  const markerBytes = readFileSync(state.markerPath);
+  const originalManifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+  const snapshotDir = dirname(Object.keys(originalManifests)[0]);
+  fs.renameSync(join(state.backupRoot, snapshotDir), join(state.backupRoot, basename(snapshotDir)));
+  const manifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+
+  assert.deepEqual(readConfig(), originalConfig);
+  assert.deepEqual(readConfig(), originalConfig);
+  assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+  assert.deepEqual(completedManifests(state.backupRoot), manifests);
+  assert.deepEqual(readFileSync(state.markerPath), markerBytes);
+});
+
+for (const [label, method, target] of [
+  ['listing the scope', 'readdirSync', (manifestPath) => dirname(dirname(manifestPath))],
+  ['reading a manifest', 'readFileSync', (manifestPath) => manifestPath],
+]) {
+  test(`a cold completion lookup retries after EIO while ${label}`, (t) => {
+    const state = sandbox(t);
+    writeFileSync(state.configPath, JSON.stringify(originalConfig));
+    assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+    const markerBytes = readFileSync(state.markerPath);
+    const manifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+    const faultPath = target(join(state.backupRoot, Object.keys(manifests)[0]));
+    const previous = fs[method];
+    let armed = true;
+    let lookups = 0;
+    fs[method] = (path, ...args) => {
+      if (String(path) === faultPath) {
+        lookups += 1;
+        if (armed) throw Object.assign(new Error(`EIO: ${label}`), { code: 'EIO' });
+      }
+      return previous(path, ...args);
+    };
+    syncBuiltinESMExports();
+    const restore = () => {
+      fs[method] = previous;
+      syncBuiltinESMExports();
+    };
+    t.after(restore);
+
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.equal(lookups, 2, 'failed lookups must not cache completion');
+    armed = false;
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.equal(lookups, 3, 'the next read must retry the completion lookup');
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.equal(lookups, 3, 'a successful lookup must be reused');
+    restore();
+    assert.deepEqual(
+      completedManifests(state.backupRoot),
+      manifests,
+      'lookup failures must not create extra snapshots'
+    );
+    assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+    assert.deepEqual(completedManifests(state.backupRoot), manifests);
+    assert.deepEqual(readFileSync(state.markerPath), markerBytes);
+  });
+}
+
+test('an empty initialization attempt does not cache completion before a config appears', (t) => {
+  const state = sandbox(t);
+  ensureUserDataInitialized(state.dataDir);
+  assert.equal(existsSync(state.markerPath), false);
+  assert.deepEqual(completedManifests(state.backupRoot), {});
+
+  writeFileSync(state.configPath, JSON.stringify(originalConfig));
+  assert.deepEqual(readConfig(), originalConfig);
+  const markerBytes = readFileSync(state.markerPath);
+  const manifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+  assert.deepEqual(readConfig(), originalConfig);
+  assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+  assert.deepEqual(completedManifests(state.backupRoot), manifests);
+});
+
+test('initial snapshot completion follows a changed backup root without replacing the profile identity', (t) => {
+  const state = sandbox(t);
+  writeFileSync(state.configPath, JSON.stringify(originalConfig));
+  assert.deepEqual(readConfig(), originalConfig);
+  const markerBytes = readFileSync(state.markerPath);
+  const originalManifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+
+  const next = { ...state, backupRoot: join(dirname(state.backupRoot), 'other-backups') };
+  process.env.MIXDOG_USER_DATA_BACKUP_ROOT = next.backupRoot;
+  assert.deepEqual(readConfig(), originalConfig);
+  const nextManifests = assertSingleSnapshot(next, originalConfig, markerBytes);
+  assert.deepEqual(readConfig(), originalConfig);
+  assert.deepEqual(readConfigInFreshProcess(next), originalConfig);
+  assert.deepEqual(completedManifests(next.backupRoot), nextManifests);
+  assert.deepEqual(completedManifests(state.backupRoot), originalManifests);
+  assert.deepEqual(readFileSync(state.markerPath), markerBytes);
+});
+
+test('a profile recreated at the same path gets its own initial snapshot and identity', (t) => {
+  const state = sandbox(t);
+  writeFileSync(state.configPath, JSON.stringify(originalConfig));
+  assert.deepEqual(readConfig(), originalConfig);
+  const markerBytes = readFileSync(state.markerPath);
+  const originalManifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+
+  rmSync(state.dataDir, { recursive: true });
+  mkdirSync(state.dataDir);
+  const recreatedConfig = { ...originalConfig, agent: { model: 'recreated-profile-model' } };
+  writeFileSync(state.configPath, JSON.stringify(recreatedConfig));
+  assert.deepEqual(readConfig(), recreatedConfig);
+  assert.equal(existsSync(state.markerPath), true, 'a recreated profile must not reuse cached completion');
+  const nextMarkerBytes = readFileSync(state.markerPath);
+  const nextInstanceId = JSON.parse(nextMarkerBytes).instanceId;
+  assert.notEqual(nextInstanceId, JSON.parse(markerBytes).instanceId);
+  const manifests = completedManifests(state.backupRoot);
+  const added = Object.entries(manifests).filter(([path]) => !Object.hasOwn(originalManifests, path));
+  assert.equal(added.length, 1);
+  const [path, bytes] = added[0];
+  assert.equal(JSON.parse(bytes).instanceId, nextInstanceId);
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(state.backupRoot, dirname(path), 'mixdog-config.json'))),
+    recreatedConfig
+  );
+  for (const [originalPath, originalBytes] of Object.entries(originalManifests)) {
+    assert.equal(manifests[originalPath], originalBytes);
+  }
+
+  assert.deepEqual(readConfig(), recreatedConfig);
+  assert.deepEqual(readConfigInFreshProcess(state), recreatedConfig);
+  assert.deepEqual(completedManifests(state.backupRoot), manifests);
+  assert.deepEqual(readFileSync(state.markerPath), nextMarkerBytes);
+});
+
+for (const [kind, backup] of [
+  ['sync', backupUserData],
+  ['async', backupUserDataAsync],
+]) {
+  test(`a completed manual ${kind} backup prevents an extra initial snapshot on reads or restarts`, async (t) => {
+    const state = sandbox(t);
+    writeFileSync(state.configPath, JSON.stringify(originalConfig));
+    await backup(state.dataDir, 'manual');
+    const markerBytes = readFileSync(state.markerPath);
+    const manifests = assertSingleSnapshot(state, originalConfig, markerBytes);
+    assert.equal(JSON.parse(Object.values(manifests)[0]).reason, 'manual');
+
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.deepEqual(readConfig(), originalConfig);
+    assert.deepEqual(readConfigInFreshProcess(state), originalConfig);
+    assert.deepEqual(completedManifests(state.backupRoot), manifests);
+    assert.deepEqual(readFileSync(state.markerPath), markerBytes);
+  });
 }
 
 for (const [kind, code, save] of [
