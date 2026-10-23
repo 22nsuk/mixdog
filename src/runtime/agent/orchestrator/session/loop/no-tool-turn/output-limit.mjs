@@ -10,7 +10,7 @@
 //   2. Up to MAX_OUTPUT_RECOVERY_LIMIT resume prompts at the normal
 //      max_tokens, preserving any partial text in the transcript.
 //   3. Then the turn ends with a visible notice that the output limit was hit.
-// Real progress (a tool-call turn, a continued text turn) resets both steps.
+// New tool evidence, an edit, or a continued text turn resets both steps.
 import { isOutputLimitStopReason } from '../termination.mjs';
 
 const MAX_OUTPUT_RECOVERY_LIMIT = 3;

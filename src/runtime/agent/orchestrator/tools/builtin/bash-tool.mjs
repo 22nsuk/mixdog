@@ -84,6 +84,7 @@ export async function executeBashTool(args, workDir, options = {}) {
   } catch (err) {
     return formatShellToolFailure(normalizeErrorMessage(err instanceof Error ? err.message : String(err)));
   }
+  if (options?.resultTelemetry) options.resultTelemetry.shellMutationMode = shellEffects.mutationMode;
   // The truthy MIXDOG_SHELL_DISABLE_BACKGROUND_TASKS env restores the old
   // foreground-only behavior (no promotion at timeout, no auto-background).
   const backgroundOnTimeout = !envFlag('MIXDOG_SHELL_DISABLE_BACKGROUND_TASKS');

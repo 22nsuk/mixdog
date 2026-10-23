@@ -55,9 +55,12 @@ export async function recordCallOutcome(batch, call, exec, sigs, ctSig) {
     if (failed) invalidateAfterFailedPatch(sessionId, call, cwd);
   }
   if (_isMutationTool(call.name, call.arguments)) recordMutation(epoch, call, cwd);
-  // Shell clears the scoped cache UNCONDITIONALLY — a mutating bash that
-  // throws or fails partway can still leave stale find_symbol/grep entries.
-  if (sessionId && executed && _isShellTool(call.name)) clearScopedToolsForSession(sessionId);
+  // Preserve scoped reads only for commands the shell owner proved read-only.
+  // Unknown or mutating commands still invalidate even on a partial failure.
+  const shellMutationMode = exec.resultTelemetry?.shellMutationMode;
+  if (sessionId && executed && shellMutationMode !== 'none' && (_isShellTool(call.name) || shellMutationMode)) {
+    clearScopedToolsForSession(sessionId);
+  }
   // Git mutations (update-ref/reflog expire/gc/reset...) rewrite .git state
   // and possibly the working tree with no per-path visibility, so scoped
   // grep/glob/list/code_graph entries go stale: same policy as shell.

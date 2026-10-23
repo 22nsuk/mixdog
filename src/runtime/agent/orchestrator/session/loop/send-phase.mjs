@@ -46,7 +46,9 @@ export async function beginIteration(state) {
   // after tool results and before the continuation, not on arbitrary
   // non-tool continuations (empty nudges, provider pauses, etc.).
   if (state.toolBatchJustCompleted) {
-    state.drainSteering('pre-send', { maxPriority: state.lastToolBatchHadSleep ? 'later' : 'next' });
+    if (state.drainSteering('pre-send', { maxPriority: state.lastToolBatchHadSleep ? 'later' : 'next' })) {
+      state.noToolTurn.noteSteering();
+    }
     state.toolBatchJustCompleted = false;
     state.lastToolBatchHadSleep = false;
   }

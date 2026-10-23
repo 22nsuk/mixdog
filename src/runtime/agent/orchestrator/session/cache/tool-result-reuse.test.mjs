@@ -19,13 +19,18 @@ const { createScopedCacheOutcome } = await import('./scoped-cache-outcome.mjs');
 const { executeGlobTool } = await import('../../tools/builtin/search-glob-tool.mjs');
 const { executeCodeGraphTool } = await import('../../tools/code-graph/dispatch.mjs');
 const { invalidateBuiltinResultCache } = await import('../../tools/builtin/cache-layers.mjs');
+const { executeBashTool } = await import('../../tools/builtin/bash-tool.mjs');
 // Remove the isolated data directory after imported modules' exit flushes.
 process.once('exit', () => rmSync(root, { recursive: true, force: true }));
 
-const tools = ['read', 'grep', 'glob', 'code_graph', 'mcp__remote__status'].map((name) => ({
-  name,
-  annotations: { readOnlyHint: true },
-}));
+const tools = [
+  ...['read', 'grep', 'glob', 'code_graph', 'mcp__remote__status'].map((name) => ({
+    name,
+    annotations: { readOnlyHint: true },
+  })),
+  { name: 'shell' },
+  { name: 'Bash' },
+];
 
 function fixture(mode) {
   const cwd = mkdtempSync(join(root, 'case-'));
@@ -54,6 +59,9 @@ async function round(fx, name, args, { beforeBatch, afterRead } = {}) {
   fx.iterations += 1;
   const executeToolFn = async (toolName, input, cwd, _sessionId, sessionRef, options) => {
     fx.executions += 1;
+    // Keep shell analysis and its execution metadata real: the batch must
+    // distinguish observation from mutation on both serial and eager paths.
+    if (toolName === 'shell' || toolName === 'Bash') return executeBashTool(input, cwd, options);
     if (toolName === 'code_graph') {
       const outcome = createScopedCacheOutcome();
       sessionRef._scopedCacheOutcomeByCallId ??= new Map();
@@ -111,6 +119,46 @@ async function round(fx, name, args, { beforeBatch, afterRead } = {}) {
 }
 
 for (const mode of ['serial', 'fallback', 'streaming']) {
+  for (const name of ['shell', 'Bash']) {
+    test(`read-only ${name} preserves read and scoped-cache receipts (${mode})`, async () => {
+      const fx = fixture(mode);
+      fx.cacheSafe = true;
+      const readArgs = { file_path: fx.file };
+      const globArgs = { path: fx.cwd, pattern: '*.txt', sort: 'natural', limit: 25 };
+      await round(fx, 'read', readArgs);
+      await round(fx, 'glob', globArgs);
+      assert.equal((await round(fx, name, { command: 'echo observed' })).toolKind, 'normal');
+      assert.equal(fx.editCount, 0);
+      const read = await round(fx, 'read', readArgs);
+      assert.equal(read.toolKind, 'skipped');
+      assert.match(read.content, /iteration 1/);
+      const glob = await round(fx, 'glob', globArgs);
+      assert.equal(glob.toolKind, 'skipped');
+      assert.match(glob.content, /iteration 2/);
+      assert.equal(fx.executions, 3);
+    });
+  }
+
+  for (const [kind, name, command] of [
+    ['mutating', 'shell', 'echo changed > changed.txt'],
+    ['mutating', 'Bash', 'echo changed > changed.txt'],
+    ['unknown-effect', 'shell', 'node -e "process.stdout.write(\'observed\')"'],
+  ]) {
+    test(`${kind} ${name} still clears scoped-cache receipts and records an edit (${mode})`, async () => {
+      const fx = fixture(mode);
+      fx.cacheSafe = true;
+      const args = { path: fx.cwd, pattern: '*.txt', sort: 'natural', limit: 25 };
+      await round(fx, 'glob', args);
+      assert.equal((await round(fx, name, { command })).toolKind, 'normal');
+      assert.equal(fx.editCount, 1);
+      assert.equal(fx.crossTurnCalls.size, 0);
+      const refreshed = await round(fx, 'glob', args);
+      assert.equal(refreshed.toolKind, 'normal');
+      assert.match(refreshed.content, /snapshot-3\.txt/);
+      assert.equal(fx.executions, 3);
+    });
+  }
+
   test(`unwatchable complete glob results bypass both caches and cross-turn reuse (${mode})`, async () => {
     const fx = fixture(mode);
     fx.cacheSafe = false;
@@ -190,11 +238,13 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
     const fx = fixture(mode);
     const args = { file_path: fx.file };
     await round(fx, 'read', args);
+    assert.equal(fx.madeProgress, true);
     // Model a later cache population under a different call identity. Stat
     // freshness alone must not make the old iteration describe this body.
     setReadCached({ ...fx, args, content: 'REPLACEMENT_BODY', toolUseId: 'replacement-call' });
     const delivered = await round(fx, 'read', args);
     assert.equal(delivered.toolKind, 'cache-hit');
+    assert.equal(fx.madeProgress, false);
     assert.equal(delivered.content, 'REPLACEMENT_BODY');
     assert.equal(fx.executions, 1);
     assert.match((await round(fx, 'read', args)).content, /iteration 2/);

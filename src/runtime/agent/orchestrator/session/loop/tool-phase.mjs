@@ -44,7 +44,7 @@ export async function runToolPhase(state, round, sent, onToolCall) {
     opts.onToolPhaseStarted?.();
   } catch {}
   const toolsT0 = Date.now();
-  ({ dedupStubTotal: state.dedupStubTotal, editCount: state.editCount } = await processToolBatch({
+  const batchResult = await processToolBatch({
     calls,
     messages,
     tools,
@@ -67,7 +67,9 @@ export async function runToolPhase(state, round, sent, onToolCall) {
     pushToolResultMessage: state.pushToolResultMessage,
     throwIfAborted: state.throwIfAborted,
     repeatFailLimit: REPEAT_FAIL_LIMIT,
-  }));
+  });
+  state.dedupStubTotal = batchResult.dedupStubTotal;
+  state.editCount = batchResult.editCount;
   // A turn recovered from a stream cut that dropped an in-flight tool call
   // carries a runtime notice for the model, delivered after its results.
   if (response.recoveryNotice) messages.push(response.recoveryNotice);
@@ -91,6 +93,6 @@ export async function runToolPhase(state, round, sent, onToolCall) {
   });
   state.lastToolBatchEndedAt = toolsEndedAt;
   state.toolBatchJustCompleted = true;
-  state.noToolTurn.noteToolBatchCompleted();
+  state.noToolTurn.noteToolBatchCompleted(batchResult.madeProgress);
   state.lastToolBatchHadSleep = calls.some(isSleepLikeToolCall);
 }

@@ -54,6 +54,10 @@ export function createNoToolTurnResolver({
     }
   };
   const ladder = { state, segments, messages, opts, sessionId, trace, escalateMaxTokens, streamedChars };
+  const noteSteering = () => {
+    state.emptyNudgeStreak = 0;
+    resetOutputLimitRecovery(state);
+  };
 
   // A no-tool message ends the turn. Unresolved tool failures remain visible
   // in history and can be reported directly without a synthetic continuation
@@ -120,22 +124,21 @@ export function createNoToolTurnResolver({
           },
         })
       ) {
-        state.emptyNudgeStreak = 0;
-        resetOutputLimitRecovery(state);
+        noteSteering();
         return { action: 'continue', response };
       }
       return finishTurn(response);
     },
-    // A turn that produced tool calls is never an empty contract violation,
-    // and it is real progress: a later output-limit cut starts a fresh ladder.
+    // A tool-call turn is not empty, but progress is known only after execution.
     noteToolCallTurn() {
       state.emptyNudgeStreak = 0;
-      resetOutputLimitRecovery(state);
     },
-    noteToolBatchCompleted() {
+    noteToolBatchCompleted(madeProgress) {
+      if (madeProgress) resetOutputLimitRecovery(state);
       state.continuationsSinceToolBatch = 0;
       segments.clear();
     },
+    noteSteering,
     get providerContinuations() {
       return state.providerContinuationCount;
     },

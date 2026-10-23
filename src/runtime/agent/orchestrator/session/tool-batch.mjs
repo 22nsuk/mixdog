@@ -32,5 +32,5 @@ export async function processToolBatch(ctx) {
   }
   await finalizeBatchResults(batch);
   await flushBatch(batch);
-  return { dedupStubTotal: batch.dedupStubTotal, editCount: batch.editCount };
+  return { dedupStubTotal: batch.dedupStubTotal, editCount: batch.editCount, madeProgress: batch.madeProgress };
 }

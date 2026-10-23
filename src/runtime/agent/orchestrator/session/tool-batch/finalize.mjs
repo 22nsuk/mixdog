@@ -317,12 +317,16 @@ function completedToolResult(completed, result, postprocessStartedAt) {
 function noteEditProgress(batch) {
   batch.crossTurnCalls.clear();
   batch.editCount += 1;
+  batch.madeProgress = true;
 }
 
 function recordCrossTurn(batch, completed) {
   const { call } = completed;
   const { tools, crossTurnCalls } = batch;
   if (isToolCallDedupEligible(call.name, tools)) {
+    // A live read supplies new evidence; replaying its cached body does not
+    // reopen output-limit recovery, even if its receipt is being restored.
+    if (completed.resultKind === 'normal') batch.madeProgress = true;
     const sig = completed.crossTurnSig ?? crossTurnSignature(call.name, call.arguments);
     // Tie the in-context receipt to the body actually delivered. A refreshed
     // result replaces the old iteration; a cache hit retains its source id.
@@ -333,7 +337,9 @@ function recordCrossTurn(batch, completed) {
         crossTurnCalls.delete(crossTurnCalls.keys().next().value);
       }
     }
-  } else if (!isEagerDispatchable(call.name, tools) && isEditProgressTool(call.name, false)) {
+  } else if (
+    isEditProgressTool(call.name, isEagerDispatchable(call.name, tools), completed.resultTelemetry?.shellMutationMode)
+  ) {
     noteEditProgress(batch);
   }
 }
@@ -341,7 +347,10 @@ function recordCrossTurn(batch, completed) {
 function stagePostProcessingFailure(batch, completed, postErr, postprocessStartedAt) {
   const { call } = completed;
   const { sessionRef, tools } = batch;
-  if (completed.executeOk && !isEagerDispatchable(call.name, tools) && isEditProgressTool(call.name, false)) {
+  if (
+    completed.executeOk &&
+    isEditProgressTool(call.name, isEagerDispatchable(call.name, tools), completed.resultTelemetry?.shellMutationMode)
+  ) {
     noteEditProgress(batch);
   }
   if (sessionRef?._scopedCacheOutcomeByCallId instanceof Map && call?.id) {

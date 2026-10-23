@@ -41,11 +41,11 @@ const NON_PROGRESS_TOOLS = new Set(['Skill', 'recall', 'agent', 'task', 'cwd', '
 
 // True when a successfully-executed tool represents real edit/progress. A tool
 // counts as progress only if its def lacks readOnlyHint (not eager) AND it is
-// not in the meta/non-progress set. apply_patch and shell/bash always count.
-export function isEditProgressTool(name, isEager) {
-  if (isEager) return false;
+// not in the meta/non-progress set. Shell effects come from the execution
+// owner's analysis; unknown commands retain the conservative edit treatment.
+export function isEditProgressTool(name, isEager, shellMutationMode) {
+  if (isEager || shellMutationMode === 'none') return false;
   const bare = name?.startsWith('mcp__') ? knownMcpToolIdentity(name)?.tool || name.split('__').pop() : name;
-  if (bare === 'apply_patch' || bare === 'shell' || bare === 'bash' || bare === 'bash_session') return true;
   return !NON_PROGRESS_TOOLS.has(bare);
 }
 

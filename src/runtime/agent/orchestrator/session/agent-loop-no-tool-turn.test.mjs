@@ -2,8 +2,13 @@
 // echo payloads, driven through the public agentLoop entry point (see
 // ./loop/no-tool-turn.mjs and ./loop/assistant-commit.mjs).
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { agentLoop } from './agent-loop.mjs';
+import { setInternalToolsProvider } from '../internal-tools.mjs';
 
 const MAX_OUTPUT_EXHAUSTED_NOTICE =
   '[mixdog-runtime] The model hit its output limit and the response stayed truncated after 3 recovery attempts.';
@@ -37,12 +42,42 @@ function scriptedProvider(script, { escalated = null } = {}) {
   };
 }
 
-function run(provider, messages, opts = {}) {
-  return agentLoop(provider, messages, 'fake-model', [], null, process.cwd(), {
+function run(provider, messages, { tools = [], cwd = process.cwd(), ...opts } = {}) {
+  return agentLoop(provider, messages, 'fake-model', tools, null, cwd, {
     session: leadSession(),
     sessionId: 'no-tool-turn-test',
     ...opts,
   });
+}
+
+function toolFixture(t) {
+  const cwd = mkdtempSync(join(tmpdir(), 'mixdog-output-progress-'));
+  const sessionId = `output-progress-${randomUUID()}`;
+  const file = join(cwd, 'file.txt');
+  writeFileSync(file, 'ORIGINAL\n');
+  const tools = [
+    { name: 'read', annotations: { readOnlyHint: true } },
+    { name: 'shell' },
+    { name: 'Bash' },
+    { name: 'session' },
+  ];
+  const dispose = setInternalToolsProvider({
+    scopeId: sessionId,
+    tools: [{ name: 'session' }],
+    executor: async () => 'Session ready.',
+  });
+  t.after(() => {
+    dispose();
+    rmSync(cwd, { recursive: true, force: true });
+  });
+  return {
+    file,
+    options: { tools, cwd, sessionId, session: leadSession({ id: sessionId, mcpScopeId: sessionId, cwd }) },
+  };
+}
+
+function toolTurn(name, args, id = 'progress-tool') {
+  return { content: '', toolCalls: [{ id, name, arguments: args }], stopReason: 'tool_calls' };
 }
 
 test('max-output ladder resumes three times, then seals the aggregate with the exhausted notice', async () => {
@@ -151,7 +186,7 @@ test('a truncated turn with text follows the same rule: escalate without keeping
   assert.equal(result.terminationReason, undefined);
 });
 
-test('a tool-call turn is progress: the escalation and the three resumes are available again', async () => {
+test('a failed tool call does not reopen the output escalation or recovery budget', async () => {
   const provider = scriptedProvider(
     [
       emptyCut,
@@ -161,13 +196,137 @@ test('a tool-call turn is progress: the escalation and the three resumes are ava
     ],
     { escalated: 128_000 }
   );
-  const result = await run(provider, [{ role: 'user', content: 'go' }]);
-  // cut, escalated cut, one resume that ends in a tool call (progress), then a
-  // full fresh ladder: cut, escalated cut, 3 resumes, exhausted.
-  assert.equal(provider.state.sends, 3 + 5);
+  const messages = [{ role: 'user', content: 'go' }];
+  const result = await run(provider, messages);
+  // The failed call used the first resume; later cuts consume the two
+  // remaining resumes rather than receiving another escalation and ladder.
+  assert.equal(provider.state.sends, 6);
   assert.deepEqual(
     provider.state.requests.map((request) => request.override),
-    [undefined, 128_000, undefined, undefined, 128_000, undefined, undefined, undefined]
+    [undefined, 128_000, undefined, undefined, undefined, undefined]
+  );
+  assert.deepEqual(
+    messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
+    [1, 2, 3]
+  );
+  assert.equal(result.terminationReason, 'truncated');
+});
+
+for (const { label, name, args, resetsRecovery } of [
+  { label: 'a known read-only shell', name: 'shell', args: { command: 'echo observed' }, resetsRecovery: false },
+  { label: 'a read-only Bash adapter call', name: 'Bash', args: { command: 'echo observed' }, resetsRecovery: false },
+  { label: 'a successful metadata tool', name: 'session', args: {}, resetsRecovery: false },
+  { label: 'a mutating shell', name: 'shell', args: { command: 'echo changed > changed.txt' }, resetsRecovery: true },
+  {
+    label: 'a mutating Bash adapter call',
+    name: 'Bash',
+    args: { command: 'echo changed > changed.txt' },
+    resetsRecovery: true,
+  },
+  {
+    label: 'a shell script with unknown effects',
+    name: 'shell',
+    args: { command: 'node -e "process.stdout.write(\'observed\')"' },
+    resetsRecovery: true,
+  },
+]) {
+  test(`${label} ${resetsRecovery ? 'reopens' : 'preserves'} the output recovery budget`, async (t) => {
+    const fx = toolFixture(t);
+    const messages = [{ role: 'user', content: 'go' }];
+    const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, args), emptyCut], { escalated: 128_000 });
+    const result = await run(provider, messages, fx.options);
+    assert.equal(messages.find((message) => message.toolCallId === 'progress-tool')?.toolKind, 'normal');
+    assert.equal(provider.state.sends, resetsRecovery ? 8 : 6);
+    assert.equal(
+      provider.state.requests.filter((request) => request.override === 128_000).length,
+      resetsRecovery ? 2 : 1
+    );
+    assert.deepEqual(
+      messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
+      resetsRecovery ? [1, 1, 2, 3] : [1, 2, 3]
+    );
+    assert.equal(result.terminationReason, 'truncated');
+  });
+}
+
+for (const changed of [false, true]) {
+  const label = changed ? 'a fresh read result reopens' : 'a repeated read receipt preserves';
+  test(`${label} the output recovery budget`, async (t) => {
+    const fx = toolFixture(t);
+    const messages = [{ role: 'user', content: 'inspect' }];
+    const args = { file_path: fx.file };
+    const provider = scriptedProvider(
+      [
+        toolTurn('read', args, 'read-seed'),
+        emptyCut,
+        emptyCut,
+        () => {
+          if (changed) writeFileSync(fx.file, 'NEW EVIDENCE\n');
+          return toolTurn('read', args, 'read-after-cut');
+        },
+        emptyCut,
+      ],
+      { escalated: 128_000 }
+    );
+    const result = await run(provider, messages, fx.options);
+    assert.equal(
+      messages.find((message) => message.toolCallId === 'read-after-cut')?.toolKind,
+      changed ? 'normal' : 'skipped'
+    );
+    assert.equal(provider.state.sends, changed ? 9 : 7);
+    assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, changed ? 2 : 1);
+    assert.deepEqual(
+      messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
+      changed ? [1, 1, 2, 3] : [1, 2, 3]
+    );
+    assert.equal(result.terminationReason, 'truncated');
+  });
+}
+
+test('normal text continuation still reopens the output recovery budget', async () => {
+  const provider = scriptedProvider(
+    [emptyCut, emptyCut, { content: 'Continuing the answer.', toolCalls: [], endTurn: false }, emptyCut],
+    { escalated: 128_000 }
+  );
+  const result = await run(provider, [{ role: 'user', content: 'go' }]);
+  assert.equal(provider.state.sends, 8);
+  assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, 2);
+  assert.equal(result.providerContinuations, 1);
+  assert.equal(result.terminationReason, 'truncated');
+});
+
+test('new user input after a read-only tool batch reopens the output recovery budget', async (t) => {
+  const fx = toolFixture(t);
+  const messages = [{ role: 'user', content: 'go' }];
+  const pending = [];
+  const steered = [];
+  const provider = scriptedProvider(
+    [
+      emptyCut,
+      emptyCut,
+      () => {
+        pending.push({ id: 'new-requirement', content: 'Include the new requirement in your answer.' });
+        return toolTurn('shell', { command: 'echo observed' });
+      },
+      emptyCut,
+    ],
+    { escalated: 128_000 }
+  );
+  const result = await run(provider, messages, {
+    ...fx.options,
+    drainSteering: (_sessionId, options) => {
+      steered.push(options.stage);
+      return pending.splice(0);
+    },
+  });
+  assert.ok(steered.includes('pre-send'));
+  const injected = messages.find((message) => message.meta?.source === 'steering');
+  assert.deepEqual(injected?.meta.submissionIds, ['new-requirement']);
+  assert.equal(provider.state.sends, 8);
+  assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, 2);
+  assert.deepEqual(
+    messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
+    [1, 1, 2, 3]
   );
   assert.equal(result.terminationReason, 'truncated');
 });
