@@ -282,6 +282,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
   const turnHost = (roomId: string): RoomTurnHost => ({
     roomId,
     room: () => roomOf(roomId),
+    labels: () => memberLabels(roomOf(roomId)),
     rows: () => roomRows(roomId),
     post: (rows) => post(roomId, rows),
     republish: () => deps.republish(roomSessionId(roomId)),
@@ -307,7 +308,6 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     failRelays: (error) => dropRelays(roomId, { status: 'failed', error }),
     rows: () => roomRows(roomId),
     post: (rows) => post(roomId, rows),
-    labels: memberLabels,
     turn: turnHost(roomId),
     decideTurn: (input) => deps.decideTurn(input),
     persist,
@@ -413,7 +413,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     const config = normalizeRoomConfig({ ...room, ...patch } as Record<string, unknown>);
     if (config.members.some((id) => !room.members.includes(id))) {
       const known = new Set([MIXY_AGENT_ID, ...contactAgentRows(await deps.listAgents()).map((row) => row.id)]);
-      const missing = config.members.find((id) => !known.has(id));
+      const missing = config.members.find((id) => !room.members.includes(id) && !known.has(id));
       if (missing) throw new Error(`Agent "${missing}" is not available.`);
     }
     await refreshNames();
@@ -719,6 +719,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     const room = roomOf(roomId);
     if (!room.members.includes(agentId)) throw new Error(`"${agentId}" is not a member of room "${room.name}".`);
     const labels = await memberLabels(room);
+    if (!labels.has(agentId)) throw new Error(`Agent "${agentId}" is not available.`);
     const content = prompt as DesktopPromptContent;
     const upload = roomUpload(content, {});
     const text = promptText(content);
@@ -769,6 +770,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     if (!member) throw new TypeError('Not a group-room member session.');
     const room = roomOf(member.roomId);
     if (!room.members.includes(member.agentId)) throw new Error('That agent is no longer a member of the room.');
+    if (!(await memberLabels(room)).has(member.agentId)) throw new Error(`Agent "${member.agentId}" is not available.`);
     let settle: (status: string) => void = () => undefined;
     const settled = new Promise<string>((resolve) => {
       settle = resolve;

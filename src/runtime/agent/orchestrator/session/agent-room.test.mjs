@@ -116,6 +116,60 @@ test('a room with no members finishes done with zero rounds, steps and messages'
   assert.deepEqual(run.spoken, []);
 });
 
+test('a shrinking unmanaged roster keeps the remaining members in order without reviving a removed target', async () => {
+  const members = ['a', 'b', 'c'];
+  const spoken = [];
+  const result = await runRoomExchange({
+    members,
+    maxRounds: 1,
+    maxMessages: 8,
+    decide: async () => ({ action: 'unmanaged' }),
+    speak: async (id) => {
+      spoken.push(id);
+      if (id === 'a') members.splice(0, 2);
+      return 'speech';
+    },
+  });
+  assert.deepEqual(spoken, ['a', 'c']);
+  assert.deepEqual(result, { outcome: 'done', rounds: 1, steps: 1, messages: 2 });
+});
+
+test('a roster emptied during a supervisor decision finishes without a fallback or invalid round count', async () => {
+  const members = ['a', 'b'];
+  const result = await runRoomExchange({
+    members,
+    maxRounds: 3,
+    maxMessages: 8,
+    decide: async () => {
+      members.length = 0;
+      return null;
+    },
+    speak: async () => assert.fail('no eligible member remains'),
+  });
+  assert.deepEqual(result, { outcome: 'done', rounds: 1, steps: 1, messages: 0 });
+});
+
+test('a peer mention that becomes unavailable during moderation does not get a fallback turn', async () => {
+  const members = ['a', 'b', 'c'];
+  const spoken = [];
+  const result = await runRoomExchange({
+    members,
+    to: ['a'],
+    maxRounds: 3,
+    maxMessages: 8,
+    speak: async (id) => {
+      spoken.push(id);
+      return { result: 'speech', mention: 'b' };
+    },
+    decide: async () => {
+      members.splice(members.indexOf('b'), 1);
+      return null;
+    },
+  });
+  assert.deepEqual(spoken, ['a']);
+  assert.equal(result.outcome, 'done');
+});
+
 test('the supervisor picks each speaker, may brief it, and finishes once the user is served', async () => {
   const run = scripted(
     () => 'speech',

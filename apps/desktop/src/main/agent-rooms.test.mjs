@@ -57,6 +57,8 @@ function harness({
   snapshotGate = () => undefined,
   onAbort = () => undefined,
 } = {}) {
+  // Each host owns a live catalog: settings can change while a turn is held.
+  agents = structuredClone(agents);
   /** Every session whose creation started. */
   const createStarted = [];
   const logs = [];
@@ -182,7 +184,23 @@ function harness({
   const idle = async (roomId) => {
     for (let i = 0; i < 2000 && rooms.isRunning(roomId); i += 1) await new Promise((r) => setImmediate(r));
   };
-  return { rooms, log, logs, prompts, saved, idle, touched, resets, decisions, created, aborts, deleted, sessions, createStarted };
+  return {
+    rooms,
+    log,
+    logs,
+    prompts,
+    saved,
+    idle,
+    touched,
+    resets,
+    decisions,
+    created,
+    aborts,
+    deleted,
+    sessions,
+    createStarted,
+    agents,
+  };
 }
 
 /** A supervisor that hands the turn to the member after the last speaker
@@ -1169,6 +1187,8 @@ test('after the bot split a room keeps its members: migrated bots and Mixy speak
   await h.idle(roomId);
   const speakers = new Set(h.prompts.map((prompt) => prompt.agentId));
   assert.ok(speakers.has('gh'), 'the migrated bot answers under its unchanged id');
+  assert.ok(speakers.has('rel'), 'an existing workflow member remains eligible');
+  assert.ok(speakers.has('lead'), 'Mixy remains eligible');
   for (const id of h.touched) assert.doesNotMatch(id, /^sess_home_/, 'no home thread is touched');
 });
 
@@ -2128,6 +2148,445 @@ test('a removed bot’s room conversation is deleted and its cursors go; a faile
   });
   await loaded.rooms.ready();
   assert.deepEqual(loaded.deleted, [roomMemberSessionId('r1', 'bench')]);
+});
+
+for (const entry of ['send', 'member', 'member mention', 'ask', 'relay']) {
+  test(`a disabled member refuses ${entry} before accepting work`, async () => {
+    const h = harness();
+    const { sessionId, roomId } = await room(h);
+    h.agents.find((agent) => agent.id === 'rel').disabled = true;
+    const ends = [];
+    const invoke = {
+      send: () => h.rooms.send(sessionId, '/ask Release status', 'disabled-send'),
+      member: () => h.rooms.member(sessionId, { to: 'rel', prompt: 'status' }),
+      'member mention': () => h.rooms.member(sessionId, { prompt: '@Release status' }),
+      ask: () =>
+        h.rooms.ask(sessionId, {
+          agentId: 'rel',
+          prompt: 'status',
+          from: { sessionId: 'sess_lead_1' },
+          id: 'disabled-ask',
+          onSettled: (detail) => ends.push(detail),
+        }),
+      relay: () => h.rooms.relay(roomMemberSessionId(roomId, 'rel'), 'REPORT: done'),
+    }[entry];
+    await assert.rejects(invoke, undefined, 'disabled targets cannot be accepted');
+    await h.idle(roomId);
+    assert.deepEqual(h.log, [], 'a rejected request adds no room row');
+    assert.deepEqual(h.prompts, [], 'no member receives the rejected request');
+    assert.deepEqual(ends, [], 'a rejected ask does not create a completion obligation');
+    assert.equal(h.sessions.has(roomMemberSessionId(roomId, 'rel')), false);
+    assert.deepEqual(h.saved.doc.rooms[roomId].submissions ?? [], []);
+    assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+  });
+}
+
+for (const mode of ['supervised', 'unmanaged']) {
+  test(`a ${mode} whole-room exchange stops offering turns to a member disabled while another speaks`, async (t) => {
+    const gate = gated(['gh']);
+    t.after(gate.release);
+    const decide =
+      mode === 'supervised'
+        ? (input) => {
+            const next = input.members.find(
+              (member) => !input.turns.some((turn) => turn.id === member.id && turn.result === 'speech')
+            );
+            return next ? { action: 'speak', agentId: next.id } : { action: 'finish' };
+          }
+        : () => ({ action: 'unmanaged' });
+    const h = harness({ script: gate.script, decide });
+    const { sessionId, roomId } = await room(h, { maxRounds: 1 });
+    await h.rooms.send(sessionId, 'everyone, status?');
+    await until(() => h.prompts.length === 1);
+    assert.equal(h.prompts[0]?.agentId, 'gh');
+    h.agents.find((agent) => agent.id === 'rel').disabled = true;
+    gate.release();
+    await h.idle(roomId);
+    assert.deepEqual(
+      h.prompts.map((prompt) => prompt.agentId),
+      ['gh', 'bench']
+    );
+    assert.ok(h.decisions.slice(1).every((decision) => decision.members.every((member) => member.id !== 'rel')));
+    assert.deepEqual(
+      h.log.filter((row) => row.speaker === 'rel'),
+      [],
+      'a skipped member leaves no synthetic pass'
+    );
+    assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+  });
+}
+
+for (const entry of ['send', 'ask', 'relay']) {
+  test(`a sole queued ${entry} target disabled before dispatch is dropped without broadening the request`, async (t) => {
+    const gate = gated(['gh']);
+    t.after(gate.release);
+    const h = harness({ script: gate.script });
+    const { sessionId, roomId } = await room(h);
+    await h.rooms.send(sessionId, '/ask GitHub first');
+    await until(() => h.prompts.length === 1);
+    assert.equal(h.prompts[0]?.agentId, 'gh');
+    const ends = [];
+    let relayed;
+    if (entry === 'send') await h.rooms.send(sessionId, '/ask Release later');
+    else if (entry === 'ask')
+      await h.rooms.ask(sessionId, {
+        agentId: 'rel',
+        prompt: 'later',
+        from: { sessionId: 'sess_lead_1' },
+        id: 'queued-disabled',
+        onSettled: (detail) => ends.push(detail),
+      });
+    else relayed = await h.rooms.relay(roomMemberSessionId(roomId, 'rel'), 'REPORT: later');
+    h.agents.find((agent) => agent.id === 'rel').disabled = true;
+    gate.release();
+    if (relayed) assert.equal(await relayed.settled, 'cancelled');
+    await h.idle(roomId);
+    assert.equal(h.rooms.isRunning(roomId), false);
+    assert.deepEqual(
+      h.prompts.map((prompt) => prompt.agentId),
+      ['gh']
+    );
+    assert.deepEqual(
+      h.log.filter((row) => row.speaker === 'rel' || row.speaker === 'bench'),
+      []
+    );
+    if (entry === 'ask') assert.deepEqual(ends, [{ status: 'cancelled' }], 'the accepted ask settles exactly once');
+    assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+  });
+}
+
+test('disabling an already submitted turn preserves its answer and room conversation; re-enabling resumes that conversation', async (t) => {
+  const gate = gated(['rel']);
+  t.after(gate.release);
+  const h = harness({ script: gate.script, decide: () => ({ action: 'unmanaged' }) });
+  const { sessionId, roomId } = await room(h);
+  const rel = roomMemberSessionId(roomId, 'rel');
+  const ends = [];
+  await h.rooms.ask(sessionId, {
+    agentId: 'rel',
+    prompt: 'status?',
+    from: { sessionId: 'sess_lead_1' },
+    id: 'in-flight-disabled',
+    onSettled: (detail) => ends.push(detail),
+  });
+  await until(() => h.prompts.length === 1);
+  assert.equal(h.prompts[0]?.agentId, 'rel');
+  h.agents.find((agent) => agent.id === 'rel').disabled = true;
+  gate.release();
+  await h.idle(roomId);
+  assert.deepEqual(ends, [{ status: 'done', result: { content: 'answer from rel' } }]);
+  assert.deepEqual(h.aborts, [], 'a settings toggle alone does not abort submitted work');
+  const history = structuredClone(h.log);
+  const cursor = h.saved.doc.rooms[roomId].cursors.rel;
+  const seen = h.saved.doc.rooms[roomId].seen.rel;
+  assert.ok(cursor);
+  assert.ok(seen);
+  await h.rooms.update(roomId, { name: 'Still together' });
+  await h.rooms.send(sessionId, 'everyone, anything else?');
+  await h.idle(roomId);
+  assert.deepEqual(
+    h.prompts.map((prompt) => prompt.agentId),
+    ['rel', 'gh', 'bench']
+  );
+  assert.deepEqual(h.log.slice(0, history.length), history);
+  assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+  assert.equal(h.saved.doc.rooms[roomId].cursors.rel, cursor);
+  assert.equal(h.saved.doc.rooms[roomId].seen.rel, seen);
+  assert.ok(h.sessions.has(rel));
+  assert.deepEqual(h.deleted, []);
+  h.agents.find((agent) => agent.id === 'rel').disabled = false;
+  await h.rooms.send(sessionId, '/ask Release welcome back');
+  await h.idle(roomId);
+  assert.equal(h.prompts.at(-1).agentId, 'rel');
+  assert.equal(h.created.filter(([id]) => id === rel).length, 1, 'the same conversation is reused');
+});
+
+for (const entry of ['send', 'ask']) {
+  test(`a disable while the member session is being created prevents ${entry} submission without deleting that session`, async (t) => {
+    const create = latch();
+    t.after(create.open);
+    let hold = false;
+    const h = harness({ createGate: () => (hold ? create.closed : undefined) });
+    const { sessionId, roomId } = await room(h);
+    const rel = roomMemberSessionId(roomId, 'rel');
+    const ends = [];
+    hold = true;
+    if (entry === 'send') await h.rooms.send(sessionId, '/ask Release only Release');
+    else
+      await h.rooms.ask(sessionId, {
+        agentId: 'rel',
+        prompt: 'status?',
+        from: { sessionId: 'sess_lead_1' },
+        id: 'creating-disabled',
+        onSettled: (detail) => ends.push(detail),
+      });
+    await until(() => h.createStarted.includes(rel));
+    assert.ok(h.createStarted.includes(rel));
+    h.agents.find((agent) => agent.id === 'rel').disabled = true;
+    create.open();
+    await h.idle(roomId);
+    assert.deepEqual(h.prompts, [], 'eligibility is checked again after creation');
+    assert.deepEqual(ends, entry === 'ask' ? [{ status: 'cancelled' }] : []);
+    assert.deepEqual(
+      h.log.filter((row) => row.kind !== 'user'),
+      []
+    );
+    assert.ok(h.sessions.has(rel));
+    assert.deepEqual(h.deleted, []);
+  });
+}
+
+test('an addressed member disabled after submission may finish and the supervisor may then invite another member', async (t) => {
+  const gate = gated(['rel']);
+  t.after(gate.release);
+  const h = harness({
+    script: gate.script,
+    decide: (input) =>
+      input.turns.some((turn) => turn.id === 'gh') ? { action: 'finish' } : { action: 'speak', agentId: 'gh' },
+  });
+  const { sessionId, roomId } = await room(h);
+  await h.rooms.send(sessionId, '/ask Release status');
+  await until(() => h.prompts.length === 1);
+  assert.equal(h.prompts[0]?.agentId, 'rel');
+  h.agents.find((agent) => agent.id === 'rel').disabled = true;
+  gate.release();
+  await h.idle(roomId);
+  assert.deepEqual(
+    h.prompts.map((prompt) => prompt.agentId),
+    ['rel', 'gh']
+  );
+  assert.deepEqual(
+    h.log.filter((row) => row.kind === 'speech').map((row) => row.speaker),
+    ['rel', 'gh']
+  );
+  assert.deepEqual(h.aborts, []);
+  assert.equal(h.rooms.isRunning(roomId), false);
+});
+
+test('a disable while a shared watch follows its turn prevents submission and cancels all covered calls once', async (t) => {
+  const gate = gated(['gh']);
+  const following = latch();
+  t.after(gate.release);
+  t.after(following.open);
+  let started = false;
+  const h = harness({ script: gate.script });
+  const { sessionId, roomId } = await room(h);
+  await h.rooms.send(sessionId, '/ask Release establish conversation');
+  await h.idle(roomId);
+  const cursor = h.saved.doc.rooms[roomId].cursors.rel;
+  const seen = h.saved.doc.rooms[roomId].seen.rel;
+  const ends = { a: [], b: [] };
+  await h.rooms.send(sessionId, '/ask GitHub first');
+  await until(() => h.prompts.length === 2);
+  for (const key of ['a', 'b'])
+    await h.rooms.ask(sessionId, {
+      agentId: 'rel',
+      prompt: `status ${key}`,
+      from: { sessionId: 'sess_lead_1' },
+      id: `watch_${key}`,
+      onSettled: (detail) => ends[key].push(detail),
+      follow: async () => {
+        started = true;
+        await following.closed;
+      },
+    });
+  gate.release();
+  await until(() => started);
+  assert.equal(started, true);
+  h.agents.find((agent) => agent.id === 'rel').disabled = true;
+  following.open();
+  await h.idle(roomId);
+  assert.deepEqual(
+    h.prompts.map((prompt) => prompt.agentId),
+    ['rel', 'gh']
+  );
+  assert.deepEqual([ends.a, ends.b], [[{ status: 'cancelled' }], [{ status: 'cancelled' }]]);
+  assert.equal(h.log.filter((row) => row.speaker === 'rel').length, 1, 'only the earlier answer remains');
+  assert.equal(h.saved.doc.rooms[roomId].cursors.rel, cursor);
+  assert.equal(h.saved.doc.rooms[roomId].seen.rel, seen);
+});
+
+test('a peer mention cannot hand a disabled member a turn', async () => {
+  const h = harness({ script: (id) => (id === 'gh' ? '@Release your view?' : 'ok'), decide: () => null });
+  const { sessionId, roomId } = await room(h);
+  h.agents.find((agent) => agent.id === 'rel').disabled = true;
+  await h.rooms.send(sessionId, '/ask GitHub status');
+  await h.idle(roomId);
+  assert.deepEqual(
+    h.prompts.map((prompt) => prompt.agentId),
+    ['gh']
+  );
+  assert.deepEqual(
+    h.log.filter((row) => row.speaker === 'rel'),
+    []
+  );
+});
+
+test('all-disabled rooms accept broad messages and finish without a fallback speaker or cap notice', async () => {
+  const h = harness({ decide: ROTATE });
+  const { sessionId, roomId } = await room(h);
+  for (const agent of h.agents) agent.disabled = true;
+  assert.equal(await h.rooms.send(sessionId, 'anyone?'), true);
+  await h.idle(roomId);
+  assert.equal(h.rooms.isRunning(roomId), false);
+  assert.deepEqual(h.prompts, []);
+  assert.deepEqual(
+    h.log.map((row) => row.kind),
+    ['user']
+  );
+  assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+});
+
+test('a catalog lookup failure cannot revive a member already known disabled', async () => {
+  let fail = false;
+  const h = harness({
+    listGate: () => {
+      if (fail) throw new Error('catalog unavailable');
+    },
+  });
+  const { sessionId, roomId } = await room(h);
+  h.agents.find((agent) => agent.id === 'rel').disabled = true;
+  await h.rooms.update(roomId, { name: 'Disabled member retained' });
+  fail = true;
+  await assert.rejects(h.rooms.send(sessionId, '/ask Release status'));
+  await h.idle(roomId);
+  assert.equal(
+    h.prompts.some((prompt) => prompt.agentId === 'rel'),
+    false
+  );
+  assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+});
+
+test('adding an available member retains existing disabled members and their history; new disabled members are refused', async () => {
+  const h = harness();
+  const { sessionId, roomId } = await room(h, { members: ['gh', 'rel'] });
+  await h.rooms.send(sessionId, '/ask Release establish conversation');
+  await h.idle(roomId);
+  const rel = roomMemberSessionId(roomId, 'rel');
+  const before = structuredClone(h.saved.doc.rooms[roomId]);
+  const history = structuredClone(h.log);
+  h.agents.find((agent) => agent.id === 'rel').disabled = true;
+  await h.rooms.update(roomId, { members: ['gh', 'rel', 'bench'] });
+  assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+  assert.equal(h.saved.doc.rooms[roomId].cursors.rel, before.cursors.rel);
+  assert.equal(h.saved.doc.rooms[roomId].seen.rel, before.seen.rel);
+  assert.deepEqual(h.log, history);
+  assert.ok(h.sessions.has(rel));
+  assert.deepEqual(h.deleted, []);
+  h.agents.push({ ...structuredClone(AGENTS[2]), id: 'new', label: 'New', disabled: true });
+  await assert.rejects(h.rooms.update(roomId, { members: ['gh', 'rel', 'bench', 'new'] }));
+  await assert.rejects(room(h, { members: ['new'] }));
+  assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+  await h.rooms.send(sessionId, '/ask Bench welcome');
+  await h.idle(roomId);
+  assert.equal(h.prompts.at(-1).agentId, 'bench');
+});
+
+test('multiple calls already owed by an active exchange cancel once when their member is disabled', async (t) => {
+  const first = latch();
+  const benchTurn = latch();
+  t.after(first.open);
+  t.after(benchTurn.open);
+  const h = harness({
+    script: async (id) => {
+      if (id === 'gh') await first.closed;
+      if (id === 'bench') await benchTurn.closed;
+      return `answer from ${id}`;
+    },
+  });
+  const { sessionId, roomId } = await room(h);
+  const ends = { bench: [], a: [], b: [] };
+  await h.rooms.send(sessionId, '/ask GitHub first');
+  await until(() => h.prompts.length === 1);
+  for (const key of ['bench', 'a', 'b'])
+    await h.rooms.ask(sessionId, {
+      agentId: key === 'bench' ? 'bench' : 'rel',
+      prompt: `question ${key}`,
+      from: { sessionId: 'sess_lead_1' },
+      id: `owed_${key}`,
+      onSettled: (detail) => ends[key].push(detail),
+    });
+  const relayed = await h.rooms.relay(roomMemberSessionId(roomId, 'rel'), 'REPORT: later');
+  first.open();
+  await until(() => h.prompts.some((prompt) => prompt.agentId === 'bench'));
+  assert.equal(h.prompts.at(-1).agentId, 'bench');
+  h.agents.find((agent) => agent.id === 'rel').disabled = true;
+  benchTurn.open();
+  assert.equal(await relayed.settled, 'cancelled');
+  await h.idle(roomId);
+  assert.deepEqual(
+    h.prompts.map((prompt) => prompt.agentId),
+    ['gh', 'bench']
+  );
+  assert.deepEqual(ends.bench, [{ status: 'done', result: { content: 'answer from bench' } }]);
+  assert.deepEqual([ends.a, ends.b], [[{ status: 'cancelled' }], [{ status: 'cancelled' }]]);
+  assert.deepEqual(
+    h.log.filter((row) => row.speaker === 'rel'),
+    []
+  );
+  assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+});
+
+test('disabling every member during an exchange lets submitted speech finish and ends without another turn or cap', async (t) => {
+  const gate = gated(['gh']);
+  t.after(gate.release);
+  const h = harness({ script: gate.script, decide: () => ({ action: 'unmanaged' }) });
+  const { sessionId, roomId } = await room(h);
+  await h.rooms.send(sessionId, 'everyone, status?');
+  await until(() => h.prompts.length === 1);
+  assert.equal(h.prompts[0]?.agentId, 'gh');
+  for (const agent of h.agents) agent.disabled = true;
+  gate.release();
+  await h.idle(roomId);
+  assert.equal(h.rooms.isRunning(roomId), false);
+  assert.deepEqual(
+    h.prompts.map((prompt) => prompt.agentId),
+    ['gh']
+  );
+  assert.deepEqual(
+    h.log.map((row) => row.kind),
+    ['user', 'speech']
+  );
+  assert.equal(h.log.at(-1).speaker, 'gh');
+  assert.deepEqual(h.aborts, []);
+  assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+});
+
+test('a catalog failure after session creation cannot submit a previously accepted request', async (t) => {
+  const create = latch();
+  t.after(create.open);
+  let hold = false;
+  let fail = false;
+  const h = harness({
+    createGate: () => (hold ? create.closed : undefined),
+    listGate: () => {
+      if (fail) throw new Error('catalog unavailable');
+    },
+  });
+  const { sessionId, roomId } = await room(h);
+  const rel = roomMemberSessionId(roomId, 'rel');
+  const ends = [];
+  hold = true;
+  await h.rooms.ask(sessionId, {
+    agentId: 'rel',
+    prompt: 'status?',
+    from: { sessionId: 'sess_lead_1' },
+    id: 'catalog-late',
+    onSettled: (detail) => ends.push(detail),
+  });
+  await until(() => h.createStarted.includes(rel));
+  assert.ok(h.createStarted.includes(rel));
+  h.agents.find((agent) => agent.id === 'rel').disabled = true;
+  fail = true;
+  create.open();
+  await h.idle(roomId);
+  assert.deepEqual(h.prompts, [], 'a failed eligibility check cannot admit the turn');
+  assert.equal(ends.length, 1, 'the accepted call is settled once');
+  assert.ok(['failed', 'cancelled'].includes(ends[0].status));
+  assert.equal(h.saved.doc.rooms[roomId].cursors.rel, undefined);
+  assert.equal(h.saved.doc.rooms[roomId].seen?.rel, undefined);
+  assert.ok(h.sessions.has(rel));
+  assert.deepEqual(h.deleted, []);
 });
 
 test('remove surfaces a failed cleanup', async () => {

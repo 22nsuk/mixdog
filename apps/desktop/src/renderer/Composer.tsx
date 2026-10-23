@@ -640,16 +640,18 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       setCaretOffset(caret);
     });
   };
-  const submitTagged: typeof submit = taggedMembers.length
-    ? async (content, options) => {
-        const accepted = await submit(
-          contentAsking(content, roomTagTargets(taggedMembers, roomMembers ?? [])),
-          options
-        );
-        if (accepted === true) setTagged([]);
-        return accepted;
-      }
-    : submit;
+  const submitTagged: typeof submit =
+    tagged.length && roomMembers
+      ? async (content, options) => {
+          const targets = roomTagTargets(taggedMembers, roomMembers);
+          // A picked recipient may have switched off while this draft was open.
+          // Keep the draft for retry instead of turning it into a room broadcast.
+          if (!targets.length) return false;
+          const accepted = await submit(contentAsking(content, targets), options);
+          if (accepted === true) setTagged([]);
+          return accepted;
+        }
+      : submit;
   const skillHighlight = useComposerSkillHighlight({
     textarea,
     text: draft,

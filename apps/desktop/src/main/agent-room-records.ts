@@ -67,11 +67,19 @@ export function createRoomRecords(deps: Pick<AgentRoomDeps, 'store' | 'listAgent
   }
   const mixyName = async () => (await deps.leadName?.().catch(() => '')) || 'Mixy';
 
+  /** Members eligible for a new turn. A disabled definition keeps its room
+   *  membership and history; absence from the contacts alone proves nothing
+   *  (older rooms may hold workflow agents). A failed catalog read must not
+   *  silently enable a member whose current setting could not be checked. */
   async function memberLabels(room: AgentRoomRecord): Promise<Map<string, MemberLabel>> {
-    const rows = contactAgentRows(await deps.listAgents().catch(() => []));
-    const labels = new Map<string, MemberLabel>();
     const lead = room.members.includes(MIXY_AGENT_ID) ? await mixyName() : '';
+    const listed = await deps.listAgents();
+    if (!Array.isArray(listed)) throw new TypeError('The agent catalog is not an array.');
+    const rows = contactAgentRows(listed);
+    const disabled = new Set(listed.filter((row) => row?.disabled === true).map((row) => row.id));
+    const labels = new Map<string, MemberLabel>();
     for (const id of room.members) {
+      if (id !== MIXY_AGENT_ID && disabled.has(id)) continue;
       const row = rows.find((entry) => entry.id === id);
       const isLead = id === MIXY_AGENT_ID;
       const rowName = row ? agentName(row) : (names.get(id) ?? id);

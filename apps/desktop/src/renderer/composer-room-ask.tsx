@@ -13,8 +13,8 @@ import type { DesktopPromptContent } from '../shared/contract';
 /** The members of the room `sessionId` is the log of; null elsewhere. */
 export function useComposerRoomMembers(sessionId?: string): RoomMemberLabel[] | null {
   const room = useAgentRoom(sessionId);
-  const { label } = useRoomContacts(Boolean(room), room?.memberNames);
-  return useMemo(() => (room ? room.members.map(label) : null), [room, label]);
+  const { label, isEnabled } = useRoomContacts(Boolean(room), room?.memberNames);
+  return useMemo(() => (room ? room.members.filter(isEnabled).map(label) : null), [room, label, isEnabled]);
 }
 
 /** The members a draft's `/ask <agent>[, <agent>…]` already names, in order. */

@@ -939,6 +939,179 @@ test('a room composer’s @ offers Everyone: it addresses each current member on
   assert.equal(textOf(calls.at(-1)), '/ask bench now', 'a member who left is not addressed');
 });
 
+test('room recipients follow disabled catalog rows without changing stored membership or losing legacy members', async (t) => {
+  const { updateSidebarReference } = await import('./sidebar-reference-cache.ts');
+  const members = ['enabled-bot', 'toggled-bot', 'workflow', 'legacy'];
+  publishAgentRooms([
+    {
+      id: ROOM,
+      agentRoom: {
+        id: 'release01',
+        name: 'Room',
+        members,
+        memberNames: { workflow: 'Workflow', legacy: 'Legacy' },
+        maxRounds: 1,
+        maxMessages: 6,
+        shareTools: false,
+      },
+    },
+  ]);
+  t.after(() => publishAgentRooms([]));
+  const calls = [];
+  const { host, type, key, render } = await mountComposer(t);
+  const catalog = (disabled) => [
+    { id: 'enabled-bot', custom: true, kind: 'bot', label: 'Enabled' },
+    { id: 'toggled-bot', custom: true, kind: 'bot', label: 'Toggled', disabled },
+    { id: 'workflow', custom: true, kind: 'agent', disabled },
+  ];
+  const props = { identityScope: 'disabled-room-recipients', recoveryScope: 'disabled-room-recipients' };
+  await render(composerProps(calls, { ...props, agentMode: true }));
+  const update = (disabled) => act(async () => updateSidebarReference('agents', catalog(disabled)));
+  const options = () => [...document.querySelectorAll('#composer-room-ask-palette [role="option"]')];
+  const pick = (name) =>
+    act(async () =>
+      options()
+        .find((option) => option.textContent === name)
+        .click()
+    );
+  await update(false);
+  await type('@');
+  assert.deepEqual(
+    options().map((option) => option.textContent),
+    ['Enabled', 'Toggled', 'Workflow', 'Legacy', 'Everyone']
+  );
+  await pick('Toggled');
+  await type('@all');
+  await key('Enter');
+  await update(true);
+  assert.deepEqual(
+    [...host.querySelectorAll('.mx-chat-tag')].map((tag) => tag.textContent),
+    ['@Everyone']
+  );
+  await type('@');
+  assert.deepEqual(
+    options().map((option) => option.textContent),
+    ['Enabled', 'Legacy'],
+    'disabled non-contact rows are excluded too'
+  );
+  await type('check now');
+  await key('Enter');
+  assert.equal(textOf(calls.at(-1)), '/ask enabled-bot, legacy check now');
+
+  // The same stored room regains enabled bots without a join or republish.
+  await update(false);
+  await type('@tog');
+  assert.deepEqual(
+    options().map((option) => option.textContent),
+    ['Toggled']
+  );
+  await key('Enter');
+  await type('just you');
+  await key('Enter');
+  assert.equal(textOf(calls.at(-1)), '/ask toggled-bot just you');
+  await render(composerProps(calls, { ...props, agentMode: false }));
+  await update(true);
+  await type('/ask ');
+  assert.deepEqual(
+    options().map((option) => option.textContent),
+    ['Enabled', 'Legacy'],
+    '/ask offers eligible members and never Everyone'
+  );
+  assert.deepEqual(members, ['enabled-bot', 'toggled-bot', 'workflow', 'legacy']);
+});
+
+test('a picked room target that becomes disabled cannot turn into a plain broadcast', async (t) => {
+  const { updateSidebarReference } = await import('./sidebar-reference-cache.ts');
+  publishAgentRooms([
+    {
+      id: ROOM,
+      agentRoom: {
+        id: 'release01',
+        name: 'Room',
+        members: ['target-bot', 'other-bot'],
+        maxRounds: 1,
+        maxMessages: 6,
+        shareTools: false,
+      },
+    },
+  ]);
+  t.after(() => publishAgentRooms([]));
+  const calls = [];
+  const { host, input, type, key, render } = await mountComposer(t);
+  await render(
+    composerProps(calls, {
+      agentMode: true,
+      identityScope: 'disabled-picked-recipient',
+      recoveryScope: 'disabled-picked-recipient',
+    })
+  );
+  const catalog = (disabled, otherDisabled = false) => [
+    { id: 'target-bot', custom: true, kind: 'bot', label: 'Target', disabled },
+    { id: 'other-bot', custom: true, kind: 'bot', label: 'Other', disabled: otherDisabled },
+  ];
+  await act(async () => updateSidebarReference('agents', catalog(false)));
+  await type('@target');
+  await key('Enter');
+  assert.equal(host.querySelector('.mx-chat-tag')?.textContent, '@Target');
+  await act(async () => updateSidebarReference('agents', catalog(true)));
+  await type('only target');
+  await key('Enter');
+  assert.deepEqual(calls, [], 'losing the explicit target must not send to the remaining bot');
+  assert.equal(input().value, 'only target', 'the unsent draft is preserved');
+  await act(async () => updateSidebarReference('agents', catalog(false)));
+  await key('Enter');
+  assert.equal(textOf(calls.at(-1)), '/ask target-bot only target', 'reenabling restores the picked recipient');
+
+  await type('@all');
+  await key('Enter');
+  await act(async () => updateSidebarReference('agents', catalog(true, true)));
+  await type('@');
+  assert.equal(
+    document.getElementById('composer-room-ask-palette'),
+    null,
+    'an entirely disabled room offers no recipients'
+  );
+  await type('wait for target');
+  await key('Enter');
+  assert.equal(calls.length, 1, 'Everyone with no eligible recipients is also kept for retry');
+  assert.equal(input().value, 'wait for target');
+  await act(async () => updateSidebarReference('agents', catalog(false, true)));
+  await key('Enter');
+  assert.equal(textOf(calls.at(-1)), '/ask target-bot wait for target');
+});
+
+test('disabled room members retain their catalog names and avatars for history', async (t) => {
+  const { useRoomContacts } = await import('./agent-room-parts.tsx');
+  const { adoptSidebarReferenceHost, updateSidebarReference } = await import('./sidebar-reference-cache.ts');
+  const avatar = { kind: 'mascot', species: 'corgi', accessory: 'scarf', expression: 'happy', color: '#f2c94c' };
+  window.mixdogDesktop = {};
+  adoptSidebarReferenceHost(window.mixdogDesktop);
+  updateSidebarReference('agents', [
+    { id: 'disabled-bot', custom: true, kind: 'bot', label: 'Stored bot', avatar, disabled: true },
+    { id: 'workflow', kind: 'agent', disabled: true },
+    { id: 'lead', disabled: true },
+    { id: 'legacy-string', disabled: 'true' },
+  ]);
+  let current;
+  function Labels() {
+    current = useRoomContacts(false, { legacy: 'Legacy member' });
+    return null;
+  }
+  await rowHarness(t)(React.createElement(Labels));
+  assert.deepEqual(current.label('disabled-bot'), { id: 'disabled-bot', name: 'Stored bot', avatar });
+  assert.equal(
+    current.contacts.some((contact) => contact.agentId === 'disabled-bot'),
+    false,
+    'new invitations still exclude it'
+  );
+  assert.equal(current.isEnabled('disabled-bot'), false);
+  assert.equal(current.isEnabled('workflow'), false, 'explicit state also applies to non-contact members');
+  assert.equal(current.isEnabled('legacy'), true, 'catalog absence does not remove legacy members');
+  assert.equal(current.label('legacy').name, 'Legacy member');
+  assert.equal(current.isEnabled('lead'), true, 'Mixy stays available');
+  assert.equal(current.isEnabled('legacy-string'), true, 'only boolean true switches a member off');
+});
+
 test('a room composer’s @all inside a Markdown code fence is text: no picker opens and Enter tags nobody', async (t) => {
   publishAgentRooms([
     {

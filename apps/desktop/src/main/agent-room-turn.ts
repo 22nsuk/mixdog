@@ -84,6 +84,8 @@ export interface RoomTurnHost {
   roomId: string;
   /** The room's record; throws once the room no longer exists. */
   room(): AgentRoomRecord;
+  /** Current members eligible to start a new turn; a failed lookup rejects. */
+  labels(): Promise<Map<string, MemberLabel>>;
   /** The room's rows in log order. */
   rows(): Promise<RoomRow[]>;
   post(rows: RoomRow[]): Promise<void>;
@@ -166,7 +168,7 @@ export async function speakInRoom(
     for (const call of calls) call.onSettled?.(detail);
   };
   const call = calls.length ? combinedCall(host, agentId, calls) : undefined;
-  const outcome = { text: '', failed: false, submitted: false, removed: false };
+  const outcome = { text: '', failed: false, submitted: false, cancelled: false };
   let answer: RoomTurnAnswer;
   try {
     answer = await memberTurn(host, state, labels, agentId, turn, call, outcome);
@@ -177,7 +179,7 @@ export async function speakInRoom(
   const result = typeof answer === 'string' ? answer : answer.result;
   if (result === 'superseded') {
     if (outcome.submitted) for (const each of calls) if (each.id === call?.id) each.used = true;
-  } else if (result === 'stopped' || outcome.removed) settle({ status: 'cancelled' });
+  } else if (result === 'stopped' || outcome.cancelled) settle({ status: 'cancelled' });
   else if (outcome.failed) settle({ status: 'failed', error: 'The member could not reply in the room.' });
   else settle({ status: 'done', result: { content: outcome.text } });
   return answer;
@@ -216,24 +218,28 @@ async function memberTurn(
   agentId: string,
   { addressed, instruction, mentionedBy, scene }: RoomTurn,
   call: RoomCall | undefined,
-  outcome: { text: string; failed: boolean; submitted: boolean; removed: boolean }
+  outcome: { text: string; failed: boolean; submitted: boolean; cancelled: boolean }
 ): Promise<RoomTurnAnswer> {
   const { now, newId } = host;
   const room = host.room();
-  const member = labels.get(agentId) ?? { id: agentId, name: agentId, route: undefined, description: '' };
+  const member = labels.get(agentId);
   // A member removed from the room (its bot was deleted) gets no turn, and one
   // in flight is aborted: nothing is posted, its cursors go, its calls end
   // cancelled (speakInRoom).
   let sessionId = '';
   const gone = () => !room.members.includes(agentId);
   const left = async (): Promise<'pass'> => {
-    outcome.removed = true;
+    outcome.cancelled = true;
     delete room.cursors[agentId];
     if (room.seen) delete room.seen[agentId];
     if (sessionId) await host.abort(sessionId).catch(() => undefined);
     return 'pass';
   };
   if (gone()) return await left();
+  if (!member) {
+    outcome.cancelled = true;
+    return 'pass';
+  }
   // Whether the user's newest message still has no answer in the room.
   const waiting = state.waiting;
   const rows = await host.rows();
@@ -284,13 +290,26 @@ async function memberTurn(
     sessionId = await host.memberSession(member);
     state.memberSession = sessionId;
     if (gone()) return await left();
+    // Every covered watch is recorded before submit. Settings may change
+    // while session creation or this durable follow waits: check again at
+    // admission, without advancing a disabled member's cursor or deleting
+    // its conversation. Once submitted, its turn follows the usual stop rules.
+    if (call?.id) await call.follow?.(call.id);
+    labels = await host.labels();
+    if (state.stop) return 'stopped';
+    if (gone()) return await left();
+    if (interrupted()) return await cutShort();
+    if (!labels.has(agentId)) {
+      outcome.cancelled = true;
+      return 'pass';
+    }
     const prompt = roomTurnPrompt({
       roomName: room.name,
       self: member,
-      members: room.members.map((id) => labels.get(id) ?? { id, name: id }),
+      members: [...labels.values()],
       rows: shown,
       shareTools: room.shareTools,
-      addressed,
+      addressed: addressed.filter((id) => labels.has(id)),
       mentionedBy: mentionedBy ? (labels.get(mentionedBy)?.name ?? mentionedBy) : '',
       instruction,
       scene,
@@ -300,13 +319,6 @@ async function memberTurn(
     });
     const last = rows.at(-1);
     if (last) room.cursors[agentId] = last.id;
-    // Every covered call's watch follows this turn, durably, before the turn
-    // can start; a record that fails throws, so the turn is never submitted
-    // and its calls end failed (below).
-    if (call?.id) await call.follow?.(call.id);
-    if (state.stop) return 'stopped';
-    if (gone()) return await left();
-    if (interrupted()) return await cutShort();
     startedAt = now();
     // From here the submission id counts as used, even when the call throws.
     outcome.submitted = true;
@@ -388,7 +400,7 @@ async function memberTurn(
   // that peer, never authority.
   const mention = roomMentionOf(
     row.text,
-    room.members.map((id) => labels.get(id) ?? { id, name: id }),
+    [...labels.values()].filter(({ id }) => room.members.includes(id)),
     agentId
   );
   if (mention) Object.assign(row, { to: [mention], toName: [labels.get(mention)?.name ?? mention] });
