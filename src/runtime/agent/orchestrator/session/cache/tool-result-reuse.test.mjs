@@ -58,6 +58,14 @@ function prepareGitRemote(fx) {
   );
 }
 
+function prepareGitBranch(fx) {
+  execFileSync('git', ['init', '--quiet', '--initial-branch=main', '--template='], { cwd: fx.cwd });
+}
+
+function verifyEscapedCommentWrite(fx) {
+  return () => assert.equal(readFileSync(join(fx.cwd, 'changed.txt'), 'utf8').trim(), 'changed');
+}
+
 // Keep ONE loop's crossTurnCalls across model iterations. Tests that reset
 // this map for every batch cannot expose the signature-only bypass.
 // Only the tool implementation is injected: admission, batching, cache
@@ -131,12 +139,15 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
   const commentedRead = process.platform === 'win32'
     ? 'echo beta,alpha | Sort-Object # { records }'
     : 'echo observed # { records }';
-  for (const [name, command] of [
+  for (const [name, command, prepare] of [
     ['shell', 'echo observed'], ['Bash', 'echo observed'],
     ['shell', commentedRead], ['Bash', commentedRead],
+    ['shell', 'git branch --show-current', prepareGitBranch],
+    ['Bash', 'git branch --show-current', prepareGitBranch],
   ]) {
     test(`read-only ${name} preserves read and scoped-cache receipts (${mode}, ${command})`, async () => {
       const fx = fixture(mode);
+      prepare?.(fx);
       fx.cacheSafe = true;
       const readArgs = { file_path: fx.file };
       const globArgs = { path: fx.cwd, pattern: '*.txt', sort: 'natural', limit: 25 };
@@ -155,7 +166,7 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
     });
   }
 
-  for (const [kind, name, command, prepare] of [
+  for (const [kind, name, command, prepare, posixOnly] of [
     ['mutating', 'shell', 'echo changed > changed.txt'],
     ['mutating', 'Bash', 'echo changed > changed.txt'],
     ['unknown-effect', 'shell', 'node -e "process.stdout.write(\'observed\')"'],
@@ -163,8 +174,12 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
     ['nested-script', 'Bash', process.platform === 'win32' ? 'echo (node --version)' : 'echo "$(node --version)"'],
     ['Git config mutation', 'shell', 'git remote add local ../other', prepareGitRemote],
     ['Git config mutation', 'Bash', 'git remote add local ../other', prepareGitRemote],
+    ['escaped Bash comment', 'shell', String.raw`echo \ #tag; echo changed > changed.txt`, verifyEscapedCommentWrite, true],
+    ['escaped Bash comment', 'Bash', String.raw`echo \ #tag; echo changed > changed.txt`, verifyEscapedCommentWrite, true],
   ]) {
-    test(`${kind} ${name} still clears scoped-cache receipts and records an edit (${mode})`, async () => {
+    test(`${kind} ${name} still clears scoped-cache receipts and records an edit (${mode})`, {
+      skip: posixOnly && process.platform === 'win32' && 'requires the native POSIX default shell path',
+    }, async () => {
       const fx = fixture(mode);
       const verify = prepare?.(fx);
       fx.cacheSafe = true;

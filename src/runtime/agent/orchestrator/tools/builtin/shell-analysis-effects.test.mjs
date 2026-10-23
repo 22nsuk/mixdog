@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { writeFileSync } from 'node:fs';
-
 import { analyzeShellCommandEffects, preflightShellLargeFileProbe } from './shell-analysis.mjs';
+import { resolveShellFor } from './shell-runtime.mjs';
 
 function workDir(t) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-effects-'));
@@ -135,6 +135,10 @@ test('plain Git reads, PowerShell sorting and quoted callbacks remain read-only'
     'git show --stat HEAD',
     'git log -1',
     'git branch --list',
+    'git branch --show-current',
+    'git branch -vv',
+    'git branch --contains HEAD',
+    'git branch --format="%(refname:short)"',
     'git remote -v',
     'git remote get-url local',
     'echo beta,alpha | Sort-Object',
@@ -177,6 +181,30 @@ test('comments do not hide live mutations or nested execution', async (t) => {
     assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'global', command);
   }
 });
+
+for (const [prefix, writes] of [
+  [String.raw`echo \ #tag`, true],
+  [String.raw`echo \;#tag`, true],
+  [String.raw`echo \|#tag`, true],
+  [String.raw`echo \&#tag`, true],
+  [String.raw`echo \\ #tag`, false],
+  ['echo word\\\n#tag', true],
+  ['echo \\\n#tag', false],
+]) {
+  test(`Bash comment boundaries preserve escaped tokens: ${JSON.stringify(prefix)}`, async (t) => {
+    const bash = resolveShellFor('bash');
+    if (!bash) return t.skip('requires Bash or Git Bash');
+    const dir = workDir(t);
+    const command = `${prefix}; echo changed > out.txt`;
+    // Feed the script unchanged; Windows argv quoting can consume backslashes.
+    execFileSync(bash.shell, ['-s'], { input: command, cwd: dir, timeout: 10_000, windowsHide: true });
+    assert.equal(existsSync(join(dir, 'out.txt')), writes);
+    if (writes) assert.equal(readFileSync(join(dir, 'out.txt'), 'utf8').trim(), 'changed');
+    const effects = await analyzeShellCommandEffects(command, dir);
+    assert.equal(effects.mutationMode, writes ? 'paths' : 'none');
+    assert.deepEqual(effects.paths, writes ? [join(dir, 'out.txt')] : []);
+  });
+}
 
 test('nested shell execution cannot inherit the outer command\'s read-only classification', async (t) => {
   const dir = workDir(t);

@@ -329,6 +329,37 @@ for (const name of ['shell', 'Bash']) {
     );
     assertToolRecovery(execution, true);
   });
+
+  for (const options of ['--show-current', '-vv', '--contains HEAD', '--format="%(refname:short)"']) {
+    test(`${name} preserves output recovery after Git branch query ${options}`, async (t) => {
+      const fx = toolFixture(t);
+      execFileSync('git', ['init', '--quiet', '--initial-branch=main', '--template='], { cwd: fx.options.cwd });
+      execFileSync('git', [
+        '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+        '-c', 'core.hooksPath=.git/no-hooks', '-c', 'commit.gpgsign=false',
+        'commit', '--allow-empty', '--quiet', '-m', 'initial',
+      ], { cwd: fx.options.cwd });
+      const execution = await runToolAfterOutputCut(fx, name, { command: `git branch ${options}` });
+      assert.match(execution.completed.content, /main/);
+      assertToolRecovery(execution, false);
+    });
+  }
+
+  for (const [command, writes] of [
+    [String.raw`echo \ #tag; echo changed > changed.txt`, true],
+    [String.raw`echo \\ #tag; echo ignored > changed.txt`, false],
+  ]) {
+    test(`${name} respects Bash comment boundaries in output recovery (${writes})`, {
+      skip: process.platform === 'win32' && 'requires the native POSIX default shell path',
+    }, async (t) => {
+      const fx = toolFixture(t);
+      const execution = await runToolAfterOutputCut(fx, name, { command });
+      const file = join(fx.options.cwd, 'changed.txt');
+      assert.equal(existsSync(file), writes);
+      if (writes) assert.equal(readFileSync(file, 'utf8').trim(), 'changed');
+      assertToolRecovery(execution, writes);
+    });
+  }
 }
 
 for (const changed of [false, true]) {

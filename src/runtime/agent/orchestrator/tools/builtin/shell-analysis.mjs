@@ -1054,6 +1054,7 @@ function hasMutatingShellOptions(tokens) {
 // expansion braces (${name}) alone do not execute a command.
 function shellEffectCode(text) {
   let quote = null;
+  let wordStart = true;
   let start = 0;
   let code = '';
   for (let i = 0; i < text.length; i++) {
@@ -1064,6 +1065,9 @@ function shellEffectCode(text) {
     }
     if (ch === '`') return null;
     if (ch === '\\' && startsEscape(quote, text[i + 1])) {
+      // An escaped separator belongs to the word; a Bash line continuation
+      // contributes no boundary at all.
+      if (text[i + 1] !== '\n') wordStart = false;
       i++;
       continue;
     }
@@ -1072,7 +1076,7 @@ function shellEffectCode(text) {
       if (ch === '"') quote = null;
       continue;
     }
-    if (ch === '#' && (i === 0 || /[\s;&|]/.test(text[i - 1]))) {
+    if (ch === '#' && wordStart) {
       code += text.slice(start, i);
       const newline = text.indexOf('\n', i);
       if (newline < 0) return code;
@@ -1082,6 +1086,7 @@ function shellEffectCode(text) {
     }
     if (ch === "'" || ch === '"') quote = ch;
     else if (ch === '(' || (ch === '{' && text[i - 1] !== '$')) return null;
+    wordStart = /[\s;&|]/.test(ch);
   }
   return quote === null ? code + text.slice(start) : null;
 }
