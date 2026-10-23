@@ -81,13 +81,19 @@ export interface MemberLabel {
   description: string;
 }
 
+/** Names and speaking eligibility from the same catalog read. */
+export interface MemberRoster {
+  labels: Map<string, MemberLabel>;
+  eligible: Map<string, MemberLabel>;
+}
+
 /** What a member's turn needs from the room host, bound to one room. */
 export interface RoomTurnHost {
   roomId: string;
   /** The room's record; throws once the room no longer exists. */
   room(): AgentRoomRecord;
-  /** Current members eligible to start a new turn; a failed lookup rejects. */
-  labels(): Promise<Map<string, MemberLabel>>;
+  /** All member names and current speaking eligibility; a failed lookup rejects. */
+  roster(): Promise<MemberRoster>;
   /** The room's rows in log order. */
   rows(): Promise<RoomRow[]>;
   post(rows: RoomRow[]): Promise<void>;
@@ -161,7 +167,7 @@ function spokenText(answer: NonNullable<ReturnType<typeof sessionFinalAnswer>>, 
 export async function speakInRoom(
   host: RoomTurnHost,
   state: RunState,
-  labels: Map<string, MemberLabel>,
+  roster: MemberRoster,
   agentId: string,
   turn: RoomTurn,
   calls: RoomCall[] = []
@@ -173,7 +179,7 @@ export async function speakInRoom(
   const outcome = { text: '', failed: false, submitted: false, cancelled: false };
   let answer: RoomTurnAnswer;
   try {
-    answer = await memberTurn(host, state, labels, agentId, turn, call, outcome);
+    answer = await memberTurn(host, state, roster, agentId, turn, call, outcome);
   } catch (error) {
     settle({ status: 'failed', error: error instanceof Error ? error.message : String(error) });
     throw error;
@@ -216,7 +222,7 @@ function combinedCall(host: RoomTurnHost, agentId: string, calls: RoomCall[]): R
 async function memberTurn(
   host: RoomTurnHost,
   state: RunState,
-  labels: Map<string, MemberLabel>,
+  roster: MemberRoster,
   agentId: string,
   { addressed, instruction, mentionedBy, scene }: RoomTurn,
   call: RoomCall | undefined,
@@ -224,7 +230,7 @@ async function memberTurn(
 ): Promise<RoomTurnAnswer> {
   const { now, newId } = host;
   const room = host.room();
-  const member = labels.get(agentId);
+  const member = roster.eligible.get(agentId);
   // A member removed from the room (its bot was deleted) gets no turn, and one
   // in flight is aborted: nothing is posted, its cursors go, its calls end
   // cancelled (speakInRoom).
@@ -297,7 +303,8 @@ async function memberTurn(
     // admission, without advancing a disabled member's cursor or deleting
     // its conversation. Once submitted, its turn follows the usual stop rules.
     if (call?.id) await call.follow?.(call.id);
-    labels = await host.labels();
+    roster = await host.roster();
+    const labels = roster.eligible;
     if (state.stop) return 'stopped';
     if (gone()) return await left();
     if (interrupted()) return await cutShort();
@@ -399,13 +406,15 @@ async function memberTurn(
     ...(state.memberSession ? { artifactsFrom: { sessionId: state.memberSession, since: startedAt } } : {}),
   };
   // The one peer the speech addresses: shown on its bubble, and a turn for
-  // that peer, never authority.
-  const mention = roomMentionOf(
+  // that peer, never authority. Resolve against every name before checking
+  // eligibility, so a disabled longer name cannot become an active prefix.
+  const named = roomMentionOf(
     row.text,
-    [...labels.values()].filter(({ id }) => room.members.includes(id)),
+    [...roster.labels.values()].filter(({ id }) => room.members.includes(id)),
     agentId
   );
-  if (mention) Object.assign(row, { to: [mention], toName: [labels.get(mention)?.name ?? mention] });
+  const mention = roster.eligible.has(named) ? named : '';
+  if (mention) Object.assign(row, { to: [mention], toName: [roster.labels.get(mention)?.name ?? mention] });
   const tools = toolSummaries(snapshot, startedAt);
   if (tools.length) row.tools = tools;
   await host.post([row]);

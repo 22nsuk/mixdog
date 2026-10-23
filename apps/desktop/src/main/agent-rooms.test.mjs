@@ -2520,6 +2520,44 @@ test('a peer mention cannot hand a disabled member a turn', async () => {
   );
 });
 
+for (const [name, disabled, target] of [
+  ['Release Ops', true, ''],
+  ['Release Ops', false, 'ops'],
+  ['Release', true, 'rel'],
+]) {
+  test(`a peer @${name} keeps its exact target when Release Ops is ${disabled ? 'disabled' : 'enabled'}`, async () => {
+    const h = harness({
+      agents: [...AGENTS, { ...AGENTS[1], id: 'ops', label: 'Release Ops' }],
+      script: (id) => (id === 'gh' ? `@${name} status?` : 'ok'),
+      decide: () => null,
+    });
+    const { sessionId, roomId } = await room(h, { members: ['gh', 'rel', 'ops'] });
+    h.agents.find((agent) => agent.id === 'ops').disabled = disabled;
+    await h.rooms.send(sessionId, '/ask GitHub status');
+    await h.idle(roomId);
+    assert.equal(h.rooms.isRunning(roomId), false);
+    const speech = h.log.find((row) => row.kind === 'speech' && row.speaker === 'gh');
+    assert.deepEqual(
+      { to: speech.to ?? [], toName: speech.toName ?? [], turns: h.prompts.map((prompt) => prompt.agentId) },
+      { to: target ? [target] : [], toName: target ? [name] : [], turns: target ? ['gh', target] : ['gh'] },
+      'the speech label and the fallback turn must agree on the full name, without redirecting to a prefix'
+    );
+    if (target) assert.match(h.prompts[1].prompt, new RegExp(`GitHub addressed you with @${name}`));
+    assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'ops']);
+
+    if (!target) {
+      assert.equal(h.sessions.has(roomMemberSessionId(roomId, 'ops')), false);
+      assert.equal(h.sessions.has(roomMemberSessionId(roomId, 'rel')), false);
+      h.agents.find((agent) => agent.id === 'ops').disabled = false;
+      await h.rooms.send(sessionId, '/ask GitHub status again');
+      await h.idle(roomId);
+      const resumed = h.log.findLast((row) => row.kind === 'speech' && row.speaker === 'gh');
+      assert.deepEqual([resumed.to, resumed.toName], [['ops'], ['Release Ops']]);
+      assert.deepEqual(h.prompts.map((prompt) => prompt.agentId), ['gh', 'gh', 'ops']);
+    }
+  });
+}
+
 test('all-disabled rooms accept broad messages and finish without a fallback speaker or cap notice', async () => {
   const h = harness({ decide: ROTATE });
   const { sessionId, roomId } = await room(h);

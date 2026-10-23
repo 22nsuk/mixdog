@@ -181,18 +181,18 @@ async function exchangeTurns(
 ): Promise<void> {
   try {
     if (waiting === undefined) state.waiting = roomUserWaiting(await host.rows());
-    let labels = await host.turn.labels();
+    let roster = await host.turn.roster();
     // This exchange's eligible roster may shrink; room.members is the
     // persistent participation history and is never changed by a toggle.
-    const members = [...labels.keys()];
+    const members = [...roster.eligible.keys()];
     const cancelUnavailable = () => {
       const unavailable = calls.filter((call) => !members.includes(call.agentId));
       calls.splice(0, calls.length, ...calls.filter((call) => members.includes(call.agentId)));
       for (const call of unavailable) call.onSettled?.({ status: 'cancelled' });
     };
     const refresh = async () => {
-      labels = await host.turn.labels();
-      members.splice(0, members.length, ...members.filter((id) => labels.has(id)));
+      roster = await host.turn.roster();
+      members.splice(0, members.length, ...members.filter((id) => roster.eligible.has(id)));
       cancelUnavailable();
     };
     cancelUnavailable();
@@ -216,7 +216,7 @@ async function exchangeTurns(
         if (!members.includes(agentId)) return 'pass';
         const taken = calls.filter((call) => call.agentId === agentId);
         calls.splice(0, calls.length, ...calls.filter((call) => call.agentId !== agentId));
-        const answer = await speakInRoom(host.turn, state, labels, agentId, turn, taken);
+        const answer = await speakInRoom(host.turn, state, roster, agentId, turn, taken);
         if ((typeof answer === 'string' ? answer : answer.result) === 'superseded') calls.push(...taken);
         return answer;
       },
@@ -227,7 +227,7 @@ async function exchangeTurns(
           host,
           state,
           room,
-          members.map((id) => labels.get(id) as MemberLabel),
+          members.map((id) => roster.eligible.get(id) as MemberLabel),
           step
         );
       },
@@ -240,7 +240,7 @@ async function exchangeTurns(
     });
     if (result.outcome === 'capped') {
       const { limit, rounds, messages, remaining } = result;
-      if (remaining?.length) room.owed = remaining.filter((id) => labels.has(id));
+      if (remaining?.length) room.owed = remaining.filter((id) => roster.eligible.has(id));
       await host.post([{ id: `row_${host.newId()}`, kind: 'cap', at: host.now(), text: '', limit, rounds, messages }]);
     } else if (result.outcome === 'stopped') {
       await host.post([{ id: `row_${host.newId()}`, kind: 'stopped', at: host.now(), text: '' }]);

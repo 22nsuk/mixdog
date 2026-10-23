@@ -67,9 +67,9 @@ export function createRoomRecords(deps: Pick<AgentRoomDeps, 'store' | 'listAgent
   }
   const mixyName = async () => (await deps.leadName?.().catch(() => '')) || 'Mixy';
 
-  /** Names and speaking eligibility from one catalog read. Resolve a direct
-   *  request against every name before checking eligibility, so disabling a
-   *  longer name cannot redirect it to an active prefix. Absence from contacts
+  /** Names and speaking eligibility from one catalog read. Resolve requests
+   *  and peer mentions against every name before checking eligibility, so a
+   *  disabled longer name cannot redirect to an active prefix. Absence from contacts
    *  proves nothing (older rooms may hold workflow agents). A failed catalog
    *  read must not silently enable a member whose setting could not be checked. */
   async function memberRoster(room: AgentRoomRecord) {

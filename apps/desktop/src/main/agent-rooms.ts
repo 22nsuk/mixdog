@@ -282,7 +282,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
   const turnHost = (roomId: string): RoomTurnHost => ({
     roomId,
     room: () => roomOf(roomId),
-    labels: async () => (await memberRoster(roomOf(roomId))).eligible,
+    roster: () => memberRoster(roomOf(roomId)),
     rows: () => roomRows(roomId),
     post: (rows) => post(roomId, rows),
     republish: () => deps.republish(roomSessionId(roomId)),
