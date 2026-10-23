@@ -67,6 +67,8 @@ export interface RoomCall {
  *  turns other sessions wait on. */
 export interface RoomExchangeOptions {
   to?: string[];
+  /** Includes a whole-room request, even when direct targets are merged in. */
+  openRequest?: boolean;
   waiting?: boolean;
   only?: boolean;
   calls?: RoomCall[];

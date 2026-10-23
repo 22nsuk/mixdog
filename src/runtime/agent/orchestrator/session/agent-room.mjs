@@ -285,6 +285,7 @@ function nextSpeaker(decision, { members, targets, turns, mustPick, mention }) {
 export async function runRoomExchange({
   members,
   to = [],
+  openRequest = to.length === 0,
   maxRounds,
   maxMessages,
   speak,
@@ -315,7 +316,8 @@ export async function runRoomExchange({
   });
   const halted = () => (stopped() ? end('stopped') : superseded() ? end('superseded') : null);
   // A direct request whose targets disappeared before anyone answered must
-  // not turn into an open call. Once answered, normal follow-ups still apply.
+  // not turn into an open call unless a separate whole-room request was
+  // merged in. Once answered, normal follow-ups still apply.
   const unansweredTargetsGone = () =>
     targets.length > 0 && messages === 0 && !targets.some((id) => members.includes(id));
   const take = async (agentId, turn) => {
@@ -364,7 +366,7 @@ export async function runRoomExchange({
   for (;;) {
     let halt = halted();
     if (halt) return halt;
-    if (!members.length || unansweredTargetsGone()) return end('done');
+    if (!members.length || (!openRequest && unansweredTargetsGone())) return end('done');
     if (spokenOut()) return end('done');
     if (steps >= maxSteps) {
       // Turns that were all passes since the last speech are no live talk cut off.
@@ -388,12 +390,13 @@ export async function runRoomExchange({
     }
     halt = halted();
     if (halt) return halt;
-    if (!members.length || unansweredTargetsGone()) return end('done');
+    if (!members.length || (!openRequest && unansweredTargetsGone())) return end('done');
     // No Maintainer model: nobody moderates. The members the user called
     // answered once above; a call to the whole room gives every member one
     // turn, in order. No further rounds, no follow-ups between members.
     if (decision?.action === 'unmanaged') {
-      return (waiting && !targets.length ? await callEach(members) : null) ?? end('done');
+      const open = !targets.length || (openRequest && unansweredTargetsGone());
+      return (waiting && open ? await callEach(members) : null) ?? end('done');
     }
     if (decision?.scene === 'casual' || decision?.scene === 'work') scene = decision.scene;
     const next = nextSpeaker(decision, { members, targets, turns, mustPick, mention });

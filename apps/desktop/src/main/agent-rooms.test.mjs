@@ -2181,6 +2181,104 @@ for (const entry of ['send', 'member', 'member mention', 'ask', 'relay']) {
   });
 }
 
+for (const entry of ['send', 'member mention', 'member name']) {
+  test(`a disabled longer name cannot redirect ${entry} to its active prefix`, async () => {
+    const agents = [...AGENTS, { ...AGENTS[1], id: 'ops', label: 'Release Ops' }];
+    const h = harness({ agents });
+    const { sessionId, roomId } = await room(h, { members: ['gh', 'rel', 'ops'] });
+    const invoke = (name) => {
+      if (entry === 'send') return h.rooms.send(sessionId, `/ask ${name} status`);
+      return h.rooms.member(
+        sessionId,
+        entry === 'member mention' ? { prompt: `@${name} status` } : { to: name, prompt: 'status' }
+      );
+    };
+    h.agents.find((agent) => agent.id === 'ops').disabled = true;
+    await assert.rejects(() => invoke('Release Ops'), undefined, 'the full disabled name is rejected');
+    assert.deepEqual(h.log, [], 'rejection precedes row acceptance');
+    assert.deepEqual(h.created.map(([id]) => id), [sessionId], 'rejection creates no member session');
+    assert.deepEqual(h.prompts, [], 'the shorter name never receives the rejected request');
+
+    h.agents.find((agent) => agent.id === 'ops').disabled = false;
+    for (const [name, id] of [['Release Ops', 'ops'], ['Release', 'rel']]) {
+      const result = await invoke(name);
+      await h.idle(roomId);
+      if (entry === 'send') {
+        assert.equal(result, true);
+        assert.deepEqual(h.log.findLast((row) => row.kind === 'user').to, [id]);
+        assert.equal(h.log.findLast((row) => row.kind === 'user').text, 'status');
+        assert.equal(h.prompts.at(-1).agentId, id);
+      } else assert.deepEqual([result.agentId, result.text], [id, 'status']);
+    }
+  });
+}
+
+for (const mode of ['supervised', 'unmanaged']) {
+  for (const stage of ['queued', 'creating', 'following', 'enabled']) {
+    test(`a merged whole-room message survives its direct target becoming unavailable (${mode}, ${stage})`, async (t) => {
+      const first = latch();
+      const admission = latch();
+      t.after(first.open);
+      t.after(admission.open);
+      let firstRead = false;
+      let preparing = false;
+      const ends = [];
+      const h = harness({
+        decide: () => ({ action: mode === 'unmanaged' ? 'unmanaged' : 'finish' }),
+        snapshotGate: async () => {
+          if (firstRead) return;
+          firstRead = true;
+          await first.closed;
+        },
+        createGate: async (id) => {
+          if (stage !== 'creating' || !id.endsWith('_rel')) return;
+          preparing = true;
+          await admission.closed;
+        },
+      });
+      const { sessionId, roomId } = await room(h);
+      await h.rooms.send(sessionId, '/ask GitHub first');
+      await until(() => firstRead);
+      assert.equal(firstRead, true, 'the first turn was submitted before requests are merged');
+      if (stage === 'following') {
+        // The second call follows the first call's submission before either
+        // may submit; both must settle once even when the member is disabled.
+        for (const key of ['a', 'b'])
+          await h.rooms.ask(sessionId, {
+            agentId: 'rel',
+            prompt: `direct ${key}`,
+            from: { sessionId: 'sess_lead_1' },
+            id: `merged_${key}`,
+            onSettled: (detail) => ends.push([key, detail.status]),
+            follow: async () => {
+              preparing = true;
+              await admission.closed;
+            },
+          });
+      } else await h.rooms.send(sessionId, '/ask Release direct later');
+      await h.rooms.send(sessionId, 'everyone, new question', 'merged-open');
+      if (stage === 'queued') h.agents.find((agent) => agent.id === 'rel').disabled = true;
+      first.open();
+      if (stage === 'creating' || stage === 'following') {
+        await until(() => preparing);
+        assert.equal(preparing, true, 'the direct turn reaches its admission boundary');
+        h.agents.find((agent) => agent.id === 'rel').disabled = true;
+        admission.open();
+      }
+      await h.idle(roomId);
+      assert.equal(h.rooms.isRunning(roomId), false);
+      const following = h.prompts.slice(1);
+      assert.ok(following.length > 0, 'the accepted whole-room message still receives a turn');
+      assert.ok(following.every(({ prompt }) => String(prompt).includes('everyone, new question')));
+      assert.ok(following.every(({ agentId }) => stage === 'enabled' || agentId !== 'rel'));
+      assert.ok(h.saved.doc.rooms[roomId].submissions.includes('merged-open'));
+      assert.deepEqual(ends, stage === 'following' ? [['a', 'cancelled'], ['b', 'cancelled']] : []);
+      assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+      assert.equal(h.logs.length, 0);
+    });
+  }
+}
+
 for (const mode of ['supervised', 'unmanaged']) {
   test(`a ${mode} whole-room exchange stops offering turns to a member disabled while another speaks`, async (t) => {
     const gate = gated(['gh']);

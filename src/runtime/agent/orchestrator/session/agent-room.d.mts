@@ -129,6 +129,9 @@ export interface RoomStep {
 export function runRoomExchange(options: {
   members: readonly string[];
   to?: readonly string[] | string;
+  /** A whole-room request remains even if merged direct targets disappear;
+   *  defaults to true only when `to` is empty. */
+  openRequest?: boolean;
   maxRounds: number;
   maxMessages: number;
   speak(agentId: string, turn: RoomTurn): Promise<RoomTurnAnswer>;

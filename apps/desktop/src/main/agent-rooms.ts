@@ -40,7 +40,7 @@ import { routeParams } from './agent-home-sessions';
 import { type RoomExchangeHost, runRoomExchangeIn } from './agent-room-exchange';
 import { createRoomLog } from './agent-room-log';
 import { createRoomRecords } from './agent-room-records';
-import type { MemberLabel, RoomCall, RoomExchangeOptions, RoomTurnHost, RunState } from './agent-room-turn';
+import type { RoomCall, RoomExchangeOptions, RoomTurnHost, RunState } from './agent-room-turn';
 import { catalogWithRooms, decorateRoomSnapshot, roomSummary } from './agent-room-views';
 
 export interface AgentRoomRecord extends RoomConfig {
@@ -227,7 +227,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
   const pollMs = deps.pollMs ?? 500;
   const log = deps.log ?? ((line: string) => console.warn(`[mixdog-rooms] ${line}`));
   const records = createRoomRecords(deps);
-  const { loadRecords, ready: recordsReady, refreshNames, memberLabels, persist, roomOf, names } = records;
+  const { loadRecords, ready: recordsReady, refreshNames, memberRoster, persist, roomOf, names } = records;
   const running = new Map<string, RunState>();
   /** Per room, the send/ask requests still on their way to route(): Stop
    *  cancels them even when no exchange runs yet. */
@@ -282,7 +282,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
   const turnHost = (roomId: string): RoomTurnHost => ({
     roomId,
     room: () => roomOf(roomId),
-    labels: () => memberLabels(roomOf(roomId)),
+    labels: async () => (await memberRoster(roomOf(roomId))).eligible,
     rows: () => roomRows(roomId),
     post: (rows) => post(roomId, rows),
     republish: () => deps.republish(roomSessionId(roomId)),
@@ -363,8 +363,9 @@ export function createAgentRooms(deps: AgentRoomDeps) {
    *  answer would respond to older rows. Each call settles once. */
   function route(roomId: string, options: Required<Pick<RoomExchangeOptions, 'to' | 'waiting'>> & RoomExchangeOptions) {
     const calls = (options.calls ?? []).map(settlesOnce);
+    const openRequest = options.to.length === 0;
     const active = running.get(roomId);
-    if (!active) return start(roomId, { ...options, calls });
+    if (!active) return start(roomId, { ...options, openRequest, calls });
     // A stopping exchange hands nothing on: calls that arrive now end cancelled.
     if (active.stop) {
       for (const call of calls) call.onSettled?.({ status: 'cancelled' });
@@ -373,6 +374,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     const prior = active.pending;
     active.pending = {
       to: [...new Set([...(prior?.to ?? []), ...options.to])],
+      openRequest: prior?.openRequest === true || openRequest,
       waiting: prior?.waiting === true || options.waiting,
       only: (prior ? prior.only === true : true) && options.only === true,
       calls: [...(prior?.calls ?? []), ...calls],
@@ -638,9 +640,11 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     // A retried submission (phone after a lost reply) that was durably
     // accepted before — this process or an earlier one — is acknowledged once.
     if (submissionId && room.submissions?.includes(submissionId)) return true;
-    const labels = await memberLabels(room);
+    const { labels, eligible } = await memberRoster(room);
     const parsed = parseRoomAsk(promptText(prompt), [...labels.values()]);
     if (parsed.error === 'member') throw new Error('No member of this room has that name.');
+    const unavailable = parsed.to.find((id) => !eligible.has(id));
+    if (unavailable) throw new Error(`Agent "${unavailable}" is not available.`);
     // The files go up with the row: the log's intake stores them as a chat
     // prompt's are (agent-room-delivery.mjs), and the members the message
     // reaches get them on their next turn.
@@ -681,7 +685,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     await ready();
     const roomId = roomIdOfSession(sessionId);
     const room = roomOf(roomId);
-    const labels = await memberLabels(room);
+    const { labels, eligible } = await memberRoster(room);
     const members = [...labels.values()];
     const named = typeof to === 'string' ? to.trim() : '';
     let text = typeof prompt === 'string' ? prompt.trim() : '';
@@ -698,7 +702,8 @@ export function createAgentRooms(deps: AgentRoomDeps) {
           : `A message to room "${room.name}" must name the member it is for (to: agent id or name); its members are ${roster}.`
       );
     }
-    const member = labels.get(agentId) as MemberLabel;
+    const member = eligible.get(agentId);
+    if (!member) throw new Error(`Agent "${agentId}" is not available.`);
     return { agentId, name: member.name, sessionId: await ensureMemberSession(roomId, member), text };
   }
 
@@ -718,7 +723,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     const roomId = roomIdOfSession(sessionId);
     const room = roomOf(roomId);
     if (!room.members.includes(agentId)) throw new Error(`"${agentId}" is not a member of room "${room.name}".`);
-    const labels = await memberLabels(room);
+    const { eligible: labels } = await memberRoster(room);
     if (!labels.has(agentId)) throw new Error(`Agent "${agentId}" is not available.`);
     const content = prompt as DesktopPromptContent;
     const upload = roomUpload(content, {});
@@ -770,7 +775,8 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     if (!member) throw new TypeError('Not a group-room member session.');
     const room = roomOf(member.roomId);
     if (!room.members.includes(member.agentId)) throw new Error('That agent is no longer a member of the room.');
-    if (!(await memberLabels(room)).has(member.agentId)) throw new Error(`Agent "${member.agentId}" is not available.`);
+    if (!(await memberRoster(room)).eligible.has(member.agentId))
+      throw new Error(`Agent "${member.agentId}" is not available.`);
     let settle: (status: string) => void = () => undefined;
     const settled = new Promise<string>((resolve) => {
       settle = resolve;

@@ -112,7 +112,7 @@ async function settleExchange(host: RoomExchangeHost, state: RunState): Promise<
  *  is handed to the next exchange, or ends cancelled when none follows. */
 export async function runRoomExchangeIn(
   host: RoomExchangeHost,
-  { to = [], waiting, only = false, calls: given = [] }: RoomExchangeOptions
+  { to = [], openRequest = to.length === 0, waiting, only = false, calls: given = [] }: RoomExchangeOptions
 ): Promise<void> {
   const calls = [...given];
   const room = host.room();
@@ -135,7 +135,7 @@ export async function runRoomExchangeIn(
     await host.persist();
     host.republishCatalog();
     host.republish();
-    await exchangeTurns(host, state, room, { to, only, waiting }, calls);
+    await exchangeTurns(host, state, room, { to, openRequest, only, waiting }, calls);
     await settleExchange(host, state);
   } catch (error) {
     abandonExchange(host, state, calls, error);
@@ -171,7 +171,12 @@ async function exchangeTurns(
   host: RoomExchangeHost,
   state: RunState,
   room: AgentRoomRecord,
-  { to, only, waiting }: { to: string[]; only: boolean; waiting: boolean | undefined },
+  {
+    to,
+    openRequest,
+    only,
+    waiting,
+  }: { to: string[]; openRequest: boolean; only: boolean; waiting: boolean | undefined },
   calls: RoomCall[]
 ): Promise<void> {
   try {
@@ -192,12 +197,14 @@ async function exchangeTurns(
     };
     cancelUnavailable();
     // Preserve the difference between an open message and a queued direct
-    // request whose targets became unavailable: the latter never broadcasts.
+    // request whose targets became unavailable: only the latter ends here.
+    // Merging a direct request must not discard an accepted whole-room one.
     const targets = to.filter((id) => members.includes(id));
-    if (to.length && !targets.length) return;
+    if (!openRequest && to.length && !targets.length) return;
     const result = await runRoomExchange({
       members,
       to: targets,
+      openRequest,
       maxRounds: room.maxRounds,
       // A user-addressed set keeps the full cap; a free exchange stops at a
       // budget drawn each time, so it does not always end at the same count.

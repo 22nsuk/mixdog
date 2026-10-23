@@ -67,19 +67,20 @@ export function createRoomRecords(deps: Pick<AgentRoomDeps, 'store' | 'listAgent
   }
   const mixyName = async () => (await deps.leadName?.().catch(() => '')) || 'Mixy';
 
-  /** Members eligible for a new turn. A disabled definition keeps its room
-   *  membership and history; absence from the contacts alone proves nothing
-   *  (older rooms may hold workflow agents). A failed catalog read must not
-   *  silently enable a member whose current setting could not be checked. */
-  async function memberLabels(room: AgentRoomRecord): Promise<Map<string, MemberLabel>> {
+  /** Names and speaking eligibility from one catalog read. Resolve a direct
+   *  request against every name before checking eligibility, so disabling a
+   *  longer name cannot redirect it to an active prefix. Absence from contacts
+   *  proves nothing (older rooms may hold workflow agents). A failed catalog
+   *  read must not silently enable a member whose setting could not be checked. */
+  async function memberRoster(room: AgentRoomRecord) {
     const lead = room.members.includes(MIXY_AGENT_ID) ? await mixyName() : '';
     const listed = await deps.listAgents();
     if (!Array.isArray(listed)) throw new TypeError('The agent catalog is not an array.');
-    const rows = contactAgentRows(listed);
+    const rows = contactAgentRows(listed, { includeDisabled: true });
     const disabled = new Set(listed.filter((row) => row?.disabled === true).map((row) => row.id));
     const labels = new Map<string, MemberLabel>();
+    const eligible = new Map<string, MemberLabel>();
     for (const id of room.members) {
-      if (id !== MIXY_AGENT_ID && disabled.has(id)) continue;
       const row = rows.find((entry) => entry.id === id);
       const isLead = id === MIXY_AGENT_ID;
       const rowName = row ? agentName(row) : (names.get(id) ?? id);
@@ -87,9 +88,11 @@ export function createRoomRecords(deps: Pick<AgentRoomDeps, 'store' | 'listAgent
       if (row) names.set(id, name);
       const rowDescription = row ? agentDescription(row) : '';
       const description = isLead ? "The user's main assistant." : rowDescription;
-      labels.set(id, { id, name, route: row?.route, description });
+      const member = { id, name, route: row?.route, description };
+      labels.set(id, member);
+      if (isLead || !disabled.has(id)) eligible.set(id, member);
     }
-    return labels;
+    return { labels, eligible };
   }
 
   return {
@@ -99,7 +102,7 @@ export function createRoomRecords(deps: Pick<AgentRoomDeps, 'store' | 'listAgent
     loadRecords,
     ready,
     refreshNames,
-    memberLabels,
+    memberRoster,
     persist: () => deps.store.save(doc),
     roomOf(roomId: string): AgentRoomRecord {
       const room = doc.rooms[roomId];
