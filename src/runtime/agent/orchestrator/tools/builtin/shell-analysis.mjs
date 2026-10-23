@@ -7,6 +7,7 @@ import { isBuiltin } from 'node:module';
 import { Script } from 'node:vm';
 import { cwdRelativePath, normalizeInputPath, normalizeOutputPath, resolveAgainstCwd } from './path-utils.mjs';
 import { codeMask } from './bash-tool/bashism-rewrite.mjs';
+import { gitPlanIsReadOnly } from './git-command-policy.mjs';
 
 // Hard-block patterns live exclusively in ../shell-policy.mjs (BLOCKED_PATTERNS /
 // isBlockedCommand). This lighter detector classifies cache invalidation and
@@ -1027,55 +1028,69 @@ const AWK_MUTATING_PROGRAM_RE = /\bsystem\s*\(|\b(?:print|printf)\b[^;}]*(?:>>?|
 
 function hasMutatingShellOptions(tokens) {
   const cmd = String(tokens[0] || '').toLowerCase();
+  // Share Git's operation/option policy instead of assuming every branch,
+  // remote or diff invocation is a read. Unknown forms remain conservative.
+  if (cmd === 'git') return !gitPlanIsReadOnly({ operation: tokens[1], args: tokens.slice(2) });
   if (cmd === 'find') return tokens.some((tok) => FIND_MUTATING_FLAG_RE.test(String(tok)));
   if (cmd === 'awk' || cmd === 'gawk' || cmd === 'mawk') {
     return tokens.slice(1).some((tok) => AWK_MUTATING_PROGRAM_RE.test(String(tok)));
   }
-  if (cmd === 'sort' || cmd === 'git') {
+  if (cmd === 'sort') {
     for (const token of tokens.slice(1)) {
       if (token === '--') break;
       if (token === '--output' || token.startsWith('--output=')) return true;
-      if (cmd === 'sort' && /^-[^-]*o/.test(token)) return true;
+      if (/^-[^-]*o/.test(token)) return true;
     }
   }
   return false;
 }
 
-// The stage/token splitters do not analyze nested execution. Do not let an
-// outer read-only command (or its redirect) hide a script's unknown effects.
+// Remove line comments before EVERY effects check, not just nested execution:
+// commented options, redirects and command separators must also be ignored.
+// Return null when an outer read-only command could hide unanalyzed execution.
 // Single-quoted text is literal in both shell families; double quotes still
 // allow command substitution. Backticks are ambiguous across shell families,
 // and unquoted braces can introduce PowerShell script blocks. Parameter
 // expansion braces (${name}) alone do not execute a command.
-function hasUnanalyzedShellExecution(text) {
+function shellEffectCode(text) {
   let quote = null;
+  let start = 0;
+  let code = '';
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (quote === "'") {
       if (ch === "'") quote = null;
       continue;
     }
-    if (ch === '`') return true;
+    if (ch === '`') return null;
     if (ch === '\\' && startsEscape(quote, text[i + 1])) {
       i++;
       continue;
     }
     if (quote === '"') {
-      if (ch === '$' && text[i + 1] === '(') return true;
+      if (ch === '$' && text[i + 1] === '(') return null;
       if (ch === '"') quote = null;
       continue;
     }
+    if (ch === '#' && (i === 0 || /[\s;&|]/.test(text[i - 1]))) {
+      code += text.slice(start, i);
+      const newline = text.indexOf('\n', i);
+      if (newline < 0) return code;
+      start = newline;
+      i = newline - 1;
+      continue;
+    }
     if (ch === "'" || ch === '"') quote = ch;
-    else if (ch === '(' || (ch === '{' && text[i - 1] !== '$')) return true;
+    else if (ch === '(' || (ch === '{' && text[i - 1] !== '$')) return null;
   }
-  return quote !== null;
+  return quote === null ? code + text.slice(start) : null;
 }
 
 export async function analyzeShellCommandEffects(command, cwd) {
-  const text = String(command || '').trim();
+  const text = shellEffectCode(String(command || '').trim());
   let localCwd = resolve(cwd || process.cwd());
+  if (text === null) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
   if (!text) return { mutationMode: 'none', paths: [], finalCwd: localCwd };
-  if (hasUnanalyzedShellExecution(text)) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
   const hasRedirect = /(?:^|[^0-9&<>])>>?(?!&)/.test(text) || /\btee\b/.test(text);
   // Classification is per PIPELINE STAGE, never per segment. A segment's
   // first command decided the whole segment before, so a read-only producer
@@ -1143,10 +1158,6 @@ export async function analyzeShellCommandEffects(command, cwd) {
       continue;
     }
     if (SHELL_GLOBAL_MUTATORS.has(cmd)) {
-      if (cmd === 'git') {
-        const sub = String(tokens[1] || '').toLowerCase();
-        if (['status', 'diff', 'show', 'log', 'rev-parse', 'branch', 'remote', 'ls-files'].includes(sub)) continue;
-      }
       // A python run can write anywhere (alone it already classifies as global
       // below the read-only check), so it never narrows a chain's effects.
       global = true;

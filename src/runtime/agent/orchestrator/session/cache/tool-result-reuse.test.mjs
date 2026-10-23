@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -47,6 +48,14 @@ function fixture(mode) {
     dedupStubTotal: 0,
     editCount: 0,
   };
+}
+
+function prepareGitRemote(fx) {
+  execFileSync('git', ['init', '--quiet'], { cwd: fx.cwd });
+  return () => assert.equal(
+    execFileSync('git', ['config', '--local', '--get', 'remote.local.url'], { cwd: fx.cwd, encoding: 'utf8' }).trim(),
+    '../other'
+  );
 }
 
 // Keep ONE loop's crossTurnCalls across model iterations. Tests that reset
@@ -119,16 +128,23 @@ async function round(fx, name, args, { beforeBatch, afterRead } = {}) {
 }
 
 for (const mode of ['serial', 'fallback', 'streaming']) {
-  for (const name of ['shell', 'Bash']) {
-    test(`read-only ${name} preserves read and scoped-cache receipts (${mode})`, async () => {
+  const commentedRead = process.platform === 'win32'
+    ? 'echo beta,alpha | Sort-Object # { records }'
+    : 'echo observed # { records }';
+  for (const [name, command] of [
+    ['shell', 'echo observed'], ['Bash', 'echo observed'],
+    ['shell', commentedRead], ['Bash', commentedRead],
+  ]) {
+    test(`read-only ${name} preserves read and scoped-cache receipts (${mode}, ${command})`, async () => {
       const fx = fixture(mode);
       fx.cacheSafe = true;
       const readArgs = { file_path: fx.file };
       const globArgs = { path: fx.cwd, pattern: '*.txt', sort: 'natural', limit: 25 };
       await round(fx, 'read', readArgs);
       await round(fx, 'glob', globArgs);
-      assert.equal((await round(fx, name, { command: 'echo observed' })).toolKind, 'normal');
+      assert.equal((await round(fx, name, { command })).toolKind, 'normal');
       assert.equal(fx.editCount, 0);
+      assert.equal(fx.madeProgress, false);
       const read = await round(fx, 'read', readArgs);
       assert.equal(read.toolKind, 'skipped');
       assert.match(read.content, /iteration 1/);
@@ -139,20 +155,25 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
     });
   }
 
-  for (const [kind, name, command] of [
+  for (const [kind, name, command, prepare] of [
     ['mutating', 'shell', 'echo changed > changed.txt'],
     ['mutating', 'Bash', 'echo changed > changed.txt'],
     ['unknown-effect', 'shell', 'node -e "process.stdout.write(\'observed\')"'],
     ['nested-script', 'shell', process.platform === 'win32' ? 'echo (node --version)' : 'echo "$(node --version)"'],
     ['nested-script', 'Bash', process.platform === 'win32' ? 'echo (node --version)' : 'echo "$(node --version)"'],
+    ['Git config mutation', 'shell', 'git remote add local ../other', prepareGitRemote],
+    ['Git config mutation', 'Bash', 'git remote add local ../other', prepareGitRemote],
   ]) {
     test(`${kind} ${name} still clears scoped-cache receipts and records an edit (${mode})`, async () => {
       const fx = fixture(mode);
+      const verify = prepare?.(fx);
       fx.cacheSafe = true;
       const args = { path: fx.cwd, pattern: '*.txt', sort: 'natural', limit: 25 };
       await round(fx, 'glob', args);
       assert.equal((await round(fx, name, { command })).toolKind, 'normal');
+      verify?.();
       assert.equal(fx.editCount, 1);
+      assert.equal(fx.madeProgress, true);
       assert.equal(fx.crossTurnCalls.size, 0);
       const refreshed = await round(fx, 'glob', args);
       assert.equal(refreshed.toolKind, 'normal');

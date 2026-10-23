@@ -125,7 +125,9 @@ const GIT_CONFIG_MUTATION_FLAGS = new Set([
 
 export function gitPlanIsReadOnly(plan) {
   const { operation, args } = plan;
-  if (args.some((value) => value === '--output' || value.startsWith('--output='))) return false;
+  const separator = args.indexOf('--');
+  const options = separator < 0 ? args : args.slice(0, separator);
+  if (options.some((value) => value === '--output' || value.startsWith('--output='))) return false;
   if (operation === 'fsck' && args.includes('--lost-found')) return false;
   if (ALWAYS_READ.has(operation)) return true;
   if (operation === 'reflog') return ['show', 'list', 'exists'].includes(gitActionOf(operation, args));

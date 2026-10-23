@@ -94,7 +94,7 @@ test('sort output options are mutations, including in a redirected stage', async
   }
 });
 
-test('Git output options cannot inherit a read-only command classification', async (t) => {
+test('Git writes cannot inherit a read-only command classification', async (t) => {
   const dir = workDir(t);
   for (const command of [
     'git diff --output=changes.patch -- file.txt',
@@ -102,6 +102,13 @@ test('Git output options cannot inherit a read-only command classification', asy
     'git show --output=changes.patch HEAD',
     'git log -p --output=changes.patch',
     'git diff --output=changes.patch -- file.txt > capture.txt',
+    'git remote add local ../other',
+    'git remote set-url local ../other',
+    'git remote remove local',
+    'git branch new-branch',
+    'git branch -a -D old-branch',
+    'git status; git remote add local ../other',
+    'git remote add local ../other > capture.txt',
   ]) {
     assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'global', command);
   }
@@ -127,6 +134,9 @@ test('plain Git reads, PowerShell sorting and quoted callbacks remain read-only'
     'git diff -- --output=filename.txt',
     'git show --stat HEAD',
     'git log -1',
+    'git branch --list',
+    'git remote -v',
+    'git remote get-url local',
     'echo beta,alpha | Sort-Object',
     'echo beta,alpha | Sort-Object -Property Length',
     'echo \'{ node key.cjs $_ }\'',
@@ -134,6 +144,37 @@ test('plain Git reads, PowerShell sorting and quoted callbacks remain read-only'
     'echo ${HOME}',
   ]) {
     assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'none', command);
+  }
+});
+
+test('comments do not contribute execution, mutation options or redirects', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'echo beta,alpha | Sort-Object # { records }',
+    'echo observed # $(node build.cjs) `node build.cjs` > ignored.txt',
+    '# an unmatched quote: \' {\necho observed',
+    'git diff -- file.txt # --output=ignored.patch',
+    'git remote -v # add local ../other',
+    'echo "quoted # text" # { records }',
+    "echo 'quoted # text' # { records }",
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'none', command);
+  }
+  const redirected = await analyzeShellCommandEffects('echo observed > out.txt # { records }', dir);
+  assert.equal(redirected.mutationMode, 'paths');
+  assert.deepEqual(redirected.paths, [join(dir, 'out.txt')]);
+});
+
+test('comments do not hide live mutations or nested execution', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'echo observed # { records }\ngit remote add local ../other',
+    'echo observed # ignored\nnode build.cjs',
+    'echo "# $(node build.cjs)"',
+    "echo '# literal'; git remote add local ../other",
+    'echo word#literal; git remote add local ../other',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir)).mutationMode, 'global', command);
   }
 });
 

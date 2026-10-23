@@ -31,3 +31,17 @@ test('git mutation policy is shared by orchestration and evidence projection', (
   assert.equal(gitCommandMutates(JSON.stringify(stage)), true);
   assert.equal(_isMutationTool('apply_patch', {}), true);
 });
+
+test('Git distinguishes output options from paths without losing positional mutations', () => {
+  for (const command of ['git diff -- --output=filename.txt', 'git remote -v', 'git branch --list']) {
+    assert.equal(gitCommandMutates({ command }), false, command);
+  }
+  for (const command of [
+    'git diff --output=changes.patch -- file.txt',
+    'git remote add local ../other',
+    'git remote add -- local ../other',
+    'git branch -- new-branch',
+  ]) {
+    assert.equal(gitCommandMutates({ command }), true, command);
+  }
+});

@@ -81,6 +81,25 @@ function toolTurn(name, args, id = 'progress-tool') {
   return { content: '', toolCalls: [{ id, name, arguments: args }], stopReason: 'tool_calls' };
 }
 
+async function runToolAfterOutputCut(fx, name, args) {
+  const messages = [{ role: 'user', content: 'perform the task and explain' }];
+  const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, args), emptyCut], { escalated: 128_000 });
+  const result = await run(provider, messages, fx.options);
+  const completed = messages.find((message) => message.toolCallId === 'progress-tool');
+  assert.equal(completed?.toolKind, 'normal');
+  return { provider, messages, result, completed };
+}
+
+function assertToolRecovery({ provider, messages, result }, resetsRecovery) {
+  assert.equal(provider.state.sends, resetsRecovery ? 8 : 6);
+  assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, resetsRecovery ? 2 : 1);
+  assert.deepEqual(
+    messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
+    resetsRecovery ? [1, 1, 2, 3] : [1, 2, 3]
+  );
+  assert.equal(result.terminationReason, 'truncated');
+}
+
 test('max-output ladder resumes three times, then seals the aggregate with the exhausted notice', async () => {
   const messages = [{ role: 'user', content: 'write' }];
   const surfaced = [];
@@ -233,20 +252,7 @@ for (const { label, name, args, resetsRecovery } of [
 ]) {
   test(`${label} ${resetsRecovery ? 'reopens' : 'preserves'} the output recovery budget`, async (t) => {
     const fx = toolFixture(t);
-    const messages = [{ role: 'user', content: 'go' }];
-    const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, args), emptyCut], { escalated: 128_000 });
-    const result = await run(provider, messages, fx.options);
-    assert.equal(messages.find((message) => message.toolCallId === 'progress-tool')?.toolKind, 'normal');
-    assert.equal(provider.state.sends, resetsRecovery ? 8 : 6);
-    assert.equal(
-      provider.state.requests.filter((request) => request.override === 128_000).length,
-      resetsRecovery ? 2 : 1
-    );
-    assert.deepEqual(
-      messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
-      resetsRecovery ? [1, 1, 2, 3] : [1, 2, 3]
-    );
-    assert.equal(result.terminationReason, 'truncated');
+    assertToolRecovery(await runToolAfterOutputCut(fx, name, args), resetsRecovery);
   });
 }
 
@@ -258,27 +264,21 @@ for (const name of ['shell', 'Bash']) {
       "require('node:fs').writeFileSync('built.txt', 'BUILT'); console.log('build complete');"
     );
     const command = process.platform === 'win32' ? 'echo (node build.cjs)' : 'echo "$(node build.cjs)"';
-    const messages = [{ role: 'user', content: 'build and explain' }];
-    const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, { command }), emptyCut], {
-      escalated: 128_000,
-    });
-    const result = await run(provider, messages, fx.options);
+    const execution = await runToolAfterOutputCut(fx, name, { command });
     // The real shell, analysis, telemetry and batch completion all run; only
     // the provider's output-limit responses are scripted.
-    const completed = messages.find((message) => message.toolCallId === 'progress-tool');
-    assert.equal(completed?.toolKind, 'normal');
-    assert.match(completed.content, /build complete/);
+    assert.match(execution.completed.content, /build complete/);
     assert.equal(readFileSync(join(fx.options.cwd, 'built.txt'), 'utf8'), 'BUILT');
-    assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, 2);
-    assert.deepEqual(
-      messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
-      [1, 1, 2, 3]
-    );
-    assert.equal(result.terminationReason, 'truncated');
+    assertToolRecovery(execution, true);
   });
 
-  for (const callback of [false, true]) {
-    test(`${name} ${callback ? 'restores' : 'preserves'} output recovery after PowerShell sorting ${callback ? 'with' : 'without'} a callback`, {
+  for (const [kind, suffix] of [
+    ['plain', ''],
+    ['callback', ' -Property { node key.cjs $_ }'],
+    ['commented', ' # { records }'],
+  ]) {
+    const callback = kind === 'callback';
+    test(`${name} ${callback ? 'restores' : 'preserves'} output recovery after ${kind} PowerShell sorting`, {
       skip: process.platform !== 'win32' && 'requires the native PowerShell shell path',
     }, async (t) => {
       const fx = toolFixture(t);
@@ -286,15 +286,9 @@ for (const name of ['shell', 'Bash']) {
         join(fx.options.cwd, 'key.cjs'),
         "require('node:fs').appendFileSync('key-cache.txt', process.argv[2] + '\\n'); console.log(process.argv[2]);"
       );
-      const command = `echo beta,alpha | Sort-Object${callback ? ' -Property { node key.cjs $_ }' : ''}`;
-      const messages = [{ role: 'user', content: 'sort and explain' }];
-      const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, { command }), emptyCut], {
-        escalated: 128_000,
-      });
-      const result = await run(provider, messages, fx.options);
-      const completed = messages.find((message) => message.toolCallId === 'progress-tool');
-      assert.equal(completed?.toolKind, 'normal');
-      assert.match(completed.content, /alpha\r?\nbeta/);
+      const command = `echo beta,alpha | Sort-Object${suffix}`;
+      const execution = await runToolAfterOutputCut(fx, name, { command });
+      assert.match(execution.completed.content, /alpha\r?\nbeta/);
       const cacheFile = join(fx.options.cwd, 'key-cache.txt');
       assert.equal(existsSync(cacheFile), callback);
       if (callback) {
@@ -302,12 +296,7 @@ for (const name of ['shell', 'Bash']) {
         assert.match(keys, /alpha/);
         assert.match(keys, /beta/);
       }
-      assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, callback ? 2 : 1);
-      assert.deepEqual(
-        messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
-        callback ? [1, 1, 2, 3] : [1, 2, 3]
-      );
-      assert.equal(result.terminationReason, 'truncated');
+      assertToolRecovery(execution, callback);
     });
   }
 
@@ -319,26 +308,27 @@ for (const name of ['shell', 'Bash']) {
       execFileSync('git', ['-c', 'core.autocrlf=false', 'add', '--', 'file.txt'], { cwd: fx.options.cwd });
       writeFileSync(fx.file, 'UPDATED\n');
       const command = `git diff --no-ext-diff --no-textconv${outputFile ? ' --output=changes.patch' : ''} -- file.txt`;
-      const messages = [{ role: 'user', content: 'prepare the diff and explain' }];
-      const provider = scriptedProvider([emptyCut, emptyCut, toolTurn(name, { command }), emptyCut], {
-        escalated: 128_000,
-      });
-      const result = await run(provider, messages, fx.options);
-      const completed = messages.find((message) => message.toolCallId === 'progress-tool');
-      assert.equal(completed?.toolKind, 'normal');
+      const execution = await runToolAfterOutputCut(fx, name, { command });
       const patchFile = join(fx.options.cwd, 'changes.patch');
       assert.equal(existsSync(patchFile), outputFile);
-      const patch = outputFile ? readFileSync(patchFile, 'utf8') : completed.content;
+      const patch = outputFile ? readFileSync(patchFile, 'utf8') : execution.completed.content;
       assert.match(patch, /-ORIGINAL/);
       assert.match(patch, /\+UPDATED/);
-      assert.equal(provider.state.requests.filter((request) => request.override === 128_000).length, outputFile ? 2 : 1);
-      assert.deepEqual(
-        messages.filter((message) => message.meta?.source === 'max-output-recovery').map((message) => message.meta.attempt),
-        outputFile ? [1, 1, 2, 3] : [1, 2, 3]
-      );
-      assert.equal(result.terminationReason, 'truncated');
+      assertToolRecovery(execution, outputFile);
     });
   }
+
+  test(`${name} restores output recovery after Git config changes without the Git tool`, async (t) => {
+    const fx = toolFixture(t);
+    assert.equal(fx.options.tools.some((tool) => tool.name === 'git'), false);
+    execFileSync('git', ['init', '--quiet'], { cwd: fx.options.cwd });
+    const execution = await runToolAfterOutputCut(fx, name, { command: 'git remote add local ../other' });
+    assert.equal(
+      execFileSync('git', ['config', '--local', '--get', 'remote.local.url'], { cwd: fx.options.cwd, encoding: 'utf8' }).trim(),
+      '../other'
+    );
+    assertToolRecovery(execution, true);
+  });
 }
 
 for (const changed of [false, true]) {
