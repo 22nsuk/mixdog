@@ -281,9 +281,10 @@ test('literal shell syntax and sort without output options remain read-only', as
   }
 });
 
-for (const [shellType, command, mode] of [
-  ['powershell', String.raw`ls ".\"`, 'none'],
-  ['powershell', String.raw`ls '.\'`, 'none'],
+for (const [shellType, command, mode, windowsOnly = false] of [
+  ['powershell', String.raw`ls ".\"`, 'none', true],
+  ['powershell', String.raw`ls '.\'`, 'none', true],
+  ['powershell', String.raw`echo ".\"`, 'none'],
   ['powershell', "echo 'don''t # literal'", 'none'],
   ['powershell', 'echo `"literal`"', 'none'],
   ['powershell', 'echo “quoted # literal”', 'none'],
@@ -321,7 +322,11 @@ for (const [shellType, command, mode] of [
     [shellType, 'cd "$PWD"; echo changed > out.txt', 'global'],
   ]),
 ]) {
-  test(`effect lexing agrees with native ${shellType}: ${JSON.stringify(command)}`, async (t) => {
+  test(`effect lexing agrees with native ${shellType}: ${JSON.stringify(command)}`, {
+    // On Unix, pwsh dispatches ls to the native executable, which does not
+    // interpret Windows path separators. Keep the original Windows alias repro.
+    skip: windowsOnly && process.platform !== 'win32' && 'requires Windows PowerShell path aliases',
+  }, async (t) => {
     const spec = resolveShellFor(shellType === 'powershell' ? 'powershell' : 'bash');
     if (!spec) return t.skip(`requires ${shellType}`);
     const dir = workDir(t);
