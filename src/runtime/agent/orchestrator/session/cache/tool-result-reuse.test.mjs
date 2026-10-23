@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -19,7 +19,7 @@ const { SCOPED_CACHE_TTL_MS, clearScopedToolsForSessionPaths } = await import('.
 const { createScopedCacheOutcome } = await import('./scoped-cache-outcome.mjs');
 const { executeGlobTool } = await import('../../tools/builtin/search-glob-tool.mjs');
 const { executeCodeGraphTool } = await import('../../tools/code-graph/dispatch.mjs');
-const { invalidateBuiltinResultCache } = await import('../../tools/builtin/cache-layers.mjs');
+const { invalidateBuiltinResultCache, rawContentCacheGet, rawContentCacheSet } = await import('../../tools/builtin/cache-layers.mjs');
 const { executeBashTool } = await import('../../tools/builtin/bash-tool.mjs');
 // Remove the isolated data directory after imported modules' exit flushes.
 process.once('exit', () => rmSync(root, { recursive: true, force: true }));
@@ -139,13 +139,19 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
   const commentedRead = process.platform === 'win32'
     ? 'echo beta,alpha | Sort-Object # { records }'
     : 'echo observed # { records }';
-  for (const [name, command, prepare] of [
+  for (const [name, command, prepare, powershellOnly] of [
     ['shell', 'echo observed'], ['Bash', 'echo observed'],
     ['shell', commentedRead], ['Bash', commentedRead],
     ['shell', 'git branch --show-current', prepareGitBranch],
     ['Bash', 'git branch --show-current', prepareGitBranch],
+    ['shell', 'echo beta,alpha | sort -Property Length', null, true],
+    ['Bash', 'echo beta,alpha | sort -Property Length', null, true],
+    ['shell', 'echo beta,alpha | sort -Top 1', null, true],
+    ['Bash', 'echo beta,alpha | sort -Top 1', null, true],
   ]) {
-    test(`read-only ${name} preserves read and scoped-cache receipts (${mode}, ${command})`, async () => {
+    test(`read-only ${name} preserves read and scoped-cache receipts (${mode}, ${command})`, {
+      skip: powershellOnly && process.platform !== 'win32' && 'requires the native PowerShell shell path',
+    }, async () => {
       const fx = fixture(mode);
       prepare?.(fx);
       fx.cacheSafe = true;
@@ -153,7 +159,12 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
       const globArgs = { path: fx.cwd, pattern: '*.txt', sort: 'natural', limit: 25 };
       await round(fx, 'read', readArgs);
       await round(fx, 'glob', globArgs);
+      const raw = readFileSync(fx.file);
+      const version = statSync(fx.file);
+      rawContentCacheSet(fx.file, version, raw);
+      assert.deepEqual(rawContentCacheGet(fx.file, version), raw);
       assert.equal((await round(fx, name, { command })).toolKind, 'normal');
+      assert.deepEqual(rawContentCacheGet(fx.file, version), raw, 'a read preserves the builtin content cache');
       assert.equal(fx.editCount, 0);
       assert.equal(fx.madeProgress, false);
       const read = await round(fx, 'read', readArgs);

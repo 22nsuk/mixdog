@@ -1026,7 +1026,7 @@ const SHELL_PATH_ARG_MUTATORS = new Set([
 const FIND_MUTATING_FLAG_RE = /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/;
 const AWK_MUTATING_PROGRAM_RE = /\bsystem\s*\(|\b(?:print|printf)\b[^;}]*(?:>>?|\|)|\|\s*getline\b/;
 
-function hasMutatingShellOptions(tokens) {
+function hasMutatingShellOptions(tokens, shellType) {
   const cmd = String(tokens[0] || '').toLowerCase();
   // Share Git's operation/option policy instead of assuming every branch,
   // remote or diff invocation is a read. Unknown forms remain conservative.
@@ -1035,7 +1035,9 @@ function hasMutatingShellOptions(tokens) {
   if (cmd === 'awk' || cmd === 'gawk' || cmd === 'mawk') {
     return tokens.slice(1).some((tok) => AWK_MUTATING_PROGRAM_RE.test(String(tok)));
   }
-  if (cmd === 'sort') {
+  // PowerShell's direct sort command is Sort-Object, not the POSIX utility.
+  // Its -Property/-Top/common parameters do not name output files.
+  if (cmd === 'sort' && shellType !== 'powershell') {
     for (const token of tokens.slice(1)) {
       if (token === '--') break;
       if (token === '--output' || token.startsWith('--output=')) return true;
@@ -1091,7 +1093,7 @@ function shellEffectCode(text) {
   return quote === null ? code + text.slice(start) : null;
 }
 
-export async function analyzeShellCommandEffects(command, cwd) {
+export async function analyzeShellCommandEffects(command, cwd, { shellType } = {}) {
   const text = shellEffectCode(String(command || '').trim());
   let localCwd = resolve(cwd || process.cwd());
   if (text === null) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
@@ -1107,7 +1109,8 @@ export async function analyzeShellCommandEffects(command, cwd) {
   }
   if (!SHELL_MUTATION_PATTERN.test(text) && !hasRedirect) {
     const readOnly = stages.every((stage) => {
-      const tokens = stripShellProbeWrappers(shellTokenize(stage) || []);
+      const parsed = shellTokenize(stage) || [];
+      const tokens = stripShellProbeWrappers(parsed);
       if (tokens.length === 0) return true;
       const joined = tokens.join(' ');
       if (/^cd\b/i.test(joined)) {
@@ -1116,7 +1119,8 @@ export async function analyzeShellCommandEffects(command, cwd) {
         if (resolved) localCwd = resolved;
         return true;
       }
-      if (hasMutatingShellOptions(tokens)) return false;
+      // Wrappers such as env/command invoke programs, not PowerShell aliases.
+      if (hasMutatingShellOptions(tokens, tokens.length === parsed.length ? shellType : undefined)) return false;
       return SHELL_READ_ONLY_SEGMENT_RE.test(joined);
     });
     return { mutationMode: readOnly ? 'none' : 'global', paths: [], finalCwd: localCwd };
@@ -1137,7 +1141,7 @@ export async function analyzeShellCommandEffects(command, cwd) {
       else global = true;
       continue;
     }
-    if (hasMutatingShellOptions(tokens)) {
+    if (hasMutatingShellOptions(tokens, tokens.length === parsed.length ? shellType : undefined)) {
       global = true;
       continue;
     }

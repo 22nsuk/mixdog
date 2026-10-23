@@ -272,13 +272,16 @@ for (const name of ['shell', 'Bash']) {
     assertToolRecovery(execution, true);
   });
 
-  for (const [kind, suffix] of [
-    ['plain', ''],
-    ['callback', ' -Property { node key.cjs $_ }'],
-    ['commented', ' # { records }'],
+  for (const { kind, sort, output = /alpha\r?\nbeta/, callback = false, redirected = false } of [
+    { kind: 'plain', sort: 'Sort-Object' },
+    { kind: 'callback', sort: 'Sort-Object -Property { node key.cjs $_ }', callback: true },
+    { kind: 'commented', sort: 'Sort-Object # { records }' },
+    { kind: 'alias property', sort: 'sort -Property Length', output: /beta\r?\nalpha/ },
+    { kind: 'alias top', sort: 'sort -Top 1', output: /(?:^|\n)alpha\r?\n/ },
+    { kind: 'alias callback', sort: 'sort -Property { node key.cjs $_ }', callback: true },
+    { kind: 'alias redirect', sort: 'sort -Property Length > sorted.txt', output: /beta\r?\nalpha/, redirected: true },
   ]) {
-    const callback = kind === 'callback';
-    test(`${name} ${callback ? 'restores' : 'preserves'} output recovery after ${kind} PowerShell sorting`, {
+    test(`${name} ${callback || redirected ? 'restores' : 'preserves'} output recovery after ${kind} PowerShell sorting`, {
       skip: process.platform !== 'win32' && 'requires the native PowerShell shell path',
     }, async (t) => {
       const fx = toolFixture(t);
@@ -286,9 +289,11 @@ for (const name of ['shell', 'Bash']) {
         join(fx.options.cwd, 'key.cjs'),
         "require('node:fs').appendFileSync('key-cache.txt', process.argv[2] + '\\n'); console.log(process.argv[2]);"
       );
-      const command = `echo beta,alpha | Sort-Object${suffix}`;
+      const command = `echo beta,alpha | ${sort}`;
       const execution = await runToolAfterOutputCut(fx, name, { command });
-      assert.match(execution.completed.content, /alpha\r?\nbeta/);
+      const sortedFile = join(fx.options.cwd, 'sorted.txt');
+      assert.equal(existsSync(sortedFile), redirected);
+      assert.match(redirected ? readFileSync(sortedFile, 'utf8') : execution.completed.content, output);
       const cacheFile = join(fx.options.cwd, 'key-cache.txt');
       assert.equal(existsSync(cacheFile), callback);
       if (callback) {
@@ -296,7 +301,7 @@ for (const name of ['shell', 'Bash']) {
         assert.match(keys, /alpha/);
         assert.match(keys, /beta/);
       }
-      assertToolRecovery(execution, callback);
+      assertToolRecovery(execution, callback || redirected);
     });
   }
 

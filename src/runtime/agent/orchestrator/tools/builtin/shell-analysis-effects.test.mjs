@@ -94,6 +94,52 @@ test('sort output options are mutations, including in a redirected stage', async
   }
 });
 
+test('PowerShell sort options are reads while redirects, callbacks and external wrappers still mutate', async (t) => {
+  const dir = workDir(t);
+  const options = { shellType: 'powershell' };
+  for (const command of [
+    'echo beta,alpha | sort -Property Length',
+    'echo beta,alpha | SORT -PROPERTY Length',
+    'echo beta,alpha | sort -Top 1',
+    'echo beta,alpha | sort -Bottom 1',
+    'echo beta,alpha | sort -OutVariable sorted',
+    'echo beta,alpha | sort -ov sorted',
+    'sort -InputObject beta -Property Length',
+    'echo beta,alpha | sort -Property Length # { records }',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir, options)).mutationMode, 'none', command);
+  }
+  const redirected = await analyzeShellCommandEffects(
+    'echo beta,alpha | sort -Property Length > sorted.txt', dir, options
+  );
+  assert.equal(redirected.mutationMode, 'paths');
+  assert.deepEqual(redirected.paths, [join(dir, 'sorted.txt')]);
+  for (const command of [
+    'echo beta,alpha | sort -Property { node key.cjs $_ }',
+    'echo beta,alpha | sort -Property @{ Expression = { node key.cjs $_ } }',
+    'env sort -o out.txt input.txt',
+    'command sort -o out.txt input.txt',
+    'sudo sort -ro out.txt input.txt > capture.txt',
+  ]) {
+    assert.equal((await analyzeShellCommandEffects(command, dir, options)).mutationMode, 'global', command);
+  }
+});
+
+test('POSIX sort output options still classify actual file writes as mutations', async (t) => {
+  const bash = resolveShellFor('bash');
+  if (!bash) return t.skip('requires Bash or Git Bash');
+  const dir = workDir(t);
+  writeFileSync(join(dir, 'input.txt'), 'beta\nalpha\n');
+  for (const [command, expected] of [
+    ['sort -o out.txt input.txt', 'alpha\nbeta'],
+    ['sort -ro out.txt input.txt', 'beta\nalpha'],
+  ]) {
+    execFileSync(bash.shell, ['-s'], { input: command, cwd: dir, timeout: 10_000, windowsHide: true });
+    assert.equal(readFileSync(join(dir, 'out.txt'), 'utf8').trim(), expected);
+    assert.equal((await analyzeShellCommandEffects(command, dir, { shellType: 'posix' })).mutationMode, 'global');
+  }
+});
+
 test('Git writes cannot inherit a read-only command classification', async (t) => {
   const dir = workDir(t);
   for (const command of [

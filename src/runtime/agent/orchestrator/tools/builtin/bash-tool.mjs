@@ -80,7 +80,7 @@ export async function executeBashTool(args, workDir, options = {}) {
 
   let shellEffects;
   try {
-    shellEffects = await analyzeShellCommandEffects(analysisCommand, bashWorkDir);
+    shellEffects = await analyzeShellCommandEffects(analysisCommand, bashWorkDir, resolvedSpec);
   } catch (err) {
     return formatShellToolFailure(normalizeErrorMessage(err instanceof Error ? err.message : String(err)));
   }
