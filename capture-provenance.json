@@ -1,0 +1,11 @@
+{
+  "baseline": "d141c52f61daf767cb2bad98d49f867c5b77282a",
+  "sourcePath": "apps/desktop/src/renderer/AgentProfilePane.tsx",
+  "sourceHashes": {
+    "before": "8d8cc31aa100c560547abdadbb9af4abb610b843b85a33963db3a0ad76abaffe",
+    "after": "e0e069d8e87237d86e22fe58ae798932cd66ac1a9aa74dfb11ea4774721951bd"
+  },
+  "afterPatch": "\n    ...(typeof route.contextPercent === 'number' ? { contextPercent: route.contextPercent } : {}),\n    ...(typeof route.contextTokens === 'number' ? { contextTokens: route.contextTokens } : {}),",
+  "capturedAt": "2026-10-24T21:51:18.725Z",
+  "validatedProductCommit": "2957cdcce0bbf29915e9931517f0340459183fd8"
+}

@@ -1,0 +1,51 @@
+{
+  "variant": "before",
+  "scenario": "edit",
+  "storedRoute": {
+    "provider": "cursor-oauth",
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "fast": false,
+    "modelParameters": {
+      "context": "300k"
+    },
+    "contextPercent": 30
+  },
+  "sliderPercent": 100,
+  "contextHeading": "100%1M300k · Default",
+  "applyPresent": false,
+  "applyDisabled": null,
+  "bodyText": "GitHub watcher\n\nSummarizes new issues and pull requests.\n\nAppearance\nName\nModel\nThe first model is used first. If it fails, the next model is used.\nClaude Opus 5.5 High\nNo other providers are available to add.\nWhat it does\nPersonality\nPERSONA.md\nLoad file\nHow it works\nAGENT.md\nLoad file\nConnectors\n\nNo connectors connected.\nConnect connectors\n\nContext\n100%\n1M\n300k · Default",
+  "calls": [
+    [
+      "getProviderSetup",
+      []
+    ],
+    [
+      "getAgentDefinition",
+      [
+        "context-fixture"
+      ]
+    ],
+    [
+      "getAgentConnectors",
+      [
+        "context-fixture"
+      ]
+    ],
+    [
+      "getAgentPermissions",
+      [
+        "context-fixture"
+      ]
+    ],
+    [
+      "getAgentAlwaysAllowedTools",
+      [
+        "context-fixture"
+      ]
+    ]
+  ],
+  "errors": [],
+  "blockedNetworkRequests": []
+}
