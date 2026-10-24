@@ -37,6 +37,7 @@ export function createBatchState(ctx) {
     executeToolFn: typeof ctx.executeToolFn === 'function' ? ctx.executeToolFn : executeTool,
     dedupStubTotal: ctx.dedupStubTotal,
     editCount: ctx.editCount,
+    madeProgress: false,
     turnModel: assistantTurnMsg?.meta?.transcript?.model || sessionRef?.model || null,
     plan: planToolBatch(calls, tools),
     // General `newMessages` tool-result channel: a tool MAY return a

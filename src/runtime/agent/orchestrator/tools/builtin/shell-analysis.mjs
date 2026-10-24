@@ -7,12 +7,11 @@ import { isBuiltin } from 'node:module';
 import { Script } from 'node:vm';
 import { cwdRelativePath, normalizeInputPath, normalizeOutputPath, resolveAgainstCwd } from './path-utils.mjs';
 import { codeMask } from './bash-tool/bashism-rewrite.mjs';
+import { gitPlanIsReadOnly } from './git-command-policy.mjs';
 
 // Hard-block patterns live exclusively in ../shell-policy.mjs (BLOCKED_PATTERNS /
-// isBlockedCommand). This lighter detector only classifies cache invalidation
-// scope for commands that already passed policy.
-const SHELL_MUTATION_PATTERN =
-  /(?:^|[;&|\n]\s*)(?:touch|mkdir|mktemp|rm|rmdir|mv|cp|install|ln|chmod|chown|truncate|dd|sed\s+-i|perl\s+-pi|npm\s+(?:install|i|ci|uninstall)|pnpm\s+(?:install|i|add|remove|update|up)|yarn\s+(?:install|add|remove|up)|bun\s+(?:install|add|remove|update|up)|pip(?:3)?\s+install|python(?:3)?\s+-m\s+pip\s+install|git\s+(?:checkout|switch|restore|clean|apply|am|cherry-pick|merge|rebase|stash|pull|reset)|cargo\s+(?:build|install|clean)|go\s+(?:build|install|generate)|make|cmake)\b/i;
+// isBlockedCommand). This lighter detector classifies cache invalidation and
+// execution progress for commands that already passed policy.
 // `source` / `.` removed from read-only set: sourced scripts can mutate
 // files, cwd, env, and persistent-shell state arbitrarily. Without static
 // analysis of the target script, treating these as read-only would skip
@@ -20,22 +19,6 @@ const SHELL_MUTATION_PATTERN =
 // as unknown/global mutation by falling through to the default branch.
 const SHELL_READ_ONLY_SEGMENT_RE =
   /^(?:cd|pwd|echo|printf|env|printenv|set|unset|export|alias|unalias|type|which|whereis|ls|dir|cat|head|tail|wc|grep|rg|find|git\s+(?:status|diff|show|log|rev-parse|branch|remote|ls-files)|stat|readlink|realpath|basename|dirname|sort|uniq|cut|sed\s+-n|awk|ps|whoami|uname|date|true|false|test|\[)\b/i;
-const SHELL_GLOBAL_MUTATORS = new Set([
-  'npm',
-  'pnpm',
-  'yarn',
-  'bun',
-  'pip',
-  'pip3',
-  'python',
-  'python3',
-  'git',
-  'cargo',
-  'go',
-  'make',
-  'cmake',
-  'dd',
-]);
 
 // Whether a backslash escapes the character after it: anything outside quotes,
 // only `"` or `\` inside double quotes, never inside single quotes (`'C:\'` is
@@ -1020,104 +1003,241 @@ const SHELL_PATH_ARG_MUTATORS = new Set([
   'ln',
 ]);
 
-// find/awk are read-only by default but can delete, exec, or write files.
+// Read-oriented commands can still delete, exec, or write through options.
 // Conservative: any such action makes the stage a mutation.
 const FIND_MUTATING_FLAG_RE = /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/;
 const AWK_MUTATING_PROGRAM_RE = /\bsystem\s*\(|\b(?:print|printf)\b[^;}]*(?:>>?|\|)|\|\s*getline\b/;
 
-function isMutatingFindOrAwk(tokens) {
+function hasMutatingShellOptions(tokens, shellType) {
   const cmd = String(tokens[0] || '').toLowerCase();
+  // Share Git's operation/option policy instead of assuming every branch,
+  // remote or diff invocation is a read. Unknown forms remain conservative.
+  if (cmd === 'git') return !gitPlanIsReadOnly({ operation: tokens[1], args: tokens.slice(2) });
   if (cmd === 'find') return tokens.some((tok) => FIND_MUTATING_FLAG_RE.test(String(tok)));
   if (cmd === 'awk' || cmd === 'gawk' || cmd === 'mawk') {
     return tokens.slice(1).some((tok) => AWK_MUTATING_PROGRAM_RE.test(String(tok)));
   }
+  // PowerShell's direct sort command is Sort-Object, not the POSIX utility.
+  // Its -Property/-Top/common parameters do not name output files.
+  if (cmd === 'sort' && shellType !== 'powershell') {
+    for (const token of tokens.slice(1)) {
+      if (token === '--') break;
+      if (token === '--output' || token.startsWith('--output=')) return true;
+      if (/^-[^-]*o/.test(token)) return true;
+    }
+  }
   return false;
 }
 
-export async function analyzeShellCommandEffects(command, cwd) {
-  const text = String(command || '').trim();
-  let localCwd = resolve(cwd || process.cwd());
-  if (!text) return { mutationMode: 'none', paths: [], finalCwd: localCwd };
-  const hasRedirect = /(?:^|[^0-9&<>])>>?(?!&)/.test(text) || /\btee\b/.test(text);
-  // Classification is per PIPELINE STAGE, never per segment. A segment's
-  // first command decided the whole segment before, so a read-only producer
-  // (`rg … | xargs rm`, `cat … | tee f`) hid every mutator behind it and the
-  // caches were left holding pre-command state.
+// Effects need one lexical authority: stripping comments and then using the
+// probe/rewrite tokenizers loses shell-specific quoting and operator identity.
+// Only simple commands are modeled here. Return null for dynamic execution or
+// unsupported syntax, retaining the conservative global effect of scripts.
+function shellEffectStages(text, shellType, shell) {
+  const powershell = shellType === 'powershell';
+  const quoteKind = (ch) => {
+    if (ch === "'" || (powershell && /[‘’]/.test(ch || ''))) return "'";
+    if (ch === '"' || (powershell && /[“”]/.test(ch || ''))) return '"';
+    return null;
+  };
   const stages = [];
-  for (const segment of shellSplitSegments(text)) {
-    for (const stage of shellSplitPipelineSegments(segment)) stages.push(stage);
-  }
-  if (!SHELL_MUTATION_PATTERN.test(text) && !hasRedirect) {
-    const readOnly = stages.every((stage) => {
-      const tokens = stripShellProbeWrappers(shellTokenize(stage) || []);
-      if (tokens.length === 0) return true;
-      const joined = tokens.join(' ');
-      if (/^cd\b/i.test(joined)) {
-        const target = tokens[1] || process.env.HOME || process.env.USERPROFILE || localCwd;
-        const resolved = resolveShellPathToken(target, localCwd);
-        if (resolved) localCwd = resolved;
-        return true;
+  let tokens = [];
+  let redirects = [];
+  let pendingRedirect = null;
+  let word = '';
+  let wordStarted = false;
+  let wordQuoted = false;
+  let quote = null;
+  let quoteStartsWord = false;
+  let commentStart = true;
+  const pushWord = () => {
+    if (!wordStarted) return;
+    if (pendingRedirect === '>') redirects.push(word);
+    else if (!pendingRedirect) tokens.push(word);
+    pendingRedirect = null;
+    word = '';
+    wordStarted = wordQuoted = false;
+  };
+  const pushStage = () => {
+    pushWord();
+    if (pendingRedirect) return false;
+    if (tokens.length || redirects.length) stages.push({ tokens, redirects });
+    tokens = [];
+    redirects = [];
+    commentStart = true;
+    return true;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (quote === 'ansi') {
+      if (ch === "'") quote = null;
+      else if (ch !== '\\') word += ch;
+      else {
+        // Unicode and brace-hex escapes differ across supported Bash versions
+        // (including macOS Bash 3.2); do not guess the resulting option/path.
+        if (next === undefined || next === '\n' || /[cuU]/.test(next) || (next === 'x' && text[i + 2] === '{')) return null;
+        const simple = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }[next];
+        const numeric = /^(?:([0-7]{1,3})|x([\da-fA-F]{1,2}))/.exec(text.slice(i + 1));
+        if (simple !== undefined) { word += simple; i++; }
+        else if (numeric) {
+          const value = Number.parseInt(numeric[1] ?? numeric[2], numeric[1] ? 8 : 16);
+          // NUL truncation and locale-dependent non-ASCII encodings cannot
+          // identify reliable command/options/paths without runtime values.
+          if (value === 0 || value > 0x7f) return null;
+          word += String.fromCodePoint(value);
+          i += numeric[0].length;
+        } else { word += `\\${next}`; i++; }
       }
-      if (isMutatingFindOrAwk(tokens)) return false;
-      return SHELL_READ_ONLY_SEGMENT_RE.test(joined);
-    });
-    return { mutationMode: readOnly ? 'none' : 'global', paths: [], finalCwd: localCwd };
+      // Decoded operators are argument data, never new shell syntax.
+      continue;
+    }
+    if (quote === "'") {
+      if (quoteKind(ch) === quote) {
+        if (powershell && quoteKind(next) === quote) {
+          word += next;
+          i++;
+        } else {
+          quote = null;
+          commentStart = powershell && quoteStartsWord;
+          if (commentStart) pushWord();
+        }
+      } else word += ch;
+      continue;
+    }
+    const escape = powershell ? ch === '`' : ch === '\\' && (!quote || /["\\$`\n]/.test(next || ''));
+    if (escape) {
+      if (next === undefined) return null;
+      if (next === '\n' || (powershell && next === '\r' && text[i + 2] === '\n')) {
+        // PS continuation is only unambiguous at a word boundary. Within a
+        // word/string LF is data, and CRLF can even end the command.
+        if (powershell && wordStarted) return null;
+        i += next === '\r' ? 2 : 1;
+      } else {
+        // PowerShell Unicode escapes can synthesize command/option syntax.
+        if (powershell && next === 'u' && text[i + 2] === '{') return null;
+        word += powershell ? ({ '0': '\0', a: '\x07', b: '\b', e: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' }[next] ?? next) : next;
+        wordStarted = wordQuoted = true;
+        commentStart = false;
+        i++;
+      }
+      continue;
+    }
+    if ((!powershell && ch === '`') || (ch === '$' && next === '(')) return null;
+    if (ch === '$' && next === '{') {
+      const variable = /^\$\{[\w:]+\}/.exec(text.slice(i));
+      if (!variable) return null;
+      word += variable[0];
+      wordStarted = true;
+      commentStart = false;
+      i += variable[0].length - 1;
+      continue;
+    }
+    if (quote === '"') {
+      if (quoteKind(ch) === quote) {
+        if (powershell && quoteKind(next) === quote) {
+          word += next;
+          i++;
+        } else {
+          quote = null;
+          // PS starts a new token after a standalone string, but a quote
+          // inside --format="value" stays part of that generic argument.
+          commentStart = powershell && quoteStartsWord;
+          if (commentStart) pushWord();
+        }
+      } else word += ch;
+      continue;
+    }
+    if (ch === '#' && commentStart) {
+      const newline = text.indexOf('\n', i);
+      if (newline < 0) break;
+      i = newline - 1;
+      continue;
+    }
+    if (!powershell && ch === '$' && next === "'") {
+      // The /bin/sh fallback need not support Bash's ANSI-C quoting at all.
+      if (shell && !/(?:^|[/\\])(?:bash|zsh)(?:\.exe)?$/i.test(shell)) return null;
+      quote = 'ansi';
+      wordStarted = wordQuoted = true;
+      commentStart = false;
+      i++;
+      continue;
+    }
+    if ((powershell && ch === '@' && quoteKind(next)) || (!powershell && ch === '$' && next === '"')) return null;
+    if (quoteKind(ch)) {
+      quoteStartsWord = !wordStarted;
+      quote = quoteKind(ch);
+      wordStarted = wordQuoted = true;
+      commentStart = false;
+      continue;
+    }
+    if (/[(){}]/.test(ch) || (powershell && ch === '<') || (ch === '<' && /[<(>]/.test(next || ''))) return null;
+    // Keep redirects separate from argument text: echo '>' and echo tee read.
+    if (ch === '>' || ch === '<' || (ch === '&' && next === '>')) {
+      if (pendingRedirect) return null;
+      if (!wordQuoted && /^(?:\d+|\*)$/.test(word)) { word = ''; wordStarted = false; }
+      pushWord();
+      const direction = ch === '<' ? '<' : '>';
+      if (ch === '&') i++;
+      if (direction === '>' && text[i + 1] === '>') i++;
+      if (text[i + 1] === '&') {
+        const descriptor = /^&(?:\d+|-)(?=$|[\s;&|<>])/.exec(text.slice(i + 1));
+        if (!descriptor) return null;
+        i += descriptor[0].length;
+      } else pendingRedirect = direction;
+      commentStart = true;
+      continue;
+    }
+    if (ch === '\n' || ch === ';' || ch === '|' || ch === '&') {
+      if (powershell && ch === '&' && next !== '&') return null;
+      if (!pushStage()) return null;
+      if ((ch === '|' || ch === '&') && next === ch) i++;
+      continue;
+    }
+    if (/\s/.test(ch)) { pushWord(); commentStart = true; continue; }
+    word += ch;
+    wordStarted = true;
+    commentStart = false;
   }
+  return quote === null && pushStage() ? stages : null;
+}
+
+export async function analyzeShellCommandEffects(command, cwd, { shellType, shell } = {}) {
+  const stages = shellEffectStages(String(command || ''), shellType, shell);
+  let localCwd = resolve(cwd || process.cwd());
+  let cwdKnown = true;
+  if (stages === null) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
   const paths = new Set();
   let global = false;
-  for (const stage of stages) {
-    const parsed = shellTokenize(stage);
-    if (!parsed) return { mutationMode: 'global', paths: [], finalCwd: localCwd };
+  for (const { tokens: parsed, redirects } of stages) {
     const tokens = stripShellProbeWrappers(parsed);
+    // Redirection occurs before the command (including cd) executes.
+    for (const target of redirects) {
+      const path = cwdKnown || isExplicitAbsoluteShellPath(target) ? resolveShellPathToken(target, localCwd) : null;
+      if (path) paths.add(path);
+      else global = true;
+    }
     if (tokens.length === 0) continue;
     const cmd = tokens[0].toLowerCase();
     const joined = tokens.join(' ');
     if (cmd === 'cd') {
       const target = tokens[1] || process.env.HOME || process.env.USERPROFILE || localCwd;
-      const resolved = resolveShellPathToken(target, localCwd);
+      const resolved = cwdKnown || isExplicitAbsoluteShellPath(target) ? resolveShellPathToken(target, localCwd) : null;
+      // An unknown cwd does not mutate files; only later relative writes
+      // need conservative invalidation until an absolute cd restores it.
+      cwdKnown = resolved !== null;
       if (resolved) localCwd = resolved;
-      else global = true;
       continue;
     }
-    if (isMutatingFindOrAwk(tokens)) {
+    if (hasMutatingShellOptions(tokens, tokens.length === parsed.length ? shellType : undefined)) {
       global = true;
       continue;
     }
-    const segmentMutates = tokens.includes('tee') || tokens.includes('>') || tokens.includes('>>');
-    if (!segmentMutates && SHELL_READ_ONLY_SEGMENT_RE.test(joined)) continue;
-    if (segmentMutates) {
-      const segPaths = [];
-      const teeIdx = tokens.indexOf('tee');
-      if (teeIdx !== -1) {
-        segPaths.push(...extractShellPathArgs(tokens, localCwd, { minIndex: teeIdx + 1 }));
-      }
-      for (let i = 0; i < tokens.length; i++) {
-        if (tokens[i] === '>' || tokens[i] === '>>') {
-          const r = resolveShellPathToken(tokens[i + 1], localCwd);
-          if (r) segPaths.push(r);
-        }
-      }
-      if (segPaths.length === 0) {
-        global = true;
-        continue;
-      }
-      for (const p of segPaths) paths.add(p);
-      continue;
-    }
-    if (SHELL_GLOBAL_MUTATORS.has(cmd)) {
-      if (cmd === 'git') {
-        const sub = String(tokens[1] || '').toLowerCase();
-        if (['status', 'diff', 'show', 'log', 'rev-parse', 'branch', 'remote', 'ls-files'].includes(sub)) continue;
-      }
-      // A python run can write anywhere (alone it already classifies as global
-      // below the read-only check), so it never narrows a chain's effects.
-      global = true;
-      continue;
-    }
-    // tee and >/>> segments were handled above, so only argument-taking
-    // mutators remain.
+    if (SHELL_READ_ONLY_SEGMENT_RE.test(joined)) continue;
+    // Redirecting stdout never narrows an unknown command's other effects.
+    if (!cwdKnown) { global = true; continue; }
     let segmentPaths = [];
-    if (SHELL_PATH_ARG_MUTATORS.has(cmd) || (cmd === 'perl' && tokens.some((t) => /^-p/i.test(t) || /^-i/i.test(t)))) {
+    if (cmd === 'tee' || SHELL_PATH_ARG_MUTATORS.has(cmd) || (cmd === 'perl' && tokens.some((t) => /^-p/i.test(t) || /^-i/i.test(t)))) {
       segmentPaths = extractShellPathArgs(tokens, localCwd, { minIndex: 1 });
     } else if (cmd === 'sed' && tokens.includes('-i')) {
       segmentPaths = extractShellPathArgs(tokens, localCwd, { minIndex: tokens.lastIndexOf('-i') + 1 });

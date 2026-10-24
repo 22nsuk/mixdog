@@ -31,3 +31,44 @@ test('git mutation policy is shared by orchestration and evidence projection', (
   assert.equal(gitCommandMutates(JSON.stringify(stage)), true);
   assert.equal(_isMutationTool('apply_patch', {}), true);
 });
+
+test('Git distinguishes output options from paths without losing positional mutations', () => {
+  for (const command of ['git diff -- --output=filename.txt', 'git remote -v', 'git branch --list']) {
+    assert.equal(gitCommandMutates({ command }), false, command);
+  }
+  for (const command of [
+    'git diff --output=changes.patch -- file.txt',
+    'git remote add local ../other',
+    'git remote add -- local ../other',
+    'git branch -- new-branch',
+  ]) {
+    assert.equal(gitCommandMutates({ command }), true, command);
+  }
+});
+
+test('Git branch queries preserve read-only policy without hiding branch writes', () => {
+  for (const command of [
+    'git branch --show-current', 'git branch -v', 'git branch -vv', 'git branch -avv',
+    'git branch --contains HEAD', 'git branch --no-contains=HEAD',
+    'git branch --merged HEAD', 'git branch --no-merged', 'git branch --points-at HEAD',
+    'git branch --format="%(refname:short)"', 'git branch --format "%(refname:short)"',
+    'git branch --sort=-committerdate', 'git branch --sort refname --color=never',
+    'git branch --list -- "feature/*"', 'git branch --no-abbrev --verbose',
+  ]) {
+    assert.equal(gitCommandMutates({ command }), false, command);
+    assert.equal(_isMutationTool('git', { command }), false, command);
+    assert.equal(_isGitMutationTool('git', { command }), false, command);
+  }
+  for (const command of [
+    'git branch -v new-branch', 'git branch --format="%(refname:short)" new-branch',
+    'git branch --sort refname new-branch', 'git branch -- new-branch',
+    'git branch -vd old-branch', 'git branch -rD origin/old-branch',
+    'git branch -v -m renamed', 'git branch --track=direct new-branch',
+    'git branch --list --set-upstream-to=main topic',
+    'git branch --list --unknown-option',
+  ]) {
+    assert.equal(gitCommandMutates({ command }), true, command);
+    assert.equal(_isMutationTool('git', { command }), true, command);
+    assert.equal(_isGitMutationTool('git', { command }), true, command);
+  }
+});

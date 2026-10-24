@@ -196,6 +196,20 @@ test('git command tool preserves native text, shell syntax, and destructive comm
   assert.equal(spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', '-b', 'topic', worktree]).status, 0);
   assert.match(JSON.stringify(parseOk(await git(repo, 'worktree list --porcelain'))), /topic/);
   assert.match(JSON.stringify(parseOk(await git(repo, 'branch --list'))), /topic/);
+  const refsBeforeQueries = parseOk(await git(repo, 'show-ref'));
+  for (const args of [
+    ['--show-current'], ['-v'], ['-vv'], ['--contains', 'HEAD'], ['--format=%(refname:short)'],
+  ]) {
+    const options = args.map(quote).join(' ');
+    const command = `git -C ${quote(repo)} branch ${options}`;
+    assert.equal(gitCommandMutates({ command }), false, command);
+    const expected = spawnSync('git', ['-C', repo, 'branch', ...args], {
+      encoding: 'utf8',
+    });
+    assert.equal(expected.status, 0, expected.stderr);
+    assert.equal(parseOk(await git(repo, `branch ${options}`)), expected.stdout);
+  }
+  assert.equal(parseOk(await git(repo, 'show-ref')), refsBeforeQueries);
 
   // A `&&` chain is the command array written as one string: same order,
   // same stop-on-failure, answered in one shot.

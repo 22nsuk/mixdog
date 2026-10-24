@@ -108,8 +108,6 @@ function gitActionOf(operation, args) {
   return first || DEFAULT_GIT_ACTIONS.get(operation) || 'list';
 }
 
-const GIT_BRANCH_WRITE_FLAGS =
-  /^(?:-[dDmMcCfu]|--(?:delete|move|copy|force|set-upstream-to(?:=.*)?|unset-upstream|edit-description|track|no-track|create-reflog))$/;
 const GIT_TAG_WRITE_FLAGS =
   /^(?:-[adfsumFe]|--(?:annotate|delete|force|sign|local-user(?:=.*)?|message(?:=.*)?|file(?:=.*)?|edit))$/;
 
@@ -125,7 +123,9 @@ const GIT_CONFIG_MUTATION_FLAGS = new Set([
 
 export function gitPlanIsReadOnly(plan) {
   const { operation, args } = plan;
-  if (args.some((value) => value === '--output' || value.startsWith('--output='))) return false;
+  const separator = args.indexOf('--');
+  const options = separator < 0 ? args : args.slice(0, separator);
+  if (options.some((value) => value === '--output' || value.startsWith('--output='))) return false;
   if (operation === 'fsck' && args.includes('--lost-found')) return false;
   if (ALWAYS_READ.has(operation)) return true;
   if (operation === 'reflog') return ['show', 'list', 'exists'].includes(gitActionOf(operation, args));
@@ -144,14 +144,39 @@ export function gitPlanIsReadOnly(plan) {
     return args.filter((value) => !value.startsWith('-')).length <= 1;
   }
   if (operation === 'hash-object') return !args.includes('-w') && !args.includes('--stdin-paths');
-  if (operation === 'branch' || operation === 'tag') {
-    // A listing flag does not make the call read-only when another flag writes:
-    // `branch -a -D x` deletes and `tag -a v1` creates (there `-a` is
-    // --annotate, not --all).
-    const writes = operation === 'tag' ? GIT_TAG_WRITE_FLAGS : GIT_BRANCH_WRITE_FLAGS;
-    if (args.some((value) => writes.test(value))) return false;
-    const listFlags = operation === 'tag' ? ['--list', '-l'] : ['--list', '-l', '-a', '--all', '-r', '--remotes'];
-    return args.length === 0 || args.some((value) => listFlags.includes(value));
+  if (operation === 'branch') {
+    // Git lists by default only when there is no branch-name operand.
+    // Display options such as -v/--format can also accompany branch creation;
+    // only explicit queries/filters make remaining operands listing patterns.
+    let listing = false;
+    let hasOperand = false;
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === '--') return listing || (!hasOperand && i === args.length - 1);
+      if (!arg.startsWith('-')) {
+        hasOperand = true;
+      } else if (/^-[alrvqi]+$/.test(arg)) {
+        listing ||= arg.includes('l');
+      } else if (/^--(?:list|show-current)$/.test(arg)) {
+        listing = true;
+      } else if (/^--(?:(?:no-)?(?:contains|merged)|points-at|with|without)(?:=|$)/.test(arg)) {
+        listing = true;
+        if (!arg.includes('=') && args[i + 1] && !args[i + 1].startsWith('-')) i++;
+      } else if (/^--(?:format|sort)(?:=|$)/.test(arg)) {
+        if (!arg.includes('=') && ++i === args.length) return false;
+      } else if (
+        !/^--(?:all|remotes|(?:no-)?(?:verbose|quiet|ignore-case|omit-empty)|(?:no-)?(?:color|column|abbrev)(?:=.*)?)$/.test(arg)
+      ) {
+        // Writes, including combined short flags, and unknown options stay conservative.
+        return false;
+      }
+    }
+    return listing || !hasOperand;
+  }
+  if (operation === 'tag') {
+    // -a is --annotate here, not --all; a listing flag cannot hide a write.
+    if (args.some((value) => GIT_TAG_WRITE_FLAGS.test(value))) return false;
+    return args.length === 0 || args.some((value) => value === '--list' || value === '-l');
   }
   if (operation === 'config') {
     if (args.some((value) => GIT_CONFIG_MUTATION_FLAGS.has(value))) return false;

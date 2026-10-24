@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -18,14 +19,19 @@ const { SCOPED_CACHE_TTL_MS, clearScopedToolsForSessionPaths } = await import('.
 const { createScopedCacheOutcome } = await import('./scoped-cache-outcome.mjs');
 const { executeGlobTool } = await import('../../tools/builtin/search-glob-tool.mjs');
 const { executeCodeGraphTool } = await import('../../tools/code-graph/dispatch.mjs');
-const { invalidateBuiltinResultCache } = await import('../../tools/builtin/cache-layers.mjs');
+const { invalidateBuiltinResultCache, rawContentCacheGet, rawContentCacheSet } = await import('../../tools/builtin/cache-layers.mjs');
+const { executeBashTool } = await import('../../tools/builtin/bash-tool.mjs');
 // Remove the isolated data directory after imported modules' exit flushes.
 process.once('exit', () => rmSync(root, { recursive: true, force: true }));
 
-const tools = ['read', 'grep', 'glob', 'code_graph', 'mcp__remote__status'].map((name) => ({
-  name,
-  annotations: { readOnlyHint: true },
-}));
+const tools = [
+  ...['read', 'grep', 'glob', 'code_graph', 'mcp__remote__status'].map((name) => ({
+    name,
+    annotations: { readOnlyHint: true },
+  })),
+  { name: 'shell' },
+  { name: 'Bash' },
+];
 
 function fixture(mode) {
   const cwd = mkdtempSync(join(root, 'case-'));
@@ -44,6 +50,32 @@ function fixture(mode) {
   };
 }
 
+function prepareGitRemote(fx) {
+  execFileSync('git', ['init', '--quiet'], { cwd: fx.cwd });
+  return () => assert.equal(
+    execFileSync('git', ['config', '--local', '--get', 'remote.local.url'], { cwd: fx.cwd, encoding: 'utf8' }).trim(),
+    '../other'
+  );
+}
+
+function prepareGitBranch(fx) {
+  execFileSync('git', ['init', '--quiet', '--initial-branch=main', '--template='], { cwd: fx.cwd });
+}
+
+function verifyEscapedCommentWrite(fx) {
+  return () => assert.equal(readFileSync(join(fx.cwd, 'changed.txt'), 'utf8').trim(), 'changed');
+}
+
+function prepareRedirectedScript(fx) {
+  writeFileSync(join(fx.cwd, 'build.cjs'), "require('node:fs').writeFileSync('file.txt', 'CHANGED'); console.log('built');");
+  const version = statSync(fx.file);
+  rawContentCacheSet(fx.file, version, readFileSync(fx.file));
+  return () => {
+    assert.equal(readFileSync(fx.file, 'utf8'), 'CHANGED');
+    assert.equal(rawContentCacheGet(fx.file, version), null, 'stdout redirection does not hide script mutations');
+  };
+}
+
 // Keep ONE loop's crossTurnCalls across model iterations. Tests that reset
 // this map for every batch cannot expose the signature-only bypass.
 // Only the tool implementation is injected: admission, batching, cache
@@ -54,6 +86,9 @@ async function round(fx, name, args, { beforeBatch, afterRead } = {}) {
   fx.iterations += 1;
   const executeToolFn = async (toolName, input, cwd, _sessionId, sessionRef, options) => {
     fx.executions += 1;
+    // Keep shell analysis and its execution metadata real: the batch must
+    // distinguish observation from mutation on both serial and eager paths.
+    if (toolName === 'shell' || toolName === 'Bash') return executeBashTool(input, cwd, options);
     if (toolName === 'code_graph') {
       const outcome = createScopedCacheOutcome();
       sessionRef._scopedCacheOutcomeByCallId ??= new Map();
@@ -111,6 +146,90 @@ async function round(fx, name, args, { beforeBatch, afterRead } = {}) {
 }
 
 for (const mode of ['serial', 'fallback', 'streaming']) {
+  const commentedRead = process.platform === 'win32'
+    ? 'echo beta,alpha | Sort-Object # { records }'
+    : 'echo observed # { records }';
+  for (const [name, command, prepare, dialect] of [
+    ['shell', 'echo observed'], ['Bash', 'echo observed'],
+    ['shell', 'cd "$PWD"; pwd'], ['Bash', 'cd "$PWD"; pwd'],
+    ['shell', commentedRead], ['Bash', commentedRead],
+    ['shell', 'git branch --show-current', prepareGitBranch],
+    ['Bash', 'git branch --show-current', prepareGitBranch],
+    ['shell', 'echo beta,alpha | sort -Property Length', null, 'powershell'],
+    ['Bash', 'echo beta,alpha | sort -Property Length', null, 'powershell'],
+    ['shell', 'echo beta,alpha | sort -Top 1', null, 'powershell'],
+    ['Bash', 'echo beta,alpha | sort -Top 1', null, 'powershell'],
+    ['shell', String.raw`ls ".\"`, null, 'powershell'],
+    ['Bash', String.raw`ls ".\"`, null, 'powershell'],
+    ['shell', String.raw`echo $'hello\n'`, null, 'posix'],
+    ['Bash', String.raw`echo $'hello\n'`, null, 'posix'],
+    ['shell', 'echo ">"'], ['Bash', 'echo ">"'],
+  ]) {
+    test(`read-only ${name} preserves read and scoped-cache receipts (${mode}, ${command})`, {
+      skip: dialect && (dialect === 'powershell') !== (process.platform === 'win32') && `requires the native ${dialect} default shell path`,
+    }, async () => {
+      const fx = fixture(mode);
+      prepare?.(fx);
+      fx.cacheSafe = true;
+      const readArgs = { file_path: fx.file };
+      const globArgs = { path: fx.cwd, pattern: '*.txt', sort: 'natural', limit: 25 };
+      await round(fx, 'read', readArgs);
+      await round(fx, 'glob', globArgs);
+      const raw = readFileSync(fx.file);
+      const version = statSync(fx.file);
+      rawContentCacheSet(fx.file, version, raw);
+      assert.deepEqual(rawContentCacheGet(fx.file, version), raw);
+      assert.equal((await round(fx, name, { command })).toolKind, 'normal');
+      assert.deepEqual(rawContentCacheGet(fx.file, version), raw, 'a read preserves the builtin content cache');
+      assert.equal(fx.editCount, 0);
+      assert.equal(fx.madeProgress, false);
+      const read = await round(fx, 'read', readArgs);
+      assert.equal(read.toolKind, 'skipped');
+      assert.match(read.content, /iteration 1/);
+      const glob = await round(fx, 'glob', globArgs);
+      assert.equal(glob.toolKind, 'skipped');
+      assert.match(glob.content, /iteration 2/);
+      assert.equal(fx.executions, 3);
+    });
+  }
+
+  for (const [kind, name, command, prepare, dialect] of [
+    ['mutating', 'shell', 'echo changed > changed.txt'],
+    ['mutating', 'Bash', 'echo changed > changed.txt'],
+    ['unknown-effect', 'shell', 'node -e "process.stdout.write(\'observed\')"'],
+    ['nested-script', 'shell', process.platform === 'win32' ? 'echo (node --version)' : 'echo "$(node --version)"'],
+    ['nested-script', 'Bash', process.platform === 'win32' ? 'echo (node --version)' : 'echo "$(node --version)"'],
+    ['Git config mutation', 'shell', 'git remote add local ../other', prepareGitRemote],
+    ['Git config mutation', 'Bash', 'git remote add local ../other', prepareGitRemote],
+    ['escaped Bash comment', 'shell', String.raw`echo \ #tag; echo changed > changed.txt`, verifyEscapedCommentWrite, 'posix'],
+    ['escaped Bash comment', 'Bash', String.raw`echo \ #tag; echo changed > changed.txt`, verifyEscapedCommentWrite, 'posix'],
+    ['ANSI-C quoted Bash argument', 'shell', String.raw`echo $'don\'t # literal'; echo changed > changed.txt`, verifyEscapedCommentWrite, 'posix'],
+    ['ANSI-C quoted Bash argument', 'Bash', String.raw`echo $'don\'t # literal'; echo changed > changed.txt`, verifyEscapedCommentWrite, 'posix'],
+    ['PowerShell block comment', 'shell', 'echo 1 <# ignored #>; echo changed > changed.txt', verifyEscapedCommentWrite, 'powershell'],
+    ['PowerShell block comment', 'Bash', 'echo 1 <# ignored #>; echo changed > changed.txt', verifyEscapedCommentWrite, 'powershell'],
+    ['redirected unknown script', 'shell', 'node build.cjs > log.txt', prepareRedirectedScript],
+    ['redirected unknown script', 'Bash', 'node build.cjs > log.txt', prepareRedirectedScript],
+  ]) {
+    test(`${kind} ${name} still clears scoped-cache receipts and records an edit (${mode})`, {
+      skip: dialect && (dialect === 'powershell') !== (process.platform === 'win32') && `requires the native ${dialect} default shell path`,
+    }, async () => {
+      const fx = fixture(mode);
+      const verify = prepare?.(fx);
+      fx.cacheSafe = true;
+      const args = { path: fx.cwd, pattern: '*.txt', sort: 'natural', limit: 25 };
+      await round(fx, 'glob', args);
+      assert.equal((await round(fx, name, { command })).toolKind, 'normal');
+      verify?.();
+      assert.equal(fx.editCount, 1);
+      assert.equal(fx.madeProgress, true);
+      assert.equal(fx.crossTurnCalls.size, 0);
+      const refreshed = await round(fx, 'glob', args);
+      assert.equal(refreshed.toolKind, 'normal');
+      assert.match(refreshed.content, /snapshot-3\.txt/);
+      assert.equal(fx.executions, 3);
+    });
+  }
+
   test(`unwatchable complete glob results bypass both caches and cross-turn reuse (${mode})`, async () => {
     const fx = fixture(mode);
     fx.cacheSafe = false;
@@ -190,11 +309,13 @@ for (const mode of ['serial', 'fallback', 'streaming']) {
     const fx = fixture(mode);
     const args = { file_path: fx.file };
     await round(fx, 'read', args);
+    assert.equal(fx.madeProgress, true);
     // Model a later cache population under a different call identity. Stat
     // freshness alone must not make the old iteration describe this body.
     setReadCached({ ...fx, args, content: 'REPLACEMENT_BODY', toolUseId: 'replacement-call' });
     const delivered = await round(fx, 'read', args);
     assert.equal(delivered.toolKind, 'cache-hit');
+    assert.equal(fx.madeProgress, false);
     assert.equal(delivered.content, 'REPLACEMENT_BODY');
     assert.equal(fx.executions, 1);
     assert.match((await round(fx, 'read', args)).content, /iteration 2/);
