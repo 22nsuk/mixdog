@@ -27,6 +27,8 @@ import { providerModelCacheRow } from '../src/session-runtime/model-recency.mjs'
 import { retryAfterMsFromError } from '../src/runtime/agent/orchestrator/providers/retry-classifier.mjs';
 import { parseScheduleModelRef } from '../src/runtime/shared/schedule-model-ref.mjs';
 import { withUsageContext } from '../src/runtime/shared/llm/usage-context.mjs';
+import { resolveAgentSpawnPreset } from '../src/session-runtime/services/agent-tool/spawn-preset.mjs';
+import { resolveRouteContextState } from '../src/runtime/agent/orchestrator/runtime-core/route-context-state.mjs';
 
 function sseResponse(events, onCancel = () => {}) {
   const encoder = new TextEncoder();
@@ -496,6 +498,202 @@ test('Cursor Max mode selects its mode-specific default variant', async () => {
   await provider.send([{ role: 'user', content: 'hello' }], 'mode-specific', [], { selectedContextWindow: 1_000_000 });
   assert.equal(body.mixdog_max_mode, true);
   assert.deepEqual(body.mixdog_model_parameters, [{ id: 'context', value: '1m' }]);
+});
+
+// Both contexts exist in each mode, but under different effort/speed choices.
+// Checking context membership alone cannot detect these persisted conflicts.
+function contextRecoveryModel({
+  id = 'context-recovery',
+  window = 300_000,
+  maxWindow = 1_000_000,
+  contexts = ['300k', '1m'],
+  effort = 'high',
+  fast = false,
+  effortParameter = 'effort',
+  maxOnly = false,
+  nonMaxOnly = false,
+} = {}) {
+  const parameters = (context, alternate = false) => ({
+    context,
+    thinking: 'true',
+    [effortParameter]: alternate ? 'low' : effort,
+    fast: String(alternate ? !fast : fast),
+  });
+  return {
+    id,
+    name: id,
+    contextWindow: window,
+    maxContextWindow: maxWindow,
+    supportsMaxMode: !nonMaxOnly,
+    supportsNonMaxMode: !maxOnly,
+    parameterDefinitions: [
+      { id: 'context', kind: 'enum', values: contexts.map((value) => ({ value, label: value })) },
+      { id: 'thinking', kind: 'boolean', values: [{ value: 'true' }, { value: 'false' }] },
+      { id: effortParameter, kind: 'enum', values: [effort, 'low', 'medium'].map((value) => ({ value })) },
+      { id: 'fast', kind: 'boolean', values: [{ value: 'false' }, { value: 'true' }] },
+    ],
+    variants: [
+      ...(!maxOnly
+        ? [
+            { parameters: parameters(contexts[0]), maxMode: false, defaultNonMax: true },
+            { parameters: parameters(contexts[1], true), maxMode: false },
+          ]
+        : []),
+      ...(!nonMaxOnly
+        ? [
+            { parameters: parameters(contexts[1]), maxMode: true, defaultMax: true },
+            { parameters: parameters(contexts[0], true), maxMode: true },
+          ]
+        : []),
+    ],
+  };
+}
+
+const contextRecoveryCases = [
+  { id: 'claude-opus-5-5', choice: { contextPercent: 100 }, selectedWindow: 1_000_000 },
+  {
+    id: 'grok-4.7',
+    window: 256_000,
+    maxWindow: 500_000,
+    contexts: ['256k', '500k'],
+    effort: 'xhigh',
+    fast: true,
+    choice: { contextPercent: 100 },
+    selectedWindow: 500_000,
+  },
+  {
+    id: 'opaque-context-test',
+    window: 96_000,
+    maxWindow: 768_000,
+    contexts: ['base', 'extended'],
+    effortParameter: 'reasoning_effort',
+    fast: true,
+    choice: { contextPercent: 100 },
+    selectedWindow: 768_000,
+  },
+  { id: 'exact-context-test', choice: { contextPercent: 80, contextTokens: 750_000 }, selectedWindow: 750_000 },
+  { id: 'smaller-context-test', choice: { contextPercent: 30 }, selectedWindow: 300_000, nonMax: true },
+  {
+    id: 'exact-default-test',
+    choice: { contextPercent: 100, contextTokens: 300_000 },
+    selectedWindow: 300_000,
+    nonMax: true,
+  },
+  { id: 'unspecified-context-test', choice: {}, selectedWindow: 300_000, nonMax: true },
+  { id: 'max-only-test', maxOnly: true, choice: { contextPercent: 100 }, selectedWindow: 1_000_000 },
+  {
+    id: 'non-max-only-test',
+    nonMaxOnly: true,
+    maxWindow: 300_000,
+    choice: {},
+    selectedWindow: 300_000,
+    nonMax: true,
+  },
+];
+
+for (const scenario of contextRecoveryCases) {
+  test(`stored ${scenario.id} context conflicts recover without editing primary or fallback routes`, async () => {
+    const raw = [contextRecoveryModel(scenario)];
+    const contexts = scenario.contexts || ['300k', '1m'];
+    for (const Provider of [CursorOAuthProvider, CursorApiProvider]) {
+      const sent = [];
+      const provider = new Provider({
+        accessToken: 'offline-context-fixture',
+        runtime: {
+          async getCursorModels() {
+            return raw;
+          },
+          async handleChatCompletion(body) {
+            sent.push(body);
+            return sseResponse([{ choices: [{ delta: {}, finish_reason: 'stop' }] }]);
+          },
+        },
+      });
+      const catalog = __cursorModelInternals.normalizeCursorCatalog(raw, provider.name);
+      const meta = catalog.models.find((model) => model.id === scenario.id);
+      for (const fallback of [false, true]) {
+        const saved = {
+          provider: provider.name,
+          model: scenario.id,
+          effort: scenario.effort || 'high',
+          fast: scenario.fast === true,
+          modelParameters: { context: contexts[scenario.nonMax ? 1 : 0], thinking: 'true' },
+          ...scenario.choice,
+        };
+        const stored = JSON.stringify({
+          agents: { worker: fallback ? { provider: 'openai', model: 'primary', fallbacks: [saved] } : saved },
+        });
+        const config = JSON.parse(stored);
+        const { preset } = resolveAgentSpawnPreset(config, { agent: 'worker' });
+        const route = fallback ? preset.fallbacks[0] : preset;
+        const state = resolveRouteContextState(route, meta);
+        assert.equal(state.selectedContextWindow, scenario.selectedWindow);
+        const opts = { ...route, selectedContextWindow: state.selectedContextWindow };
+        const before = structuredClone(opts);
+        // Reusing the untouched stored route must work on every request, not
+        // only after an in-memory or on-disk mutation from the first send.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await provider.send([{ role: 'user', content: 'hello' }], scenario.id, [], opts);
+          const body = sent.at(-1);
+          assert.equal(body.model, scenario.id);
+          assert.equal(body.mixdog_max_mode, !scenario.nonMax);
+          assert.deepEqual(Object.fromEntries(body.mixdog_model_parameters.map(({ id, value }) => [id, value])), {
+            context: contexts[scenario.nonMax ? 0 : 1],
+            thinking: 'true',
+            [scenario.effortParameter || 'effort']: scenario.effort || 'high',
+            fast: String(scenario.fast === true),
+          });
+          assert.deepEqual(opts, before);
+          assert.equal(JSON.stringify(config), stored);
+        }
+      }
+      assert.equal(sent.length, 4);
+    }
+  });
+}
+
+test('context recovery preserves supported explicit choices and rejects other invalid parameters', async () => {
+  const raw = [contextRecoveryModel()];
+  const sent = [];
+  const provider = new CursorOAuthProvider({
+    accessToken: 'offline-context-fixture',
+    runtime: {
+      async getCursorModels() {
+        return raw;
+      },
+      async handleChatCompletion(body) {
+        sent.push(body);
+        return sseResponse([{ choices: [{ delta: {}, finish_reason: 'stop' }] }]);
+      },
+    },
+  });
+  const options = {
+    selectedContextWindow: 1_000_000,
+    effort: 'low',
+    fast: true,
+    modelParameters: { context: '300k', thinking: 'true' },
+  };
+  await provider.send([{ role: 'user', content: 'hello' }], raw[0].id, [], options);
+  assert.deepEqual(Object.fromEntries(sent[0].mixdog_model_parameters.map(({ id, value }) => [id, value])), {
+    context: '300k',
+    thinking: 'true',
+    effort: 'low',
+    fast: 'true',
+  });
+  for (const patch of [
+    { effort: 'high', fast: true },
+    { effort: 'medium', fast: false },
+    { effort: 'high', fast: false, modelParameters: { context: '300k', thinking: 'false' } },
+    // Removing an invalid explicit context must not change effort/speed to
+    // make the mode's default context usable.
+    { modelParameters: { context: 'retired-context', thinking: 'true' } },
+  ]) {
+    await assert.rejects(
+      provider.send([{ role: 'user', content: 'hello' }], raw[0].id, [], { ...options, ...patch }),
+      /does not offer the selected parameter combination/
+    );
+    assert.equal(sent.length, 1, 'an invalid combination never reaches the transport');
+  }
 });
 
 test('Cursor developer messages retain system precedence', () => {
