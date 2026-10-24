@@ -245,10 +245,10 @@ function nextSpeaker(decision, { members, targets, turns, mustPick, mention }) {
     return { id: decision.agentId, instruction: decision.instruction || '' };
   }
   if (decision?.action === 'finish' && !mustPick) return null;
-  if (!mustPick) return mention ? { id: mention, instruction: '' } : null;
-  const order = [...new Set([...targets, ...members])].filter((id) => id !== last);
+  if (!mustPick) return members.includes(mention) ? { id: mention, instruction: '' } : null;
+  const order = [...new Set([...targets, ...members])].filter((id) => members.includes(id) && id !== last);
   const id = order.find((candidate) => !turns.some((turn) => turn.id === candidate)) ?? order[0];
-  return { id, instruction: '' };
+  return id ? { id, instruction: '' } : null;
 }
 
 /**
@@ -285,6 +285,7 @@ function nextSpeaker(decision, { members, targets, turns, mustPick, mention }) {
 export async function runRoomExchange({
   members,
   to = [],
+  openRequest = to.length === 0,
   maxRounds,
   maxMessages,
   speak,
@@ -297,7 +298,8 @@ export async function runRoomExchange({
   // A room whose last member was removed has nobody to hear it: finished, no turns.
   if (!members.length) return { outcome: 'done', rounds: 0, steps: 0, messages: 0 };
   const targets = [...new Set((Array.isArray(to) ? to : [to]).filter((id) => members.includes(id)))];
-  const maxSteps = maxRounds * members.length;
+  const initialMemberCount = members.length;
+  const maxSteps = maxRounds * initialMemberCount;
   const turns = [];
   let messages = 0;
   let steps = 0;
@@ -308,11 +310,16 @@ export async function runRoomExchange({
   const end = (outcome, extra = {}) => ({
     outcome,
     ...extra,
-    rounds: Math.min(maxRounds, Math.max(1, Math.ceil(turns.length / members.length))),
+    rounds: Math.min(maxRounds, Math.max(1, Math.ceil(turns.length / initialMemberCount))),
     steps,
     messages,
   });
   const halted = () => (stopped() ? end('stopped') : superseded() ? end('superseded') : null);
+  // A direct request whose targets disappeared before anyone answered must
+  // not turn into an open call unless a separate whole-room request was
+  // merged in. Once answered, normal follow-ups still apply.
+  const unansweredTargetsGone = () =>
+    targets.length > 0 && messages === 0 && !targets.some((id) => members.includes(id));
   const take = async (agentId, turn) => {
     const answer = await speak(agentId, turn);
     const { result, mention: named = '' } = typeof answer === 'string' ? { result: answer } : answer;
@@ -335,13 +342,17 @@ export async function runRoomExchange({
   };
   // Each member of `called` answers once, in order; null when all did.
   const callEach = async (called) => {
-    for (const [index, agentId] of called.entries()) {
+    // The host can remove unavailable members while a turn waits. Keep the
+    // iteration order stable so shrinking the roster never skips a neighbour.
+    const queue = [...called];
+    for (const [index, agentId] of queue.entries()) {
       const halt = halted();
       if (halt) return halt;
+      if (!members.includes(agentId)) continue;
       const cut = await take(agentId, { addressed: called, instruction: '', mentionedBy: '', scene });
       if (cut) return end(cut);
       if (messages >= maxMessages) {
-        const remaining = called.slice(index + 1);
+        const remaining = queue.slice(index + 1).filter((id) => members.includes(id));
         return end('capped', { limit: 'messages', ...(remaining.length ? { remaining } : {}) });
       }
     }
@@ -355,6 +366,7 @@ export async function runRoomExchange({
   for (;;) {
     let halt = halted();
     if (halt) return halt;
+    if (!members.length || (!openRequest && unansweredTargetsGone())) return end('done');
     if (spokenOut()) return end('done');
     if (steps >= maxSteps) {
       // Turns that were all passes since the last speech are no live talk cut off.
@@ -378,11 +390,13 @@ export async function runRoomExchange({
     }
     halt = halted();
     if (halt) return halt;
+    if (!members.length || (!openRequest && unansweredTargetsGone())) return end('done');
     // No Maintainer model: nobody moderates. The members the user called
     // answered once above; a call to the whole room gives every member one
     // turn, in order. No further rounds, no follow-ups between members.
     if (decision?.action === 'unmanaged') {
-      return (waiting && !targets.length ? await callEach(members) : null) ?? end('done');
+      const open = !targets.length || (openRequest && unansweredTargetsGone());
+      return (waiting && open ? await callEach(members) : null) ?? end('done');
     }
     if (decision?.scene === 'casual' || decision?.scene === 'work') scene = decision.scene;
     const next = nextSpeaker(decision, { members, targets, turns, mustPick, mention });

@@ -2,6 +2,7 @@
 // face from the contacts), the tiled room face, and one member's face.
 import { useMemo } from 'react';
 import { agentAvatar } from '../../../../src/runtime/shared/agent-avatar.mjs';
+import { MIXY_AGENT_ID } from '../shared/agent-contacts';
 import { AgentAvatar } from './agent-avatar';
 import type { AvatarMotionState } from './avatar-motion';
 import { type AgentContact, agentContacts } from './agent-contacts-model';
@@ -25,16 +26,21 @@ export function useRoomContacts(
   active = true,
   /** The room's own name map (host-resolved), for an agent the contacts cache has not caught up with. */
   memberNames?: Readonly<Record<string, string>>
-): { contacts: AgentContact[]; label(id: string): RoomMemberLabel } {
+): { contacts: AgentContact[]; label(id: string): RoomMemberLabel; isEnabled(id: string): boolean } {
   // Outside a room (a composer, a coding transcript) nothing loads.
   const { values } = useSidebarReferences(window.mixdogDesktop, CONTACT_KEYS, active, false);
   // A deleted bot (its read-only chat) keeps the name and face it left.
   const archived = useArchivedBotIdentities();
   return useMemo(() => {
-    const contacts = agentContacts(values.agents, NO_SESSIONS, NO_GROUPS);
-    const byId = new Map(contacts.map((contact) => [contact.agentId, contact]));
+    // A switched-off bot keeps its name and face in existing room history.
+    const allContacts = agentContacts(values.agents, NO_SESSIONS, NO_GROUPS, undefined, { includeDisabled: true });
+    const byId = new Map(allContacts.map((contact) => [contact.agentId, contact]));
+    // Eligibility comes from explicit catalog state, including workflow roles;
+    // a missing contact or a cold catalog does not remove a stored member.
+    const disabled = new Set(values.agents.filter((agent) => agent.disabled === true).map((agent) => agent.id));
     return {
-      contacts,
+      contacts: allContacts.filter((contact) => !contact.disabled),
+      isEnabled: (id: string) => id === MIXY_AGENT_ID || !disabled.has(id),
       label: (id: string): RoomMemberLabel => {
         const contact = byId.get(id) ?? archived.get(id);
         return contact

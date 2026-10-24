@@ -40,6 +40,19 @@ Useful environment variables:
 - `MIXDOG_MODE=ship|dev` — select shipping or development diagnostics.
 - `MIXDOG_DIAGNOSTICS=1` — force diagnostic trace and log output.
 
+## Group-room availability
+
+A disabled bot stays in its rooms: membership, names, transcripts, member
+sessions, and read cursors are retained. It is excluded from new recipient
+selections (`@all`, individual mentions, and `/ask`) and from supervisor or
+unmanaged turn selection. Explicit requests to a disabled member are refused;
+accepted requests still waiting to start are checked again and cancelled if
+their member is unavailable. An emptied direct request never becomes a
+whole-room broadcast. A turn already submitted may finish under the existing
+stop rules. Re-enabling the bot makes it eligible for the next exchange and
+reuses its conversation. Only confirmed deletion or explicit room removal
+removes membership and its member session.
+
 ## Core technology
 
 | Layer | Stack |

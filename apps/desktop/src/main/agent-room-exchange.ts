@@ -37,7 +37,6 @@ export interface RoomExchangeHost {
   failRelays(error: string): void;
   rows(): Promise<RoomRow[]>;
   post(rows: RoomRow[]): Promise<void>;
-  labels(room: AgentRoomRecord): Promise<Map<string, MemberLabel>>;
   turn: RoomTurnHost;
   decideTurn(input: RoomSupervisorInput): Promise<RoomDecision | { action: 'unmanaged' } | null>;
   persist(): Promise<void>;
@@ -113,7 +112,7 @@ async function settleExchange(host: RoomExchangeHost, state: RunState): Promise<
  *  is handed to the next exchange, or ends cancelled when none follows. */
 export async function runRoomExchangeIn(
   host: RoomExchangeHost,
-  { to = [], waiting, only = false, calls: given = [] }: RoomExchangeOptions
+  { to = [], openRequest = to.length === 0, waiting, only = false, calls: given = [] }: RoomExchangeOptions
 ): Promise<void> {
   const calls = [...given];
   const room = host.room();
@@ -136,7 +135,7 @@ export async function runRoomExchangeIn(
     await host.persist();
     host.republishCatalog();
     host.republish();
-    await exchangeTurns(host, state, room, { to, only, waiting }, calls);
+    await exchangeTurns(host, state, room, { to, openRequest, only, waiting }, calls);
     await settleExchange(host, state);
   } catch (error) {
     abandonExchange(host, state, calls, error);
@@ -172,30 +171,66 @@ async function exchangeTurns(
   host: RoomExchangeHost,
   state: RunState,
   room: AgentRoomRecord,
-  { to, only, waiting }: { to: string[]; only: boolean; waiting: boolean | undefined },
+  {
+    to,
+    openRequest,
+    only,
+    waiting,
+  }: { to: string[]; openRequest: boolean; only: boolean; waiting: boolean | undefined },
   calls: RoomCall[]
 ): Promise<void> {
   try {
     if (waiting === undefined) state.waiting = roomUserWaiting(await host.rows());
-    const labels = await host.labels(room);
-    const members = room.members.map((id) => labels.get(id) ?? { id, name: id, route: undefined, description: '' });
+    let roster = await host.turn.roster();
+    // This exchange's eligible roster may shrink; room.members is the
+    // persistent participation history and is never changed by a toggle.
+    const members = [...roster.eligible.keys()];
+    const cancelUnavailable = () => {
+      const unavailable = calls.filter((call) => !members.includes(call.agentId));
+      calls.splice(0, calls.length, ...calls.filter((call) => members.includes(call.agentId)));
+      for (const call of unavailable) call.onSettled?.({ status: 'cancelled' });
+    };
+    const refresh = async () => {
+      roster = await host.turn.roster();
+      members.splice(0, members.length, ...members.filter((id) => roster.eligible.has(id)));
+      cancelUnavailable();
+    };
+    cancelUnavailable();
+    // Preserve the difference between an open message and a queued direct
+    // request whose targets became unavailable: only the latter ends here.
+    // Merging a direct request must not discard an accepted whole-room one.
+    const targets = to.filter((id) => members.includes(id));
+    if (!openRequest && to.length && !targets.length) return;
     const result = await runRoomExchange({
-      members: room.members,
-      to,
+      members,
+      to: targets,
+      openRequest,
       maxRounds: room.maxRounds,
       // A user-addressed set keeps the full cap; a free exchange stops at a
       // budget drawn each time, so it does not always end at the same count.
-      maxMessages: to.length ? room.maxMessages : roomMessageBudget(room.members.length, room.maxMessages, host.random),
+      maxMessages: to.length ? room.maxMessages : roomMessageBudget(members.length, room.maxMessages, host.random),
       // A member's turn answers every call waiting on it; a turn a newer
       // message cut short hands them back, for the next exchange.
       speak: async (agentId, turn) => {
+        await refresh();
+        if (!members.includes(agentId)) return 'pass';
         const taken = calls.filter((call) => call.agentId === agentId);
         calls.splice(0, calls.length, ...calls.filter((call) => call.agentId !== agentId));
-        const answer = await speakInRoom(host.turn, state, labels, agentId, turn, taken);
+        const answer = await speakInRoom(host.turn, state, roster, agentId, turn, taken);
         if ((typeof answer === 'string' ? answer : answer.result) === 'superseded') calls.push(...taken);
         return answer;
       },
-      decide: (step) => supervisorDecision(host, state, room, members, step),
+      decide: async (step) => {
+        await refresh();
+        if (!members.length) return { action: 'finish' };
+        return supervisorDecision(
+          host,
+          state,
+          room,
+          members.map((id) => roster.eligible.get(id) as MemberLabel),
+          step
+        );
+      },
       stopped: () => state.stop,
       superseded: () => Boolean(state.pending),
       // Only a user still waiting forces a pick: a "Continue" after the
@@ -205,13 +240,16 @@ async function exchangeTurns(
     });
     if (result.outcome === 'capped') {
       const { limit, rounds, messages, remaining } = result;
-      if (remaining?.length) room.owed = remaining;
+      if (remaining?.length) room.owed = remaining.filter((id) => roster.eligible.has(id));
       await host.post([{ id: `row_${host.newId()}`, kind: 'cap', at: host.now(), text: '', limit, rounds, messages }]);
     } else if (result.outcome === 'stopped') {
       await host.post([{ id: `row_${host.newId()}`, kind: 'stopped', at: host.now(), text: '' }]);
     }
   } catch (error) {
-    host.log(`room ${host.roomId} exchange failed: ${error instanceof Error ? error.message : String(error)}`);
+    const message = error instanceof Error ? error.message : String(error);
+    for (const call of calls) call.onSettled?.({ status: 'failed', error: message });
+    calls.length = 0;
+    host.log(`room ${host.roomId} exchange failed: ${message}`);
   } finally {
     handOverCalls(host, state, calls);
   }
