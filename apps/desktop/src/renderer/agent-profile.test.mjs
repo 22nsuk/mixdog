@@ -14,7 +14,7 @@ const { dom } = installTestDom(null, {
 // jsdom has no layout: the model catalog scrolls its pick into view.
 dom.window.HTMLElement.prototype.scrollIntoView = () => {};
 const { createRoot } = await import('react-dom/client');
-const { AgentProfilePane } = await import('./AgentProfilePane.tsx');
+const { AgentProfilePane, AgentProfileForm } = await import('./AgentProfilePane.tsx');
 const { AgentPanel } = await import('./RoutinesPane.tsx');
 const { useDockPanelActions } = await import('./dock-panel-actions.ts');
 const { BOT_DELETED_EVENT, agentContactMenuItems, resetConversation } = await import('./agent-profile-actions.ts');
@@ -177,6 +177,139 @@ test('the profile edit saves the face, persona and model through saveAgentDefini
     'the profile re-reads after the save'
   );
 });
+
+const contextModel = {
+  provider: 'cursor-oauth',
+  model: 'claude-opus-5-5',
+  display: 'Claude Opus 5.5',
+  effortOptions: [{ value: 'high', label: 'High' }],
+  fastCapable: true,
+  fastEfforts: ['high'],
+  contextWindow: 300_000,
+  maxContextWindow: 1_000_000,
+  defaultModelParameters: { context: '300k' },
+  modelParameterOptions: [
+    {
+      id: 'context',
+      label: 'Context',
+      options: [
+        { value: '300k', label: '300K' },
+        { value: '1m', label: '1M' },
+      ],
+    },
+  ],
+};
+const contextRoute = {
+  provider: contextModel.provider,
+  model: contextModel.model,
+  effort: 'high',
+  fast: false,
+  modelParameters: {},
+  contextPercent: 30,
+};
+
+async function openProfileContext(fallback) {
+  const trigger = document.querySelectorAll('.model-trigger')[fallback ? 1 : 0];
+  await act(async () => trigger.click());
+  const context = [...document.querySelectorAll('.route-sheet-row[role="menuitem"]')].find((row) =>
+    row.textContent.startsWith('Context')
+  );
+  assert.ok(context);
+  await act(async () => context.click());
+}
+
+for (const fallback of [false, true]) {
+  const label = fallback ? 'fallback' : 'primary';
+  const chain = (route) => (fallback ? { ...WATCHER.route, fallbacks: [route] } : route);
+  const editedRoute = (route) => (fallback ? route.fallbacks[0] : route);
+
+  test(`a ${label} context-only profile edit enables Apply and saves the selected percentage`, async (t) => {
+    const render = harness(t);
+    const id = `context-percent-${label}`;
+    const { api, calls } = fakeApi({ ...WATCHER, id, route: chain(contextRoute) });
+    await render(
+      React.createElement(AgentProfilePane, {
+        sessionId: `sess_home_${id}`,
+        active: true,
+        api,
+        models: [...models, contextModel],
+      })
+    );
+    await settle();
+    assert.equal(document.querySelector('.agent-profile-footer'), null);
+    await openProfileContext(fallback);
+    const slider = document.querySelector('input[type="range"][aria-label="Context"]');
+    assert.ok(slider);
+    await type(slider, '100');
+    await act(async () =>
+      slider.dispatchEvent(new dom.window.KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }))
+    );
+    const apply = document.querySelector('.agent-profile-footer button[type="submit"]');
+    assert.ok(apply, 'the context-only change is dirty');
+    assert.equal(apply.disabled, false);
+    await act(async () => apply.click());
+    await settle();
+    const saved = calls.find(([capability]) => capability === 'saveAgentDefinition');
+    assert.ok(saved);
+    assert.equal(editedRoute(saved[1].route).contextPercent, 100);
+    assert.deepEqual(editedRoute(saved[1].route).modelParameters, {});
+  });
+
+  test(`the profile loads the saved ${label} exact context instead of the catalog default`, async (t) => {
+    const render = harness(t);
+    const id = `context-load-${label}`;
+    const { api } = fakeApi({
+      ...WATCHER,
+      id,
+      route: chain({ ...contextRoute, contextPercent: 80, contextTokens: 750_000 }),
+    });
+    await render(
+      React.createElement(AgentProfilePane, {
+        sessionId: `sess_home_${id}`,
+        active: true,
+        api,
+        models: [...models, contextModel],
+      })
+    );
+    await settle();
+    await openProfileContext(fallback);
+    const slider = document.querySelector('input[type="range"][aria-label="Context"]');
+    assert.equal(Number(slider.value), 75, '750K is 75% of the 1M window');
+    assert.match(document.querySelector('.route-context-head').textContent, /750/);
+    assert.equal(document.querySelector('.agent-profile-footer'), null, 'loading does not dirty the profile');
+  });
+
+  test(`a ${label} exact-token edit is dirty even when its rounded percentage stays the same`, async (t) => {
+    const render = harness(t);
+    const changes = [];
+    await render(
+      React.createElement(AgentProfileForm, {
+        agentId: `context-tokens-${label}`,
+        profile: {
+          ...WATCHER,
+          route: chain({ ...contextRoute, contextPercent: 80, contextTokens: 750_000 }),
+        },
+        models: [...models, contextModel],
+        busy: false,
+        error: '',
+        onSave: (next) => changes.push(next),
+      })
+    );
+    await openProfileContext(fallback);
+    await act(async () => document.querySelector('button[aria-label="Edit context size"]').click());
+    const input = document.querySelector('input[aria-label="Context size"]');
+    await type(input, '790');
+    await act(async () =>
+      input.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    );
+    const apply = document.querySelector('.agent-profile-footer button[type="submit"]');
+    assert.ok(apply, 'the exact-token-only change is dirty');
+    await act(async () => apply.click());
+    assert.equal(changes.length, 1);
+    assert.equal(editedRoute(changes[0].route).contextPercent, 80);
+    assert.equal(editedRoute(changes[0].route).contextTokens, 790_000);
+  });
+}
 
 test('사용할 커넥터 lists every installed connector with an on/off switch that saves at once', async (t) => {
   const render = harness(t);

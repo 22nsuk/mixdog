@@ -358,7 +358,10 @@ export const OrchestrationModeSelect = memo(function OrchestrationModeSelect({
  *  provider's own context-window parameter (Cursor 272K/1M) never travels with
  *  a route: Cursor derives its variant from selectedContextWindow, and a stale
  *  272k parameter alongside a raised window has no valid max-mode variant. */
-function routeModelParameters(parameters: Record<string, string>, maxContextWindow: number): Record<string, string> {
+export function routeModelParameters(
+  parameters: Record<string, string>,
+  maxContextWindow: number
+): Record<string, string> {
   if (!(maxContextWindow > 0)) return parameters;
   return Object.fromEntries(Object.entries(parameters).filter(([id]) => id !== 'context'));
 }

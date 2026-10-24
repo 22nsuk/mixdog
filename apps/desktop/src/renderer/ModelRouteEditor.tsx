@@ -8,7 +8,12 @@ import {
   speedRouteFields,
 } from './model-route-utils';
 import { routedExactContextTokens } from './route-editor-context';
-import { contextSliderPercent, contextTokensForPercent, defaultContextPercent } from './model-controls';
+import {
+  contextSliderPercent,
+  contextTokensForPercent,
+  defaultContextPercent,
+  routeModelParameters,
+} from './model-controls';
 import { modelContextWindow, modelDisplayName, modelFastAvailable, modelMaxContextWindow } from './provider-display';
 import { RouteEditor } from './RouteEditor';
 
@@ -85,7 +90,11 @@ export function ModelRouteEditor({
       ...(nextEffort ? { effort: nextEffort } : {}),
       ...(option.fastCapable ? { fast: nextFast } : {}),
       ...(routeAutoEffortCapable(option) ? { autoEffort: nextAutoEffort } : {}),
-      ...(option.modelParameterOptions?.length ? { modelParameters: nextParameters } : {}),
+      ...(option.modelParameterOptions?.length
+        ? {
+            modelParameters: routeModelParameters(nextParameters, composerParity ? modelMaxContextWindow(option) : 0),
+          }
+        : {}),
       ...(nextContextPercent ? { contextPercent: nextContextPercent } : {}),
       ...(nextContextTokens ? { contextTokens: nextContextTokens } : {}),
     };
