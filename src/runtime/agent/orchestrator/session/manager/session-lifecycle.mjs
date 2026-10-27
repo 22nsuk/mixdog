@@ -44,7 +44,12 @@ import { buildSessionRecord, normalizeDesktopSessionMetadata, sessionOriginField
 import { normalizeWorkflowRoute } from '../../runtime-core/workflow.mjs';
 import { executionFallbacks } from '../../../../shared/model-route-chain.mjs';
 import { ownerRouteFallbacks } from './owner-route-fallbacks.mjs';
-import { applyPendingWorkspaceReroot, refreshSessionBp3Environment } from './prompt-utils.mjs';
+import {
+  applyPendingWorkspaceReroot,
+  refreshSessionBp3Environment,
+  refreshSessionScratchEnvironment,
+} from './prompt-utils.mjs';
+import { rebindToChangedPrefix } from '../thinking-binding.mjs';
 import { isWorktreeBound } from '../../../../shared/worktrees/contract.mjs';
 import { applyAgentToolExposure } from '../loop/tool-exposure-migration.mjs';
 import { prewarmSessionAutoEffort } from './ask-turn-auto-effort.mjs';
@@ -592,6 +597,13 @@ export async function resumeSession(sessionId, preset, options = {}) {
     session.mcpScopeId = String(options.mcpScopeId || '').trim() || null;
   }
   _recoverTurnCheckpointDurably(session, sessionId);
+  if (refreshSessionScratchEnvironment(session)) {
+    session.messages = rebindToChangedPrefix(session.messages);
+    session.providerState = undefined;
+    delete session._providerPrefixGuardState;
+    invalidateContextUsageSnapshot(session);
+    invalidateProviderContextBaseline(session);
+  }
   _refreshResumedTools(session, sessionId, preset);
   refreshSessionProviderCacheOpts(session);
   // The live session already owns the refreshed tools and desktop scope.

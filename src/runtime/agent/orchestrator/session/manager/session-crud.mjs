@@ -14,6 +14,7 @@ import { runSessionCompaction, resolveSessionCompactionPolicy } from './compacti
 import {
   currentContextEstimateTokens,
   invalidateContextUsageSnapshot,
+  invalidateProviderContextBaseline,
   recordContextUsageSnapshot,
   resolveGaugeContextTokens,
 } from '../loop/compact-policy.mjs';
@@ -21,6 +22,7 @@ import {
   hasUserConversationMessage,
   isSummaryAnchorMessage as isCompactSummaryMessage,
   promptContentText,
+  refreshSessionScratchEnvironment,
   resetSessionBp3Environment,
 } from './prompt-utils.mjs';
 import { getProvider } from '../../providers/registry.mjs';
@@ -31,6 +33,7 @@ import { writeStderrBestEffort } from '../../../../shared/best-effort-stderr.mjs
 import { forgetSideQuestion } from '../side-question-store.mjs';
 import { isAgentHomeSessionId } from '../agent-home.mjs';
 import { messageIdOf } from '../message-ids.mjs';
+import { rebindToChangedPrefix } from '../thinking-binding.mjs';
 
 /** Force-flush session metrics to disk. */
 export async function flushSessionMetrics(sessionId) {
@@ -234,6 +237,12 @@ function forkOutgoingTranscript(session, messages, now, archiveAs = '') {
       ...clearedTokenAccounting(now),
     };
     delete fork.liveTurnMessages;
+    if (refreshSessionScratchEnvironment(fork)) {
+      fork.messages = rebindToChangedPrefix(fork.messages);
+      delete fork._providerPrefixGuardState;
+      invalidateContextUsageSnapshot(fork);
+      invalidateProviderContextBaseline(fork);
+    }
     // The archive sidecar belongs to the source id; the fork has none.
     if (fork.compaction?.archive) {
       fork.compaction = { ...fork.compaction };

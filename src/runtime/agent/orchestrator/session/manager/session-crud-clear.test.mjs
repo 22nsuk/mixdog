@@ -1,38 +1,45 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 const root = mkdtempSync(join(tmpdir(), 'mixdog-session-clear-'));
-const previousDataDir = process.env.MIXDOG_DATA_DIR;
 process.env.MIXDOG_DATA_DIR = root;
+process.env.MIXDOG_HOME = root;
+process.env.MIXDOG_AGENT_TRACE_DISABLE = '1';
 mkdirSync(join(root, 'sessions'));
-const { drainSessionStore, saveSessionAsync } = await import('../store.mjs');
+writeFileSync(join(root, 'mixdog-config.json'), JSON.stringify({ agent: { instructionFiles: 'agents' } }));
+delete process.env.MIXDOG_BOOT_INSTRUCTION_FILES;
+const { deleteSession, drainSessionStore, evictLiveSession, loadSession, saveSessionAsync } =
+  await import('../store.mjs');
 const { SUMMARY_PREFIX } = await import('../compact.mjs');
 const { clearSessionMessages } = await import('./session-crud.mjs');
 const { settleSessionSummaryIndex } = await import('../store/listing.mjs');
-
-async function removeDataDir(dir) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (attempt >= 10 || !['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(error?.code)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
-}
+const { createSession, resumeSession } = await import('./session-lifecycle.mjs');
+const { askSession } = await import('./ask-session.mjs');
+const { _withRegisteredProviderForTestAsync } = await import('../../providers/registry.mjs');
+const { modelToolSchemaAllowlist } = await import('../../runtime-core/tool-profile.mjs');
+const { buildShellSpawnEnv } = await import('../../tools/builtin/bash-tool/spawn-env.mjs');
+const { sessionScratchDir } = await import('../../../../shared/session-scratch.mjs');
+const { closeSessionSearch } = await import('../../../../session-search/session-search-ingest.mjs');
+const { settleTurnCheckpointWrites } = await import('./turn-checkpoint.mjs');
+const { applyPendingWorkspaceReroot } = await import('./prompt-utils.mjs');
+const { recordContextUsageSnapshot } = await import('../loop/compact-policy.mjs');
 
 test.after(async () => {
   drainSessionStore();
-  // Summary-index writes queued by the saves land after they resolve and
-  // would recreate the directory (session-summaries.json) behind the rm.
   await settleSessionSummaryIndex();
-  if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
-  else process.env.MIXDOG_DATA_DIR = previousDataDir;
-  await removeDataDir(root);
+});
+
+// Real turns also queue cache/store writes. Keep their data directory pinned
+// until exit, then remove it after the store's own exit drain.
+process.on('exit', () => {
+  try {
+    rmSync(root, { recursive: true, force: true });
+  } catch {
+    /* best-effort */
+  }
 });
 
 const storedSessions = () =>
@@ -163,4 +170,215 @@ test('clear refuses unknown and closed sessions', async () => {
   session.closed = true;
   await saveSessionAsync(session, { expectedGeneration: session.generation });
   assert.equal(await clearSessionMessages(id), false);
+});
+
+async function withScratchSession(t, run) {
+  const cwd = mkdtempSync(join(root, 'project-'));
+  const instructionPath = join(cwd, 'AGENTS.md');
+  writeFileSync(instructionPath, 'Preserve the inherited project rule.\n');
+  const ids = [];
+  t.after(async () => {
+    for (const id of ids) {
+      await closeSessionSearch(id);
+      await settleTurnCheckpointWrites(id);
+      deleteSession(id, { deferSummaryUpdate: true });
+    }
+  });
+  const providerName = 'clear-scratch-test';
+  const sends = [];
+  const provider = {
+    name: providerName,
+    contextWindow: 128000,
+    async send(messages) {
+      sends.push(structuredClone(messages));
+      return { content: 'continued', usage: { inputTokens: 10, outputTokens: 5 } };
+    },
+  };
+  await _withRegisteredProviderForTestAsync(providerName, provider, async () => {
+    const session = createSession({
+      provider: providerName,
+      model: 'fake-model',
+      cwd,
+      skipSkills: true,
+      schemaAllowedTools: modelToolSchemaAllowlist('headless'),
+      workflow: { id: 'headless', delegatesAgents: false },
+    });
+    ids.push(session.id);
+    const sourceScratch = sessionScratchDir(session.id);
+    const historicalText = `The previous output was saved in ${sourceScratch}.`;
+    const thinking = { type: 'thinking', thinking: 'Earlier reasoning.', signature: `Sig${'A'.repeat(600)}` };
+    session.messages.push(
+      { role: 'user', content: historicalText },
+      {
+        role: 'assistant',
+        content: 'Here is the plan.',
+        thinkingBlocks: [thinking],
+        providerReplay: {
+          version: 1,
+          provider: 'anthropic',
+          items: [thinking, { type: 'text', text: 'Here is the plan.' }],
+        },
+      }
+    );
+    session.providerState = { responseId: 'earlier-response' };
+    session.contextPressureBaselineTokens = 77;
+    recordContextUsageSnapshot(session, { triggerTokens: 100000 }, { messages: session.messages, usedTokens: 77 });
+    await saveSessionAsync(session, { expectedGeneration: session.generation });
+    const core = session.bp3CoreContext;
+    assert.ok(core.includes('Preserve the inherited project rule.'));
+    writeFileSync(instructionPath, 'A later disk edit must not replace inherited instructions.\n');
+    await run({ session, sourceScratch, historicalText, core, sends, ids });
+  });
+}
+
+async function resumeAndSend(id, sends) {
+  drainSessionStore();
+  evictLiveSession(id);
+  const resumed = await resumeSession(id, null);
+  assert.ok(resumed);
+  const beforeSend = structuredClone(resumed);
+  await askSession(id, 'Continue the earlier work.', null, null, null, null, {});
+  await saveSessionAsync(resumed, { expectedGeneration: resumed.generation });
+  assert.equal(sends.length, 1, 'the real turn reaches its first provider.send');
+  return { resumed, beforeSend, messages: sends[0] };
+}
+
+function assertScratchIdentity(session, messages, sourceScratch) {
+  const expected = sessionScratchDir(session.id);
+  const system = messages
+    .filter((m) => m.role === 'system')
+    .map((m) => m.content)
+    .join('\n');
+  assert.ok(system.includes(`- Scratch: ${expected} —`), 'first provider.send advertises the resumed session scratch');
+  if (sourceScratch !== expected) {
+    assert.ok(
+      !system.includes(`- Scratch: ${sourceScratch} —`),
+      'the source scratch is not active environment metadata'
+    );
+  }
+  const env = buildShellSpawnEnv(session.cwd, {}, session.id);
+  assert.deepEqual([env.TEMP, env.TMP, env.TMPDIR], [expected, expected, expected]);
+}
+
+for (const mode of ['plain', 'archiveAs']) {
+  test(`${mode} clear persists a new scratch identity through resume and the first provider send`, async (t) => {
+    await withScratchSession(t, async ({ session, sourceScratch, historicalText, core, sends, ids }) => {
+      const before = new Set(storedSessions().map((s) => s.id));
+      const options = mode === 'archiveAs' ? { archiveAs: `sess_scratch_archive_${Date.now()}` } : {};
+      if (mode === 'archiveAs') {
+        const facts = session.bp3EnvironmentContext.split('\n\n---\n\n')[0];
+        const nextCwd = mkdtempSync(join(root, 'archive-project-'));
+        session.workspaceReroot = {
+          version: 1,
+          revision: 2,
+          rootCwd: session.cwd,
+          seen: { cwd: session.cwd, environmentContext: facts },
+          target: { cwd: nextCwd, environmentContext: facts },
+        };
+        session.cwd = nextCwd;
+      }
+      const sourcePending = session.workspaceReroot;
+      const previousPending = structuredClone(sourcePending);
+      await clearSessionMessages(session.id, options);
+      assert.deepEqual(sourcePending, previousPending, 'fork repair does not mutate shared source workspace metadata');
+      drainSessionStore();
+      const archived = storedSessions().find((s) => !before.has(s.id));
+      assert.ok(archived, 'the outgoing transcript is persisted under a new id');
+      ids.push(archived.id);
+      const { beforeSend, messages } = await resumeAndSend(archived.id, sends);
+      t.diagnostic(`${mode}: first provider.send reached after persisted archive reload`);
+      assertScratchIdentity(beforeSend, messages, sourceScratch);
+      assert.ok(archived.bp3EnvironmentContext.includes(`- Scratch: ${sessionScratchDir(archived.id)} —`));
+      assert.equal(archived.messages.find((m) => m.role === 'assistant').thinkingBlocks, undefined);
+      assert.equal(archived.contextUsageSnapshot, undefined);
+      assert.equal(archived.contextPressureBaselineTokens, null);
+      assert.equal(beforeSend.bp3CoreContext, core, 'inherited instructions survive disk changes');
+      assert.ok(messages.some((m) => m.role === 'user' && m.content === historicalText));
+      const previousAnswer = messages.find((m) => m.role === 'assistant' && m.content === 'Here is the plan.');
+      assert.ok(previousAnswer, 'the assistant answer survives the prefix change');
+      assert.equal(previousAnswer.thinkingBlocks, undefined, 'thinking bound to the old prefix is not replayed');
+      assert.deepEqual(previousAnswer.providerReplay?.items, [{ type: 'text', text: 'Here is the plan.' }]);
+      assert.ok(loadSession(session.id).bp3EnvironmentContext.includes(`- Scratch: ${sourceScratch} —`));
+    });
+  });
+}
+
+for (const layout of ['split', 'legacy', 'pending workspace']) {
+  test(`resume repairs a stored ${layout} archive before its first provider send`, async (t) => {
+    await withScratchSession(t, async ({ session, sourceScratch, historicalText, core, sends, ids }) => {
+      // A record written by an older clear copied its parent's generated
+      // environment verbatim. Recreate that persisted input, not a new fork.
+      const archive = structuredClone(session);
+      archive.id = `sess_old_scratch_${layout.replaceAll(' ', '_')}_${Date.now()}`;
+      ids.push(archive.id);
+      if (layout === 'legacy') {
+        const env = archive.messages.find((m) => m.role === 'system' && m.cacheTier === 'env');
+        const coreMessage = archive.messages.find((m) => m.role === 'system' && m.cacheTier === 'tier3');
+        coreMessage.content = `${core}\n\n---\n\n${env.content}`;
+        archive.messages = archive.messages.filter((m) => m !== env);
+        archive.bp3EnvSplit = false;
+      }
+      if (layout === 'pending workspace') {
+        archive.cwd = mkdtempSync(join(root, 'next-project-'));
+        const facts = session.bp3EnvironmentContext.split('\n\n---\n\n')[0];
+        archive.workspaceReroot = {
+          version: 1,
+          revision: 3,
+          rootCwd: session.cwd,
+          seen: { cwd: session.cwd, environmentContext: facts },
+          target: {
+            cwd: archive.cwd,
+            environmentContext: facts.replace(session.cwd, archive.cwd),
+            instructionFilesContext: 'Instructions for the pending project.',
+          },
+        };
+      }
+      const pending = structuredClone(archive.workspaceReroot);
+      await saveSessionAsync(archive, { expectedGeneration: archive.generation });
+      const { beforeSend, messages } = await resumeAndSend(archive.id, sends);
+      assertScratchIdentity(beforeSend, messages, sourceScratch);
+      assert.equal(beforeSend.bp3CoreContext, core);
+      assert.ok(messages.some((m) => m.role === 'user' && m.content === historicalText));
+      assert.equal(beforeSend.messages.find((m) => m.role === 'assistant').thinkingBlocks, undefined);
+      assert.equal(beforeSend.providerState, undefined);
+      assert.equal(beforeSend.contextUsageSnapshot, undefined);
+      assert.equal(beforeSend.contextPressureBaselineTokens, null);
+      assert.ok(
+        storedSessions()
+          .find((s) => s.id === archive.id)
+          .bp3EnvironmentContext.includes(`- Scratch: ${sessionScratchDir(archive.id)} —`)
+      );
+      if (pending) {
+        const repaired = beforeSend.workspaceReroot;
+        assert.equal(repaired.revision, pending.revision);
+        assert.equal(repaired.rootCwd, pending.rootCwd);
+        for (const side of ['seen', 'target']) {
+          assert.deepEqual(repaired[side], {
+            ...pending[side],
+            environmentContext: pending[side].environmentContext.replace(sourceScratch, sessionScratchDir(archive.id)),
+          });
+        }
+        assert.ok(messages.some((m) => String(m.content).includes('# Working Folder Changed')));
+        assert.equal(applyPendingWorkspaceReroot(beforeSend), true);
+        assertScratchIdentity(beforeSend, beforeSend.messages, sourceScratch);
+        assert.ok(beforeSend.bp3CoreContext.includes('Instructions for the pending project.'));
+      }
+    });
+  });
+}
+
+test('resume leaves an already-correct environment and its bound thinking intact', async (t) => {
+  await withScratchSession(t, async ({ session, sourceScratch, core, sends }) => {
+    const previousMessages = structuredClone(session.messages);
+    const previousEnvironment = session.bp3EnvironmentContext;
+    const previousUsage = structuredClone(session.contextUsageSnapshot);
+    const { beforeSend, messages } = await resumeAndSend(session.id, sends);
+    assertScratchIdentity(beforeSend, messages, sourceScratch);
+    assert.equal(beforeSend.bp3CoreContext, core);
+    assert.equal(beforeSend.bp3EnvironmentContext, previousEnvironment);
+    assert.deepEqual(beforeSend.messages, previousMessages, 'healthy resume does not rewrite the prefix or thinking');
+    assert.deepEqual(beforeSend.providerState, { responseId: 'earlier-response' });
+    assert.deepEqual(beforeSend.contextUsageSnapshot, previousUsage);
+    assert.equal(beforeSend.contextPressureBaselineTokens, 77);
+  });
 });

@@ -6,6 +6,7 @@ import { SUMMARY_PREFIX } from '../compact.mjs';
 import { isProtectedContextUserMessage } from '../compact/messages.mjs';
 import { attachmentTextForPart, isAttachmentReference } from '../../../../attachments/store.mjs';
 import { samePath } from '../../../../shared/worktrees/paths.mjs';
+import { sessionScratchDir } from '../../../../shared/session-scratch.mjs';
 
 export function promptContentText(content) {
   if (typeof content === 'string') return content;
@@ -188,6 +189,46 @@ export function refreshSessionBp3Environment(session, requestedCwd) {
   );
   session.sessionStartMetaInjected = true;
   return true;
+}
+
+function replaceScratchDirectory(environment, scratchDir) {
+  if (typeof environment !== 'string') return environment;
+  const parts = environment.split(BP3_PART_SEPARATOR);
+  // Only the generated facts lead this tail; response-language text follows.
+  parts[0] = parts[0].replace(
+    /^(- Scratch: )[^\r\n]*( — this session's scratch directory[^\r\n]*)$/m,
+    (_line, prefix, suffix) => `${prefix}${scratchDir}${suffix}`
+  );
+  return parts.join(BP3_PART_SEPARATOR);
+}
+
+/** Rebind only the generated scratch identity, keeping recorded workspace
+ *  facts and instructions. Returns whether the actual system prefix changed. */
+export function refreshSessionScratchEnvironment(session) {
+  const scratchDir = sessionScratchDir(session?.id);
+  if (!scratchDir) return false;
+  const target = session.bp3EnvSplit === true ? bpEnvSystemMessage(session) : bp3SystemMessage(session);
+  if (session.bp3EnvSplit !== true && (!target || typeof session.bp3CoreContext !== 'string')) return false;
+
+  // A later workspace re-root must not restore the source session's scratch.
+  // Forks share this metadata with their source, so replace changed objects.
+  for (const key of ['seen', 'target']) {
+    const context = session.workspaceReroot?.[key];
+    const environmentContext = replaceScratchDirectory(context?.environmentContext, scratchDir);
+    if (environmentContext !== context?.environmentContext) {
+      session.workspaceReroot = {
+        ...session.workspaceReroot,
+        [key]: { ...context, environmentContext },
+      };
+    }
+  }
+  const environment = replaceScratchDirectory(session.bp3EnvironmentContext, scratchDir);
+  if (environment === session.bp3EnvironmentContext) return false;
+  const previousContent = target?.content;
+  session.bp3EnvironmentContext = environment;
+  refreshSessionBp3Environment(session, session.cwd);
+  const refreshed = session.bp3EnvSplit === true ? bpEnvSystemMessage(session) : bp3SystemMessage(session);
+  return refreshed?.content !== previousContent;
 }
 
 const CORE_MEMORY_HEADING = '# Core Memory\n';
