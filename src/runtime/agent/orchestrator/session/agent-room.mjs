@@ -297,10 +297,13 @@ export async function runRoomExchange({
   superseded = () => false,
   waiting = true,
   only = false,
+  openRequest = to.length === 0,
 }) {
-  // A room whose last member was removed has nobody to hear it: finished, no turns.
-  if (!members.length) return { outcome: 'done', rounds: 0, steps: 0, messages: 0 };
   const targets = [...new Set((Array.isArray(to) ? to : [to]).filter((id) => members.includes(id)))];
+  // Losing the last explicit addressee does not turn the request into one for everyone.
+  if (!members.length || (!openRequest && !targets.length)) {
+    return { outcome: 'done', rounds: 0, steps: 0, messages: 0 };
+  }
   const maxSteps = maxRounds * members.length;
   const turns = [];
   let messages = 0;
@@ -355,7 +358,7 @@ export async function runRoomExchange({
   if (answered) return answered;
   // `only`: the called members answer and nobody else follows (a message
   // from another session, a member relaying its own work).
-  if (only && targets.length) return end('done');
+  if (only || (!openRequest && turns.every((turn) => turn.result === 'unavailable'))) return end('done');
   for (;;) {
     let halt = halted();
     if (halt) return halt;
@@ -386,7 +389,9 @@ export async function runRoomExchange({
     // answered once above; a call to the whole room gives every member one
     // turn, in order. No further rounds, no follow-ups between members.
     if (decision?.action === 'unmanaged') {
-      return (waiting && !targets.length ? await callEach(members) : null) ?? end('done');
+      return (
+        (waiting && openRequest ? await callEach(members.filter((id) => !targets.includes(id))) : null) ?? end('done')
+      );
     }
     if (decision?.scene === 'casual' || decision?.scene === 'work') scene = decision.scene;
     const next = nextSpeaker(decision, { members, targets, turns, mustPick, mention });

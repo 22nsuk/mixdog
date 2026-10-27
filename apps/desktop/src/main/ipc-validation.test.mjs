@@ -563,6 +563,17 @@ test('submit options accept the renderer retryFailedTurn field at the IPC bounda
   assert.throws(() => requiredSubmitOptions({ device: 'studio' }), TypeError);
 });
 
+test('submit options preserve exact room targets and reject empty or malformed selections', () => {
+  const options = { id: 'room-submit', roomTargets: ['rel', 'bench'] };
+  assert.deepEqual(requiredSubmitOptions(options), options);
+  for (const roomTargets of [
+    [], ['rel', 'rel'], [''], ['not a bot id'], [123], 'rel', null,
+    ['a', 'b', 'c', 'd', 'e', 'f', 'g'],
+  ]) {
+    assert.throws(() => requiredSubmitOptions({ roomTargets }), /submit roomTargets is invalid/);
+  }
+});
+
 test('a model route selection carries contextTokens only as a positive integer', () => {
   const base = { provider: 'openai', model: 'gpt-test', contextPercent: 70 };
   assert.deepEqual(requiredModelSelection({ ...base, contextTokens: 640000 }), { ...base, contextTokens: 640000 });

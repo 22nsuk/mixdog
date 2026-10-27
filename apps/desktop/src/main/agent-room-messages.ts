@@ -69,7 +69,7 @@ export function createRoomMessages(host: RoomMessagesHost) {
     sessionId: string,
     prompt: DesktopPromptContent,
     submissionId = '',
-    pasted: Pick<DesktopSubmitOptions, 'pastedImages' | 'pastedTexts'> = {}
+    pasted: Pick<DesktopSubmitOptions, 'pastedImages' | 'pastedTexts' | 'roomTargets'> = {}
   ): Promise<boolean> =>
     scheduler.intake(roomIdOfSession(sessionId), (request) =>
       acceptSend(request, sessionId, prompt, submissionId, pasted)
@@ -80,7 +80,7 @@ export function createRoomMessages(host: RoomMessagesHost) {
     sessionId: string,
     prompt: DesktopPromptContent,
     submissionId: string,
-    pasted: Pick<DesktopSubmitOptions, 'pastedImages' | 'pastedTexts'>
+    pasted: Pick<DesktopSubmitOptions, 'pastedImages' | 'pastedTexts' | 'roomTargets'>
   ): Promise<boolean> {
     await ready();
     const roomId = roomIdOfSession(sessionId);
@@ -92,7 +92,16 @@ export function createRoomMessages(host: RoomMessagesHost) {
     // Names resolve against every member first, so a switched-off "Bench lead"
     // is never mistaken for "Bench"; a switched-off target is then refused.
     const parsed = parseRoomAsk(promptText(prompt), [...labels.values()]);
-    if (parsed.error === 'member') throw new Error('No member of this room has that name.');
+    const selected = pasted.roomTargets;
+    if (
+      parsed.error === 'member' ||
+      (selected &&
+        (!selected.length ||
+          selected.length !== parsed.to.length ||
+          selected.some((id, index) => id !== parsed.to[index])))
+    ) {
+      throw new Error('No member of this room has that name.');
+    }
     const off = parsed.to.find((id) => labels.get(id)?.disabled);
     if (off) throw roomMemberSwitchedOffError(labels.get(off)?.name ?? off);
     // The files go up with the row: the log's intake stores them as a chat

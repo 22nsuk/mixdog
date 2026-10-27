@@ -850,6 +850,45 @@ test('/ask gives only the addressed member a turn', async () => {
   assert.equal(h.log[0].text, 'only you');
 });
 
+test('a selected room recipient cannot be replaced by a name match after leaving the room', async () => {
+  const agents = AGENTS.map((agent) => ({ ...agent }));
+  const h = harness({ agents, decide: () => ({ action: 'unmanaged' }) });
+  const { sessionId, roomId } = await room(h);
+  await h.rooms.update(roomId, { members: ['gh', 'bench'] });
+  agents[0].label = 'rel';
+  await assert.rejects(
+    h.rooms.send(sessionId, '/ask rel status?', 'sub_selected', { roomTargets: ['rel'] }),
+    /No member of this room has that name/
+  );
+  await h.idle(roomId);
+  assert.deepEqual(h.log, []);
+  assert.deepEqual(h.prompts, []);
+  assert.equal(h.saved.doc.rooms[roomId].submissions?.includes('sub_selected') ?? false, false);
+  await h.rooms.send(sessionId, '/ask rel status?', 'sub_manual');
+  await h.idle(roomId);
+  assert.deepEqual(h.prompts.map((prompt) => prompt.agentId), ['gh'], 'a manual /ask still accepts display names');
+  assert.deepEqual(h.log[0].to, ['gh']);
+});
+
+test('selected room recipients must match the /ask targets, including their order', async () => {
+  const h = harness({ decide: () => ({ action: 'unmanaged' }) });
+  const { sessionId, roomId } = await room(h);
+  for (const [prompt, roomTargets] of [
+    ['/ask rel, bench status?', ['bench', 'rel']],
+    ['/ask rel, bench status?', ['rel']],
+    ['status?', ['rel']],
+    ['/ask rel status?', []],
+  ]) {
+    await assert.rejects(h.rooms.send(sessionId, prompt, '', { roomTargets }), /No member of this room has that name/);
+  }
+  assert.deepEqual(h.log, []);
+  assert.deepEqual(h.prompts, []);
+  await h.rooms.send(sessionId, '/ask rel, bench status?', 'sub_selected', { roomTargets: ['rel', 'bench'] });
+  await h.idle(roomId);
+  assert.deepEqual(h.prompts.map((prompt) => prompt.agentId), ['rel', 'bench']);
+  assert.deepEqual(h.log[0].to, ['rel', 'bench']);
+});
+
 test('/ask with several members: they answer once each, in the order named; then the supervisor decides', async () => {
   const h = harness({
     script: (agentId) => (agentId === 'bench' ? '@gh your view?' : 'mine'),
@@ -1742,6 +1781,135 @@ const latch = () => {
   });
   return { closed, open };
 };
+
+for (const kind of ['send', 'ask']) {
+  test(`a ${kind} request whose explicit recipient switches off during intake never calls another member`, async (t) => {
+    const append = latch();
+    t.after(() => append.open());
+    let posting = false;
+    const agents = AGENTS.map((agent) => ({ ...agent }));
+    const h = harness({
+      agents,
+      decide: () => ({ action: 'unmanaged' }),
+      appendGate: async (_id, rows) => {
+        if (!rows.some((row) => row.kind === 'user' && row.text === 'pending')) return;
+        posting = true;
+        await append.closed;
+      },
+    });
+    const { sessionId, roomId } = await room(h);
+    const ends = [];
+    const pending =
+      kind === 'send'
+        ? h.rooms.send(sessionId, '/ask Release pending', 'sub_target')
+        : h.rooms.ask(sessionId, {
+            agentId: 'rel',
+            prompt: 'pending',
+            from: { sessionId: 'sess_lead_1' },
+            id: 'atask_target',
+            onSettled: (detail) => ends.push(detail),
+          });
+    await until(() => posting);
+    assert.equal(posting, true, 'intake reached the row append after resolving its recipient');
+    agents[1].disabled = true;
+    append.open();
+    assert.equal(await pending, true, 'the stored request is acknowledged');
+    await h.idle(roomId);
+    assert.deepEqual(h.prompts, [], 'an unavailable recipient does not become a whole-room request');
+    assert.equal(h.rooms.isRunning(roomId), false);
+    assert.deepEqual(h.log.map((row) => [row.kind, row.text, row.to]), [['user', 'pending', ['rel']]]);
+    if (kind === 'send') {
+      assert.ok(h.saved.doc.rooms[roomId].submissions.includes('sub_target'));
+      assert.equal(await h.rooms.send(sessionId, '/ask Release pending', 'sub_target'), true);
+      assert.equal(h.log.length, 1, 'a retry keeps the accepted row and target');
+      assert.deepEqual(h.prompts, []);
+    } else assert.deepEqual(ends, [{ status: 'cancelled' }], 'the unanswered caller settles once');
+  });
+}
+
+test('an explicit /ask recipient switched off while its turn is prepared never falls back to another member', async () => {
+  const agents = AGENTS.map((agent) => ({ ...agent }));
+  const h = harness({
+    agents,
+    createGate: (sessionId) => {
+      if (sessionId.endsWith('_rel')) agents[1].disabled = true;
+    },
+  });
+  const { sessionId, roomId } = await room(h);
+  await h.rooms.send(sessionId, '/ask Release only you');
+  await h.idle(roomId);
+  assert.ok(h.createStarted.includes(roomMemberSessionId(roomId, 'rel')));
+  assert.deepEqual(h.prompts, [], 'unavailability is not a model passing its turn to the supervisor');
+  assert.deepEqual(h.log.map((row) => [row.kind, row.to]), [['user', ['rel']]]);
+  assert.deepEqual(h.saved.doc.rooms[roomId].members, ['gh', 'rel', 'bench']);
+  assert.equal(h.rooms.isRunning(roomId), false);
+});
+
+test('removing the last queued explicit recipient cancels its call without asking the remaining room', async (t) => {
+  const gate = gated(['gh']);
+  t.after(() => gate.release());
+  const h = harness({ script: gate.script, decide: () => ({ action: 'unmanaged' }) });
+  const { sessionId, roomId } = await room(h);
+  await h.rooms.send(sessionId, '/ask GitHub first');
+  await until(() => h.prompts.length === 1);
+  assert.equal(h.prompts.length, 1);
+  const ends = [];
+  await h.rooms.ask(sessionId, {
+    agentId: 'rel',
+    prompt: 'pending',
+    from: { sessionId: 'sess_lead_1' },
+    id: 'atask_target',
+    onSettled: (detail) => ends.push(detail),
+  });
+  await h.rooms.update(roomId, { members: ['gh', 'bench'] });
+  assert.deepEqual(ends, [{ status: 'cancelled' }]);
+  gate.release();
+  await h.idle(roomId);
+  assert.deepEqual(h.prompts.map((prompt) => prompt.agentId), ['gh']);
+  assert.deepEqual(ends, [{ status: 'cancelled' }], 'settled once after the exchange drains too');
+  assert.equal(h.rooms.isRunning(roomId), false);
+  assert.deepEqual(h.log.find((row) => row.text === 'pending').to, ['rel']);
+});
+
+for (const order of ['whole-first', 'target-first', 'handoff']) {
+  test(`a whole-room request survives an unavailable explicit recipient (${order})`, async (t) => {
+    const agents = AGENTS.map((agent) => ({ ...agent }));
+    const gate = gated(['gh', 'rel']);
+    t.after(() => gate.release());
+    const h = harness({ agents, script: gate.script, decide: () => ({ action: 'unmanaged' }) });
+    const { sessionId, roomId } = await room(h);
+    const ends = [];
+    const ask = () =>
+      h.rooms.ask(sessionId, {
+        agentId: 'rel',
+        prompt: 'Release status?',
+        from: { sessionId: 'sess_lead_1' },
+        id: 'atask_target',
+        onSettled: (detail) => ends.push(detail),
+      });
+    const whole = () => h.rooms.send(sessionId, 'Everyone, status?', 'sub_whole');
+    if (order === 'handoff') await ask();
+    else await h.rooms.send(sessionId, '/ask GitHub first');
+    await until(() => h.prompts.length === 1);
+    assert.equal(h.prompts.length, 1);
+    if (order === 'whole-first') {
+      await whole();
+      await ask();
+    } else {
+      if (order === 'target-first') await ask();
+      await whole();
+    }
+    agents[1].disabled = true;
+    gate.release();
+    await h.idle(roomId);
+    assert.deepEqual(h.prompts.slice(1).map((prompt) => prompt.agentId), ['gh', 'bench']);
+    for (const prompt of h.prompts.slice(1)) assert.match(prompt.prompt, /Everyone, status\?/);
+    assert.deepEqual(ends, [{ status: 'cancelled' }]);
+    assert.equal(h.rooms.isRunning(roomId), false);
+    assert.deepEqual(h.log.find((row) => row.text === 'Release status?').to, ['rel']);
+    assert.equal(h.log.find((row) => row.text === 'Everyone, status?').to, undefined);
+  });
+}
 
 test("an approval the room shows reaches the speaking member's session only under its own id", async () => {
   let approved = false;

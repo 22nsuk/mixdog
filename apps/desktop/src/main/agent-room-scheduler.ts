@@ -173,8 +173,9 @@ export function createRoomScheduler(host: RoomSchedulerHost) {
    *  answer would respond to older rows. Each call settles once. */
   function route(roomId: string, options: Required<Pick<RoomExchangeOptions, 'to' | 'waiting'>> & RoomExchangeOptions) {
     const calls = (options.calls ?? []).map(settlesOnce);
+    const openRequest = options.openRequest ?? options.to.length === 0;
     const active = running.get(roomId);
-    if (!active) return start(roomId, { ...options, calls });
+    if (!active) return start(roomId, { ...options, openRequest, calls });
     // A stopping exchange hands nothing on: calls that arrive now end cancelled.
     if (active.stop) {
       for (const call of calls) call.onSettled?.({ status: 'cancelled' });
@@ -183,6 +184,7 @@ export function createRoomScheduler(host: RoomSchedulerHost) {
     const prior = active.pending;
     active.pending = {
       to: [...new Set([...(prior?.to ?? []), ...options.to])],
+      openRequest: prior?.openRequest === true || openRequest,
       waiting: prior?.waiting === true || options.waiting,
       only: (prior ? prior.only === true : true) && options.only === true,
       calls: [...(prior?.calls ?? []), ...calls],

@@ -67,6 +67,8 @@ import {
   type DesktopPetTheme,
 } from '../shared/desktop-pet';
 import { HEARTBEAT_INTERVAL_CHOICES } from '../../../../src/runtime/shared/heartbeat-interval.mjs';
+import { ROOM_MAX_MEMBERS } from '../../../../src/runtime/agent/orchestrator/session/agent-room.mjs';
+import { agentHomeSessionId } from '../../../../src/runtime/agent/orchestrator/session/agent-home.mjs';
 import { requiredSessionId, requiredSessionIds } from './desktop-state';
 import { hasControlCharacter } from './ipc-control-chars';
 import { isWorktreeCapability, validateWorktreeCapabilityArgs, WORKTREE_CAPABILITY_ARITY } from './worktree-validation';
@@ -334,6 +336,7 @@ const SUBMIT_OPTION_KEYS = new Set([
   'priority',
   'pastedImages',
   'pastedTexts',
+  'roomTargets',
   'kickoff',
 ]);
 const ABORT_OPTION_KEYS = new Set(['restorePrompt', 'submissionId']);
@@ -1118,6 +1121,16 @@ export function requiredSubmitOptions(value: unknown): DesktopSubmitOptions {
   }
   if (input.kickoff !== undefined && typeof input.kickoff !== 'boolean') {
     throw new TypeError('submit kickoff is invalid.');
+  }
+  if (
+    input.roomTargets !== undefined &&
+    (!Array.isArray(input.roomTargets) ||
+      input.roomTargets.length === 0 ||
+      input.roomTargets.length > ROOM_MAX_MEMBERS ||
+      input.roomTargets.some((id) => typeof id !== 'string' || !agentHomeSessionId(id)) ||
+      new Set(input.roomTargets).size !== input.roomTargets.length)
+  ) {
+    throw new TypeError('submit roomTargets is invalid.');
   }
   const priority = input.priority;
   if (priority !== undefined && priority !== 'now' && priority !== 'next' && priority !== 'later') {

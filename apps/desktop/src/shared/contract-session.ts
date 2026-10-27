@@ -533,6 +533,8 @@ export interface DesktopSubmitOptions {
   priority?: DesktopPromptPriority;
   pastedImages?: Record<string, DesktopPromptAttachment>;
   pastedTexts?: Record<string, DesktopPastedText>;
+  /** Exact member ids picked in a group-room composer, matching its /ask prefix. */
+  roomTargets?: string[];
   /** A runtime kickoff (a new agent's greeting turn): the model reads it, the
    *  transcript and the queue never show it as the user speaking. */
   kickoff?: boolean;

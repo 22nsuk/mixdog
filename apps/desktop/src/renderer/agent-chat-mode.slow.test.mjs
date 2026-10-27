@@ -33,6 +33,9 @@ const { useConversationRowRenderer } = await import('./use-conversation-row-rend
 const { transcriptRowVariant } = await import('./transcript-list-estimates.ts');
 const { transcriptRowNode } = await import('./conversation-support.tsx');
 const { publishAgentRooms } = await import('./agent-room-store.ts');
+const { resetSidebarReferenceCache, updateSidebarReference } = await import('./sidebar-reference-cache.ts');
+const { stashComposerAttachments } = await import('./composer-draft.ts');
+const { DESKTOP_TOAST_EVENT } = await import('./desktop-toasts.tsx');
 const { publishSessionGlances } = await import('./session-glance-store.ts');
 const { publishCatalogApprovalSessions } = await import('./session-catalog-approvals.ts');
 const { Composer } = await import('./Composer.tsx');
@@ -1036,6 +1039,174 @@ test('a room composer’s @ offers Everyone: it addresses each current member on
   await type('now');
   await key('Enter');
   assert.equal(textOf(calls.at(-1)), '/ask bench now', 'a member who left is not addressed');
+});
+
+for (const unavailable of ['removed', 'switched off']) {
+  test(`a room composer keeps a ${unavailable} recipient and its rejected draft for retry`, async (t) => {
+    let members = ['bench', 'release'];
+    const memberNames = { bench: unavailable === 'removed' ? 'release' : 'Bench', release: 'Release' };
+    const publish = (next) => {
+      members = next;
+      publishAgentRooms([
+        {
+          id: ROOM,
+          agentRoom: {
+            id: 'release01',
+            name: 'Release room',
+            members,
+            memberNames,
+            maxRounds: 1,
+            maxMessages: 6,
+            shareTools: false,
+          },
+        },
+      ]);
+    };
+    resetSidebarReferenceCache();
+    publish(['bench', 'release']);
+    const scope = `room-recipient-${unavailable}`;
+    const image = {
+      id: 1,
+      kind: 'image',
+      name: 'review.png',
+      mimeType: 'image/png',
+      data: 'AAAA',
+      token: '[Image #1]',
+      chipOnly: true,
+    };
+    stashComposerAttachments(scope, [image]);
+    const attempts = [];
+    const notices = [];
+    const onNotice = (event) => notices.push(event.detail.text);
+    window.addEventListener(DESKTOP_TOAST_EVENT, onNotice);
+    let disabled = false;
+    const { host, input, type, key, render } = await mountComposer(t);
+    t.after(() => {
+      publishAgentRooms([]);
+      resetSidebarReferenceCache();
+      window.removeEventListener(DESKTOP_TOAST_EVENT, onNotice);
+    });
+    await render(
+      composerProps([], {
+        agentMode: true,
+        identityScope: scope,
+        recoveryScope: scope,
+        historyScope: scope,
+        submit: async (content, options) => {
+          attempts.push({ content, options });
+          if (options.roomTargets?.some((id) => !members.includes(id) || (id === 'release' && disabled))) {
+            throw new Error(`Release is ${unavailable}.`);
+          }
+          return true;
+        },
+      })
+    );
+    await type('@rel');
+    await act(async () =>
+      [...document.querySelectorAll('#composer-room-ask-palette [role="option"]')]
+        .find((option) => option.textContent === 'Release')
+        .click()
+    );
+    assert.equal(host.querySelector('.mx-chat-tag')?.textContent, '@Release');
+    await type('review');
+    await act(async () => {
+      if (unavailable === 'removed') publish(['bench']);
+      else {
+        disabled = true;
+        updateSidebarReference('agents', [{ id: 'release', kind: 'bot', custom: true, disabled: true }]);
+      }
+    });
+    await key('Enter');
+    assert.deepEqual(attempts[0].options.roomTargets, ['release'], 'the selected id is never reinterpreted as a name');
+    assert.equal(textOf(attempts[0].content), '/ask release review\n[Image #1]');
+    assert.equal(input().value, 'review', 'the refused draft returns');
+    assert.ok(host.querySelector('.composer-attachments'), 'the refused image returns');
+    assert.ok(host.querySelector('.mx-chat-tag'), 'the recipient remains removable');
+    assert.ok(notices.includes(`Release is ${unavailable}.`));
+
+    if (unavailable === 'removed') {
+      await act(async () => host.querySelector('.mx-chat-tag').click());
+      await key('Enter');
+      assert.equal(textOf(attempts[1].content), 'review\n[Image #1]', 'only removing the tag permits a room-wide send');
+      assert.equal(attempts[1].options.roomTargets, undefined);
+    } else {
+      disabled = false;
+      await act(async () =>
+        updateSidebarReference('agents', [{ id: 'release', kind: 'bot', custom: true, disabled: false }])
+      );
+      await key('Enter');
+      assert.equal(textOf(attempts[1].content), '/ask release review\n[Image #1]', 'retry keeps the original target');
+      assert.deepEqual(attempts[1].options.roomTargets, ['release']);
+    }
+    assert.equal(attempts[1].content.find((part) => part.type === 'image')?.data, image.data);
+    assert.equal(host.querySelector('.mx-chat-tag'), null);
+    assert.equal(input().value, '');
+  });
+}
+
+test('Everyone with no active room members keeps the draft and tag until someone can answer', async (t) => {
+  resetSidebarReferenceCache();
+  publishAgentRooms([
+    {
+      id: ROOM,
+      agentRoom: {
+        id: 'release01',
+        name: 'Release room',
+        members: ['bench', 'release'],
+        memberNames: { bench: 'Bench', release: 'Release' },
+        maxRounds: 1,
+        maxMessages: 6,
+        shareTools: false,
+      },
+    },
+  ]);
+  const calls = [];
+  const targets = [];
+  const notices = [];
+  const onNotice = (event) => notices.push(event.detail.text);
+  window.addEventListener(DESKTOP_TOAST_EVENT, onNotice);
+  const { host, input, type, key, render } = await mountComposer(t);
+  t.after(() => {
+    publishAgentRooms([]);
+    resetSidebarReferenceCache();
+    window.removeEventListener(DESKTOP_TOAST_EVENT, onNotice);
+  });
+  await render(
+    composerProps(calls, {
+      agentMode: true,
+      identityScope: 'room-everyone-unavailable',
+      recoveryScope: 'room-everyone-unavailable',
+      submit: async (content, options) => {
+        calls.push(content);
+        targets.push(options.roomTargets);
+        return true;
+      },
+    })
+  );
+  await type('@all');
+  await key('Enter');
+  await type('bench review this');
+  await act(async () =>
+    updateSidebarReference('agents', [
+      { id: 'bench', kind: 'bot', custom: true, disabled: true },
+      { id: 'release', kind: 'bot', custom: true, disabled: true },
+    ])
+  );
+  await key('Enter');
+  assert.deepEqual(calls, [], 'an empty Everyone selection never sends or reparses the body as a recipient');
+  assert.equal(input().value, 'bench review this');
+  assert.equal(host.querySelector('.mx-chat-tag')?.textContent, '@Everyone');
+  assert.ok(notices.includes('No bots.'));
+  await act(async () =>
+    updateSidebarReference('agents', [
+      { id: 'bench', kind: 'bot', custom: true, disabled: false },
+      { id: 'release', kind: 'bot', custom: true, disabled: true },
+    ])
+  );
+  await key('Enter');
+  assert.deepEqual(calls.map(textOf), ['/ask bench bench review this']);
+  assert.deepEqual(targets, [['bench']]);
+  assert.equal(input().value, '');
 });
 
 test('a room composer’s @all inside a Markdown code fence is text: no picker opens and Enter tags nobody', async (t) => {

@@ -651,10 +651,9 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   };
   const submitTagged: typeof submit = taggedMembers.length
     ? async (content, options) => {
-        const accepted = await submit(
-          contentAsking(content, roomTagTargets(taggedMembers, roomMembers ?? [])),
-          options
-        );
+        const targets = roomTagTargets(taggedMembers, roomMembers ?? []);
+        if (!targets.length) throw new Error(t('No bots.'));
+        const accepted = await submit(contentAsking(content, targets), { ...options, roomTargets: targets });
         if (accepted === true) setTagged([]);
         return accepted;
       }

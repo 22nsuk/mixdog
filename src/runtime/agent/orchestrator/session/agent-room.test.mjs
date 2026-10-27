@@ -119,6 +119,65 @@ test('a room with no members finishes done with zero rounds, steps and messages'
   assert.deepEqual(run.spoken, []);
 });
 
+test('unavailable explicit recipients never become a request to the whole room', async () => {
+  for (const options of [{ to: ['gone'] }, { to: 'gone', only: true }, { to: [], openRequest: false }]) {
+    const run = scripted(
+      () => 'speech',
+      () => ({ action: 'unmanaged' })
+    );
+    const result = await runRoomExchange({ members: ['a', 'b'], maxRounds: 3, maxMessages: 8, ...options, ...run });
+    assert.deepEqual(run.spoken, []);
+    assert.deepEqual(run.steps, [], 'the supervisor is not asked to replace the recipient');
+    assert.deepEqual(result, { outcome: 'done', rounds: 0, steps: 0, messages: 0 });
+  }
+});
+
+test('an unavailable addressee ends its request, while a genuine pass keeps the normal follow-up', async () => {
+  for (const answer of ['unavailable', 'pass']) {
+    const run = scripted(
+      (id) => (id === 'b' ? answer : 'speech'),
+      () => FINISH
+    );
+    const result = await runRoomExchange({ members: ['a', 'b'], to: ['b'], maxRounds: 3, maxMessages: 8, ...run });
+    assert.deepEqual(run.spoken, answer === 'unavailable' ? ['b'] : ['b', 'a']);
+    assert.equal(result.outcome, 'done');
+    assert.equal(result.messages, answer === 'unavailable' ? 0 : 1);
+  }
+});
+
+test('an explicit list still gives its available members their turns, in order, without replacements', async () => {
+  const run = scripted(
+    () => 'speech',
+    () => ({ action: 'unmanaged' })
+  );
+  await runRoomExchange({
+    members: ['a', 'b', 'c'],
+    to: ['gone', 'c', 'b', 'c'],
+    only: true,
+    maxRounds: 3,
+    maxMessages: 8,
+    ...run,
+  });
+  assert.deepEqual(run.spoken, ['c', 'b']);
+  assert.deepEqual(run.steps, []);
+});
+
+test('a merged whole-room request still reaches the other members once when an explicit recipient remains', async () => {
+  const run = scripted(
+    () => 'speech',
+    () => ({ action: 'unmanaged' })
+  );
+  await runRoomExchange({
+    members: ['a', 'b', 'c'],
+    to: ['b'],
+    openRequest: true,
+    maxRounds: 3,
+    maxMessages: 8,
+    ...run,
+  });
+  assert.deepEqual(run.spoken, ['b', 'a', 'c']);
+});
+
 test('the supervisor picks each speaker, may brief it, and finishes once the user is served', async () => {
   const run = scripted(
     () => 'speech',

@@ -65,7 +65,8 @@ export interface RoomMemberLabel {
   id: string;
   name: string;
 }
-export type RoomTurnResult = 'speech' | 'pass' | 'stopped' | 'superseded';
+/** `unavailable`: removed or switched off, rather than a member choosing to pass. */
+export type RoomTurnResult = 'speech' | 'pass' | 'unavailable' | 'stopped' | 'superseded';
 /** A turn's answer; a speech may name the one peer it addressed. */
 export type RoomTurnAnswer = RoomTurnResult | { result: RoomTurnResult; mention?: string };
 export interface RoomExchangeResult {
@@ -126,6 +127,8 @@ export interface RoomStep {
 export function runRoomExchange(options: {
   members: readonly string[];
   to?: readonly string[] | string;
+  /** An independent whole-room request, preserved when explicit targets are merged or removed. */
+  openRequest?: boolean;
   maxRounds: number;
   maxMessages: number;
   speak(agentId: string, turn: RoomTurn): Promise<RoomTurnAnswer>;

@@ -70,6 +70,8 @@ export interface RoomCall {
  *  turns other sessions wait on. */
 export interface RoomExchangeOptions {
   to?: string[];
+  /** An independent whole-room request, even if other requests named members. */
+  openRequest?: boolean;
   waiting?: boolean;
   only?: boolean;
   calls?: RoomCall[];
@@ -173,7 +175,7 @@ export async function speakInRoom(
     for (const call of calls) call.onSettled?.(detail);
   };
   const call = calls.length ? combinedCall(host, agentId, calls) : undefined;
-  const outcome = { text: '', failed: false, submitted: false, removed: false };
+  const outcome = { text: '', failed: false, submitted: false };
   let answer: RoomTurnAnswer;
   try {
     answer = await memberTurn(host, state, labels, agentId, turn, call, outcome);
@@ -184,7 +186,7 @@ export async function speakInRoom(
   const result = typeof answer === 'string' ? answer : answer.result;
   if (result === 'superseded') {
     if (outcome.submitted) for (const each of calls) if (each.id === call?.id) each.used = true;
-  } else if (result === 'stopped' || outcome.removed) settle({ status: 'cancelled' });
+  } else if (result === 'stopped' || result === 'unavailable') settle({ status: 'cancelled' });
   else if (outcome.failed) settle({ status: 'failed', error: 'The member could not reply in the room.' });
   else settle({ status: 'done', result: { content: outcome.text } });
   return answer;
@@ -226,7 +228,7 @@ async function memberTurn(
   agentId: string,
   { addressed, instruction, mentionedBy, scene }: RoomTurn,
   call: RoomCall | undefined,
-  outcome: { text: string; failed: boolean; submitted: boolean; removed: boolean }
+  outcome: { text: string; failed: boolean; submitted: boolean }
 ): Promise<RoomTurnAnswer> {
   const { now, newId } = host;
   const room = host.room();
@@ -236,19 +238,17 @@ async function memberTurn(
   // cancelled (speakInRoom).
   let sessionId = '';
   const gone = () => !room.members.includes(agentId);
-  const left = async (): Promise<'pass'> => {
-    outcome.removed = true;
+  const left = async (): Promise<'unavailable'> => {
     delete room.cursors[agentId];
     if (room.seen) delete room.seen[agentId];
     if (sessionId) await host.abort(sessionId).catch(() => undefined);
-    return 'pass';
+    return 'unavailable';
   };
   if (gone()) return await left();
   // A bot switched off since the exchange began stays a member (cursors,
   // session, history) but takes no turn; the calls waiting on it end cancelled.
   if (await host.switchedOff(agentId)) {
-    outcome.removed = true;
-    return 'pass';
+    return 'unavailable';
   }
   // Whether the user's newest message still has no answer in the room.
   const waiting = state.waiting;
@@ -334,8 +334,7 @@ async function memberTurn(
     if (await host.switchedOff(agentId)) {
       if (cursorBefore === undefined) delete room.cursors[agentId];
       else room.cursors[agentId] = cursorBefore;
-      outcome.removed = true;
-      return 'pass';
+      return 'unavailable';
     }
     // Stop, removal or a newer message may have landed during that read.
     // Nothing may yield between this check and the submit below.

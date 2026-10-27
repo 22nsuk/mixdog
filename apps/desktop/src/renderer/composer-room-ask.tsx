@@ -116,17 +116,16 @@ export function roomTagCandidates(query: string, members: readonly RoomMemberLab
     : found;
 }
 
-/** The tags (member ids, or Everyone) that still name something in the room, in tag order. */
+/** Keep picked ids even when a member becomes unavailable: they remain
+ *  removable and must not turn into a whole-room message. */
 export function roomTaggedMembers(
   tagged: readonly string[],
   members: readonly RoomMemberLabel[] | null
 ): RoomMemberLabel[] {
-  return tagged.flatMap((id) =>
+  return tagged.map((id) =>
     id === ROOM_EVERYONE
-      ? members?.length
-        ? [everyoneLabel()]
-        : []
-      : (members ?? []).filter((member) => member.id === id)
+      ? everyoneLabel()
+      : (members?.find((member) => member.id === id) ?? { id, name: id, avatar: agentAvatar(id, null) })
   );
 }
 
