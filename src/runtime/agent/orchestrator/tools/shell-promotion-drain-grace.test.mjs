@@ -11,6 +11,7 @@ import { processTable, scriptedChildTree } from './lib/process-table-fixture.mjs
 let child = null;
 mock.module('./lib/shell-run-spawn.mjs', {
   namedExports: {
+    cleanupFailedShellChild: async () => {},
     spawnShellChild: async ({ run }) => {
       child = Object.assign(new EventEmitter(), {
         pid: 4801,

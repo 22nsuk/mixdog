@@ -25,6 +25,7 @@ mock.module('./lib/shell-descendants.mjs', {
     killAfterSnapshot: () => assert.fail('No kill was issued'),
     withinBound: (promise) => promise,
     PROCESS_TABLE_READ_BOUND_MS: 2_000,
+    TERMINATION_RECHECK_MS: 5_000,
   },
 });
 const watches = [];
@@ -61,7 +62,15 @@ test('failed descendant observation reports failure and retains a releasable wor
   assert.match(result.failureReason, /could not be verified/);
   assert.equal(watches.length, 1, 'the held admission joins the termination watch');
   assert.equal(watches[0].tracker.exitAccepted, true, 'the root exited on its own');
+  let settled = false;
+  void result.settled.then(() => { settled = true; });
   assert.deepEqual(await forceReleaseTerminationHold('job_unknown_children'), { released: true });
   assert.equal(released, 1);
-  assert.equal(watches[0].stopped, true);
+  assert.notEqual(watches[0].stopped, true, 'workspace release keeps the unknown tree under observation');
+  assert.equal(settled, false, 'workspace release does not prove termination');
+  await watches[0].onTerminated();
+  await result.settled;
+  assert.equal(settled, true);
+  assert.equal(released, 1, 'actual termination does not release admission twice');
+  run.stopTerminationWatch();
 });

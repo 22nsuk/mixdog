@@ -26,10 +26,16 @@ export function registerForegroundOwnedTree(run, ownerSessionId) {
   run.ownedTree = {
     ownerSessionId,
     prepareKill: () => {
-      if (run.settled || run.autoBackgrounded || !run.child?.pid) return true;
-      run.killed = true;
+      // autoBackgrounded claims a transition before registration commits.
+      // While this entry still owns the job, cancellation belongs to it.
+      if (!run.child?.pid) return true;
       run.ownerCancelled = true;
       run.killCause = run.killCause || 'session-close';
+      // The root can finish before its descendants. Its existing observer
+      // now sweeps those identities; a post-exit snapshot must not replace
+      // the evidence of how the root originally exited.
+      if (run.settled || run.child.exitCode != null || run.child.signalCode != null) return true;
+      run.killed = true;
       // Always a fresh read: an earlier one predates what the run started
       // since. Pending, the kill is sent at the snapshot bound regardless.
       return capturePreKill(run);
@@ -126,6 +132,7 @@ export function createShellRun({ abortSignal, resolve, jobId = null }) {
     // observation loop that holds the workspace until they are gone.
     terminationTracker: null,
     stopTerminationWatch: null,
+    workspaceReleased: false,
     // Settles when that loop ends (lib/shell-run-settle.mjs treeSettled).
     treeSettled: null,
     resolveTreeSettled: null,
@@ -194,21 +201,21 @@ export function clearForegroundRecord(run) {
 export const elapsedSinceStart = (run) => Math.max(0, Date.now() - (run.commandStartedAtMs || run.startMs));
 
 /** The command's result is reported, but its processes are not confirmed
- *  gone: the live record stays — now marked unconfirmed — until the
- *  termination watch retires it. */
-export function keepTerminationUnconfirmedRecord(run) {
+ *  gone: keep a live record until the termination watch retires it. */
+export function keepPendingShellRecord(run, terminationUnconfirmed = true) {
   if (run.foregroundRecordTimer) {
     clearTimeout(run.foregroundRecordTimer);
     run.foregroundRecordTimer = null;
   }
-  if (!run.foregroundRecordInput || !run.child?.pid) return;
+  if (!run.foregroundRecordInput || !run.child?.pid || run.workspaceReleased) return;
   try {
     publishForegroundShellRecord({
       ...run.foregroundRecordInput,
       jobId: run.foregroundRecordId,
       pid: run.child.pid,
       startedAtMs: run.commandStartedAtMs,
-      terminationUnconfirmed: true,
+      terminationUnconfirmed,
+      lifecycleTracked: true,
     });
     run.foregroundRecordPublished = true;
   } catch {
@@ -237,8 +244,15 @@ function snapshotThenKill(run, afterKill) {
 }
 
 export function treeKillForceSettle(run, cause) {
-  run.killed = true;
   run.killCause = run.killCause || cause || 'runtime-guard';
+  // The result may already have returned while descendants remain. Keep
+  // the abort handler until their observer finishes, and let that observer
+  // kill verified identities instead of signalling an exited/reused root.
+  if (run.settled) {
+    run.ownerCancelled = true;
+    return;
+  }
+  run.killed = true;
   let attempts = 0;
   const armConfirmation = () => {
     const deadline = setTimeout(() => {

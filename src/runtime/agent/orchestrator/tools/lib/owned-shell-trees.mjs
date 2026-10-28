@@ -6,58 +6,98 @@
 // arrived. A missing snapshot leaves the outcome unknown, so the workspace
 // stays held under the observation loop instead of being released blind.
 import { cancelNativeTasks } from './native-spawn-client.mjs';
-import { killAfterSnapshot } from './shell-descendants.mjs';
+import {
+  killAfterSnapshot,
+  PROCESS_TABLE_READ_BOUND_MS,
+  TERMINATION_RECHECK_MS,
+  withinBound,
+} from './shell-descendants.mjs';
 
-// jobId -> { ownerSessionId, prepareKill }. prepareKill() marks the tree as
-// killed by its owner and returns true when its snapshot is already complete,
-// otherwise a promise for it.
+// One registration per job, preserved across a foreground/background handoff.
+// Only unregistering its current entry proves that the whole lifecycle ended.
 const ownedTrees = new Map();
+const OWNER_CONFIRM_MS = TERMINATION_RECHECK_MS + PROCESS_TABLE_READ_BOUND_MS;
 // owner -> send(): cancels still waiting for their snapshots. Runtime
 // shutdown sends them at once — a kill is never lost to an exit.
 const pendingCancels = new Map();
 
 export function registerOwnedShellTree(jobId, entry) {
   const key = String(jobId || '').trim();
-  if (key && typeof entry?.prepareKill === 'function') ownedTrees.set(key, entry);
+  if (!key || typeof entry?.prepareKill !== 'function') return;
+  const previous = ownedTrees.get(key);
+  if (previous) {
+    previous.entry = entry;
+    return;
+  }
+  let resolveTerminated;
+  const terminated = new Promise((resolve) => {
+    resolveTerminated = resolve;
+  });
+  ownedTrees.set(key, { entry, terminated, resolveTerminated });
 }
 
 /** Drops `entry` only while it is still the registered one for the job. */
 export function unregisterOwnedShellTree(jobId, entry) {
   const key = String(jobId || '').trim();
-  if (ownedTrees.get(key) === entry) ownedTrees.delete(key);
+  const registered = ownedTrees.get(key);
+  if (registered?.entry !== entry) return;
+  ownedTrees.delete(key);
+  registered.resolveTerminated();
+}
+
+/** Prepare one owned tree's kill without giving up ownership. A survivor
+ *  handle can thereby cancel the same lifecycle that originally spawned it. */
+export function prepareOwnedShellTreeKill(jobId) {
+  const entry = ownedTrees.get(String(jobId || '').trim())?.entry;
+  if (!entry) return true;
+  try {
+    return entry.prepareKill();
+  } catch {
+    return false;
+  }
 }
 
 /** Prepare the kill of every registered tree — of one owner, or of all when
- *  `ownerSessionId` is null (runtime shutdown) — and unregister them. Returns
- *  the snapshots still pending (empty when all were complete). */
+ *  `ownerSessionId` is null (runtime shutdown). Its lifecycle owner unregisters
+ *  it after the whole tree ends, so another cancel can still reach survivors.
+ *  Returns the snapshots still pending (empty when all were complete). */
 export function prepareOwnedShellTreeKills(ownerSessionId = null) {
   const owner = ownerSessionId == null ? null : String(ownerSessionId).trim();
   const pending = [];
-  for (const [jobId, entry] of [...ownedTrees]) {
+  for (const [jobId, { entry }] of [...ownedTrees]) {
     if (owner !== null && String(entry.ownerSessionId || '') !== owner) continue;
-    let ready;
-    try {
-      ready = entry.prepareKill();
-    } catch {
-      ready = false;
-    }
+    const ready = prepareOwnedShellTreeKill(jobId);
     if (ready !== true) pending.push(Promise.resolve(ready).catch(() => false));
-    unregisterOwnedShellTree(jobId, entry);
   }
   return pending;
 }
 
-/** Cancel every shell tree of one owner session. Synchronous (the native
- *  cancel's own result) when every snapshot is already complete; otherwise a
- *  promise that sends the cancel once the snapshots land or the bound passes. */
+/** Cancel every tree of one owner and wait, bounded, for its lifecycle owners
+ *  to confirm termination. Delivering a native cancel is not that proof. */
 export function cancelOwnedShellTrees(ownerSessionId) {
   const owner = String(ownerSessionId || '').trim();
+  const registered = [...ownedTrees].filter(([, { entry }]) => String(entry.ownerSessionId || '') === owner);
   const pending = prepareOwnedShellTreeKills(owner);
-  if (pending.length === 0) return cancelNativeTasks({ ownerSessionId: owner });
+  const confirm = async (result) => {
+    await withinBound(Promise.all(registered.map(([, record]) => record.terminated)), OWNER_CONFIRM_MS, false);
+    const remaining = registered.filter(([id, record]) => ownedTrees.get(id) === record).map(([id]) => id);
+    const unconfirmed = [...new Set([...(result.unconfirmed || []), ...remaining])];
+    return {
+      ...result,
+      cancelled: Math.max(result.cancelled || 0, registered.length),
+      unconfirmed,
+      confirmed: unconfirmed.length === 0,
+    };
+  };
+  const cancel = () => {
+    const result = cancelNativeTasks({ ownerSessionId: owner });
+    return registered.length ? confirm(result) : result;
+  };
+  if (pending.length === 0) return cancel();
   let result = null;
   const send = () => {
     if (pendingCancels.get(owner) === send) pendingCancels.delete(owner);
-    result = result ?? cancelNativeTasks({ ownerSessionId: owner });
+    result = result ?? cancel();
     return result;
   };
   pendingCancels.set(owner, send);

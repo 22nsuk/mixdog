@@ -201,6 +201,155 @@ function startCancellableAgent(notifications, run) {
   });
 }
 
+test('a promise-returning cancel hook keeps the task running until its run settles', async (t) => {
+  const notifications = [];
+  const run = controlledRun();
+  let cancellations = 0;
+  let task;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  task = startBackgroundTask({
+    surface: 'tool',
+    notifyOnCancel: true,
+    context: { notifyFn: (text) => notifications.push(text) },
+    run: () => run.promise,
+    cancel: () => {
+      cancellations += 1;
+      return task.promise;
+    },
+  });
+  try {
+    cancelBackgroundTask(task.taskId, 'stop requested');
+    cancelBackgroundTask(task.taskId, 'stop requested again');
+    assert.equal(cancellations, 2, 'a pending cancellation can retry the kill');
+    assert.equal(task.status, 'running');
+    assert.equal(task.finishedAt, null);
+    t.mock.timers.tick(60_000);
+    assert.equal(notifications.length, 0, 'time alone cannot publish a completion');
+    assert.equal(task.status, 'running');
+    run.resolve('output produced before stopping');
+    await task.promise;
+    assert.equal(task.status, 'cancelled');
+    assert.equal(notifications.length, 1);
+    const parsed = parseTaskNotification(notifications[0]);
+    assert.equal(parsed.status, 'cancelled');
+    assert.equal(parsed.result, 'output produced before stopping');
+    reconcileBackgroundTask(task.taskId, { status: 'completed' });
+    assert.equal(notifications.length, 1);
+  } finally {
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+test('owner teardown stays silent when a pending cancellation later settles', async () => {
+  const notifications = [];
+  const run = controlledRun();
+  let task;
+  task = startBackgroundTask({
+    surface: 'tool',
+    notifyOnCancel: true,
+    context: { callerSessionId: CANCEL_OWNER, notifyFn: (text) => notifications.push(text) },
+    run: () => run.promise,
+    cancel: () => task.promise,
+  });
+  try {
+    cancelBackgroundTask(task.taskId, 'stop requested');
+    cancelBackgroundTasks({ callerSessionId: CANCEL_OWNER, reason: 'owner closed', notify: false });
+    assert.equal(task.status, 'running');
+    run.resolve('late output');
+    await task.promise;
+    assert.equal(task.status, 'cancelled');
+    reconcileBackgroundTask(task.taskId, { status: 'completed', result: 'later' });
+    assert.equal(notifications.length, 0);
+  } finally {
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+test('a pending cancellation preserves an explicit silent completion from its owner', async () => {
+  const notifications = [];
+  const stopped = controlledRun();
+  const task = registerBackgroundTask({
+    surface: 'tool',
+    notifyOnCancel: true,
+    context: { notifyFn: (text) => notifications.push(text) },
+    cancel: () => stopped.promise,
+  });
+  try {
+    cancelBackgroundTask(task.taskId, 'stop requested');
+    completeBackgroundTask(task.taskId, { resultText: 'final output', notify: false });
+    stopped.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(task.status, 'cancelled');
+    assert.equal(task.resultText, 'final output');
+    assert.equal(notifications.length, 0);
+  } finally {
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+test('a rejected cancellation promise leaves completion and a later retry available', async () => {
+  const notifications = [];
+  const failed = controlledRun();
+  const retry = controlledRun();
+  let attempt = 0;
+  const task = registerBackgroundTask({
+    surface: 'tool',
+    notifyOnCancel: true,
+    context: { notifyFn: (text) => notifications.push(text) },
+    cancel: () => (attempt++ === 0 ? failed.promise : retry.promise),
+  });
+  try {
+    cancelBackgroundTask(task.taskId, 'stop requested');
+    failed.reject(new Error('cancellation could not be confirmed'));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(task.status, 'running');
+    assert.equal(notifications.length, 0);
+    cancelBackgroundTask(task.taskId, 'retry stop');
+    assert.equal(attempt, 2);
+    assert.equal(task.status, 'running');
+    retry.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(task.status, 'cancelled');
+    assert.equal(notifications.length, 1);
+  } finally {
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+test('owner teardown remains silent after a rejected cancellation and later completion or retry', async () => {
+  for (const retryCancellation of [false, true]) {
+    const notifications = [];
+    const failed = controlledRun();
+    const retried = controlledRun();
+    let attempt = 0;
+    const task = registerBackgroundTask({
+      surface: 'tool',
+      notifyOnCancel: true,
+      context: { notifyFn: (text) => notifications.push(text) },
+      cancel: () => (attempt++ === 0 ? failed.promise : retried.promise),
+    });
+    try {
+      cancelBackgroundTask(task.taskId, 'owner closed', { notify: false });
+      failed.reject(new Error('cancellation unavailable'));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(task.status, 'running');
+      if (retryCancellation) {
+        cancelBackgroundTask(task.taskId, 'retry stop');
+        retried.resolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(task.status, 'cancelled');
+      } else {
+        completeBackgroundTask(task.taskId, { result: 'finished independently' });
+        assert.equal(task.status, 'completed');
+      }
+      reconcileBackgroundTask(task.taskId, { result: 'late result' });
+      assert.equal(notifications.length, 0);
+    } finally {
+      cleanupBackgroundTasks({ force: true });
+    }
+  }
+});
+
 test('a cancelled agent task notifies its owner once, as cancelled, carrying the partial result', async () => {
   const notifications = [];
   const run = controlledRun();

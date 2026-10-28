@@ -15,6 +15,7 @@
 //   shell-run-background/promotion-results.mjs — the ExecResult of each promotion outcome
 import { clearForegroundRecord, clearForegroundTimers, elapsedSinceStart } from './shell-run-state.mjs';
 import { readCapturedOutput } from './shell-run-settle.mjs';
+import { peekShellJob } from '../builtin/shell-jobs.mjs';
 import { handOverLease, killAfterFailedPromotion, promoteWithRetry } from './shell-run-background/promote-job.mjs';
 import {
   promotedSpillPaths,
@@ -119,14 +120,20 @@ export function createAutoBackground({
     // by design (the user typed a new message), so this guard must not undo
     // the very transition it was asked to perform. A plain cancellation still
     // reverts promotion and kills.
-    if (abortSignal?.aborted && !(reason === 'interrupt' && _abortReasonIsInterrupt(abortSignal))) {
+    if (
+      run.ownerCancelled ||
+      (abortSignal?.aborted && !(reason === 'interrupt' && _abortReasonIsInterrupt(abortSignal)))
+    ) {
       resolveCancelledAfterPromotion(run, jobId, capture);
       return;
     }
     // Completed-during-promotion race: write the exit/done files here as
     // well — when 'close' fired before the once('close') wiring, nothing
     // else would ever flip the promoted job detail off 'running'.
-    if (run.child.exitCode != null || run.child.signalCode != null) {
+    if (
+      (run.child.exitCode != null || run.child.signalCode != null) &&
+      peekShellJob(jobId)?.status !== 'running'
+    ) {
       // The run is over: the mid-run snapshot held back an incomplete tail
       // and left the encoding open. A completed result carries the final read.
       const final = await readCapturedOutput(taskOutput, true);

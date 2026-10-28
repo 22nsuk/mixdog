@@ -3,13 +3,16 @@
  * registry: the bounded promotion attempt, the lease release that follows a
  * successful one, and the kill fallback that follows a failed one.
  */
-import { promoteForegroundShellJob } from '../../builtin/shell-jobs.mjs';
+import { promoteForegroundShellJob, waitShellJobTerminated } from '../../builtin/shell-jobs.mjs';
 import { treeKillForceSettle } from '../shell-run-state.mjs';
+import { unregisterOwnedShellTree } from '../owned-shell-trees.mjs';
+import { createProcessTreeTracker } from '../shell-descendants.mjs';
 
 export async function promoteWithRetry(
   { run, command, cwd, clientHostPid, ownerSessionId },
   { remainingBackgroundTimeoutMs, stdoutPath, stderrPath }
 ) {
+  run.terminationTracker = run.terminationTracker || createProcessTreeTracker({ pid: run.child.pid });
   let promotionFailure = '';
   const tryPromote = async () => {
     try {
@@ -31,6 +34,7 @@ export async function promoteWithRetry(
         // …and with the dispatching SESSION, so a pooled host (desktop) can
         // show the job on its own pane only.
         ownerSessionId,
+        terminationTracker: run.terminationTracker,
       });
       if (!promoted) promotionFailure = promotionFailure || 'promotion unavailable';
       return promoted;
@@ -89,6 +93,11 @@ export function killAfterFailedPromotion(run, reason, promotionFailure) {
  * against any cap (session/runtime close stops them via shutdownShellJobs).
  */
 export async function handOverLease(run) {
+  // Registration has committed: the job's existing observer now owns the
+  // process lifetime, including artifacts retained by this foreground call.
+  run.treeSettled = waitShellJobTerminated(run.autoBackgroundJobId);
+  run.releasePromotedCapture?.();
+  if (run.ownedTree) unregisterOwnedShellTree(run.foregroundRecordId, run.ownedTree);
   const lease = run.resourceLease;
   run.resourceLease = null;
   await lease?.release();

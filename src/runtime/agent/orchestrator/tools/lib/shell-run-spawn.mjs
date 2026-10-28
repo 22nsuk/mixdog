@@ -280,26 +280,41 @@ export async function spawnShellChild(input) {
     if (!input.run.child) {
       input.run.workspaceAdmission();
       input.run.workspaceAdmission = null;
+      input.run.taskOutput.closeFds();
     } else {
       try {
-        // Identities first: the kill may break the parent chain.
-        // Bounded: the kill is sent even if the snapshot hangs or fails.
-        await killAfterSnapshot(capturePreKill(input.run), () => killShellJob(input.run.foregroundRecordId));
-        const detail = await waitForShellJob(input.run.foregroundRecordId);
-        if (!detail || !['completed', 'failed', 'cancelled'].includes(detail.nativeStatus)) {
-          throw new Error('The child termination could not be confirmed; workspace admission is retained.');
-        }
-        // The root is gone, but not necessarily what it started: the
-        // reservation follows the captured tree, swept like any killed one.
-        releaseAdmissionOnConfirmedTermination(input.run, { markNow: false, sweep: true });
+        await cleanupFailedShellChild(input.run);
       } catch (cleanupError) {
-        input.run.killUnconfirmed = true;
-        // No settle will ever run for this run; the reservation is released
-        // only once the child has exited and its descendants are gone.
-        releaseAdmissionOnConfirmedTermination(input.run);
         throw new AggregateError([error, cleanupError], 'Shell startup failed and workspace cleanup remains blocked.');
       }
     }
     throw error;
+  }
+}
+
+/** A failure after process creation has the same tree lifetime whether it
+ *  happened while feeding the shell or wiring its output/exit listeners. */
+export async function cleanupFailedShellChild(run) {
+  if (!run.child) {
+    run.taskOutput.closeFds();
+    return;
+  }
+  run.settled = true;
+  run.killed = true;
+  run.killCause = run.killCause || 'startup-failed';
+  try {
+    // Capture before signalling, bounded so failed enumeration cannot prevent
+    // the kill. The native terminal result confirms only the root's exit.
+    await killAfterSnapshot(capturePreKill(run), () => killShellJob(run.foregroundRecordId));
+    const detail = await waitForShellJob(run.foregroundRecordId);
+    if (!detail || !['completed', 'failed', 'cancelled'].includes(detail.nativeStatus)) {
+      throw new Error('The child termination could not be confirmed; workspace admission is retained.');
+    }
+  } catch (error) {
+    run.killUnconfirmed = true;
+    throw error;
+  } finally {
+    releaseAdmissionOnConfirmedTermination(run, { markNow: run.killUnconfirmed === true, sweep: true });
+    void run.treeSettled.then(() => run.taskOutput.closeFds());
   }
 }

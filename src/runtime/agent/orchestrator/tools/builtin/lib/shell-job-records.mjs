@@ -181,6 +181,7 @@ export function publishShellJobRecord(
     startedAtMs = 0,
     foreground = false,
     terminationUnconfirmed = false,
+    lifecycleTracked = false,
   } = {}
 ) {
   const jobId = String(task?.jobId || '').trim();
@@ -216,6 +217,9 @@ export function publishShellJobRecord(
         pid: Number(task?.pid) || null,
         shellType: task?.shellType || null,
         ownerHostPid: ownerPid,
+        // The process observing the whole tree can differ from clientHostPid
+        // (a desktop host may outlive its session runtime).
+        ...(lifecycleTracked ? { lifecycleOwnerPid: process.pid } : {}),
         ownerSessionId: ownerSessionId ? String(ownerSessionId) : task?.ownerSessionId || null,
         // The caller's start moment wins: a warm-standby shell reports
         // when its process was created, not when this command was fed
@@ -228,8 +232,7 @@ export function publishShellJobRecord(
         // removed on settle. Restart recovery skips them: there is no
         // task id to report and no waiter to notify.
         ...(foreground ? { foreground: true } : {}),
-        // A killed command whose processes are not confirmed gone: its
-        // result is reported, but the readouts keep listing it.
+        // The observer cannot yet confirm whether every process is gone.
         ...(terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
         // Its owner session closed: any session that sees the folder lists
         // (and may release) it.
@@ -281,7 +284,8 @@ const releaseRequestPath = (key) => join(jobsDir(), `${key}.release-requested`);
 async function requestRemoteRelease(key, caller) {
   const id = validJobId(key);
   const record = id ? JSON.parse(await readFile(join(jobsDir(), `${id}.json`), 'utf8')) : null;
-  if (record?.status !== 'running' || record.terminationUnconfirmed !== true) throw new Error('not held');
+  if (record?.status !== 'running' || record.terminationUnconfirmed !== true || record.workspaceReleased === true)
+    throw new Error('not held');
   const hold = { ownerSessionId: record.ownerSessionId || null, cwd: record.cwd };
   if (!mayRelease(hold, { ...caller, ownerClosed: record.ownerSessionClosed === true })) {
     throw new Error('not permitted');
@@ -328,20 +332,19 @@ export async function forceReleaseTerminationHold(jobId, { callerSessionId = nul
   return { released: true };
 }
 
-/** Release the workspace admission adopted under `jobId` without a record of
- *  its own (survivors a finished foreground command left behind), once they
- *  are confirmed gone. */
+/** Release only the workspace admission. An unfinished record remains live:
+ *  an explicit release is not evidence that its processes have stopped. */
 export function releaseShellJobWorkspace(jobId) {
   const key = String(jobId || '').trim();
   const leave = workspaceLeases.get(key);
-  if (!leave) return;
-  leave();
+  leave?.();
   if (workspaceLeases.get(key) === leave) workspaceLeases.delete(key);
+  return patchRunningShellJobRecord(key, { workspaceReleased: true });
 }
 
 /** Flag a still-open job record as "termination unconfirmed" for the readouts. */
-export function markShellJobTerminationUnconfirmed(jobId) {
-  return patchRunningShellJobRecord(jobId, { terminationUnconfirmed: true });
+export function markShellJobTerminationUnconfirmed(jobId, value = true) {
+  return patchRunningShellJobRecord(jobId, { terminationUnconfirmed: value === true });
 }
 
 /** Keep the bot-chain hop of the turn that launched a running job on its record,
@@ -357,6 +360,7 @@ function patchRunningShellJobRecord(jobId, patch) {
   return enqueue(key, async () => {
     const record = records.get(key);
     if (record?.status !== 'running') return false;
+    if (Object.entries(patch).every(([field, value]) => Object.is(record[field], value))) return false;
     const next = { ...record, ...patch };
     records.set(key, next);
     await writeJsonAtomicAsync(jsonPath, next, { fsync: false });
@@ -387,9 +391,8 @@ export function completeShellJobRecord(jobId, detail) {
       await writeJsonAtomicAsync(jsonPath, record, { fsync: false });
       await writeFile(donePath, '', 'utf8');
     } finally {
-      // Callers complete a record only once its processes are confirmed gone
-      // (or explicitly released): the workspace admission follows that, not
-      // the record write, so a failed write cannot strand it with no handle.
+      // Completion means every process is confirmed gone. Release the
+      // admission even when writing the terminal record fails.
       leaveWorkspace?.();
       if (workspaceLeases.get(key) === leaveWorkspace) workspaceLeases.delete(key);
     }

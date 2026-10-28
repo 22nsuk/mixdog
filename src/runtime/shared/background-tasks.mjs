@@ -151,6 +151,10 @@ function pruneTasks(options = {}) {
   }
 }
 
+/** A cancel hook may return a promise that fulfills only once the work has
+ *  actually stopped. Such a task stays running until that promise or its run
+ *  settles; returning void keeps the immediate-cancellation contract. A
+ *  request/kill acknowledgement is not a completion promise. */
 export function registerBackgroundTask({
   taskId,
   startedAtMs,
@@ -303,14 +307,41 @@ export function cleanupBackgroundTasks(options = {}) {
   return { removed: before - after, tasks: after };
 }
 
-// `notify`: true notifies immediately, false never notifies (owner teardown).
+// `notify`: true notifies on cancellation, false never notifies (owner teardown).
 // Left unset, a `notifyOnCancel` task defers its single `cancelled`
 // notification until its run settles (see settleCancelledBackgroundTask); any
 // other task stays silent. `terminalReason` records why it was cancelled.
 function cancelRunningTask(task, reason, notify, terminalReason = null) {
+  if (notify === false) silenceCancelledNotification(task);
+  const request = { reason, notify, terminalReason };
+  task.cancelPending = request;
+  let completion;
   try {
-    task.cancel?.();
+    completion = task.cancel?.();
   } catch {}
+  if (typeof completion?.then === 'function') {
+    // Existing run promises can be returned directly. Their completion may
+    // reach completeBackgroundTask first; that path preserves this request's
+    // cancelled outcome and notification policy with the run's final result.
+    request.promise = Promise.resolve(completion).then(
+      () => {
+        if (tasks.get(task.taskId) !== task) return;
+        return completeBackgroundTask(task.taskId, {
+          status: 'cancelled',
+          error: reason,
+          notify: notify === true || (notify !== false && task.notifyOnCancel),
+          terminalReason,
+        });
+      },
+      () => {
+        // A failed attempt proves no termination. The owner can still finish
+        // normally, or another cancellation can retry its hook.
+        if (task.cancelPending === request) delete task.cancelPending;
+      }
+    );
+    return;
+  }
+  if (task.cancelPending === request) delete task.cancelPending;
   completeBackgroundTask(task.taskId, { status: 'cancelled', error: reason, notify: notify === true, terminalReason });
   if (task.notifyOnCancel !== true || notify === true || task.status !== 'cancelled' || task.cancelNotify) return;
   if (notify === false) {
@@ -334,6 +365,7 @@ function resolvePendingCancelNotify(task, next) {
 
 function silenceCancelledNotification(task) {
   resolvePendingCancelNotify(task, 'silent');
+  task.cancelNotify = 'silent';
 }
 
 function deliverCancelledNotification(task) {
@@ -442,6 +474,14 @@ export function completeBackgroundTask(
   const task = getBackgroundTask(taskId);
   if (!task) return null;
   if (TERMINAL_STATUSES.has(task.status)) return task;
+  const cancellation = task.cancelPending;
+  if (cancellation) {
+    status = 'cancelled';
+    error = cancellation.reason;
+    terminalReason = cancellation.terminalReason || terminalReason;
+    notify = notify && (cancellation.notify === true || (cancellation.notify !== false && task.notifyOnCancel));
+    delete task.cancelPending;
+  }
   const now = Date.now();
   task.status = normalizeStatus(status);
   task.finishedAtMs = now;

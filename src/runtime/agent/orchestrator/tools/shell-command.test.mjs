@@ -8,8 +8,12 @@ import test, { mock } from 'node:test';
 // async Promise executor that throw reaches nobody, so before the fix the
 // caller awaited execShellCommand forever. Mocked before the first import of
 // shell-command.mjs, which is the module's only importer.
+let spawnPhase = async () => {};
 mock.module('./lib/shell-run-spawn.mjs', {
-  namedExports: { spawnShellChild: async () => {} },
+  namedExports: {
+    cleanupFailedShellChild: async () => {},
+    spawnShellChild: (input) => spawnPhase(input),
+  },
 });
 
 const { execShellCommand } = await import('./shell-command.mjs');
@@ -51,5 +55,39 @@ test('a wiring fault after spawn settles the run instead of hanging the caller',
     assert.deepEqual(releases, ['release'], 'the admission lease is not leaked by the failure path');
   } finally {
     clearTimeout(hangTimer);
+  }
+});
+
+test('a failed startup passes its continuing tree lifetime to the caller', async () => {
+  let finishTree;
+  const treeSettled = new Promise((resolve) => {
+    finishTree = resolve;
+  });
+  spawnPhase = async ({ run }) => {
+    // spawnShellChild already retains a failed startup's tree. Its caller
+    // must preserve that lifetime when it turns the throw into an ExecResult.
+    run.treeSettled = treeSettled;
+    throw new Error('startup failed after a child was created');
+  };
+  try {
+    const result = await execShellCommand({
+      shell: process.execPath,
+      command: 'startup-failure',
+      env: process.env,
+      cwd: fixtureRoot,
+      admission: { acquire: async () => ({ release: async () => {} }) },
+    });
+    assert.equal(result.failureReason, 'spawn failed');
+    assert.equal(result.settled, treeSettled, 'artifact owners must not treat the failed result as tree completion');
+    let ended = false;
+    void result.settled.then(() => { ended = true; });
+    await Promise.resolve();
+    assert.equal(ended, false);
+    finishTree();
+    await result.settled;
+    assert.equal(ended, true);
+  } finally {
+    finishTree();
+    spawnPhase = async () => {};
   }
 });

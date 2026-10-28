@@ -14,12 +14,16 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { executeBashTool } from './builtin/bash-tool.mjs';
-import { executeTaskTool } from './builtin/task-tool.mjs';
-import { shutdownShellJobs } from './builtin/shell-jobs.mjs';
+import { renderBackgroundedResult } from './builtin/bash-tool/backgrounded-result.mjs';
+import { executeTaskTool, stopBackgroundShellJob } from './builtin/task-tool.mjs';
+import { peekShellJob, shutdownShellJobs, waitForShellJob } from './builtin/shell-jobs.mjs';
+import { execShellCommand } from './shell-command.mjs';
+import { getBackgroundTask } from '../../../shared/background-tasks.mjs';
 import { cancelOwnedShellTrees } from './lib/owned-shell-trees.mjs';
 import {
   _resetNativeSpawnClientForTest,
   _setNativeSpawnBinaryForTest,
+  getNativeTask,
   shutdownNativeSpawnServer,
 } from './lib/native-spawn-client.mjs';
 
@@ -44,13 +48,17 @@ test.after(async () => {
 // Every process the fixture starts appends `<role> <pid>` to the pid file.
 const FIXTURE = `
 const { spawn } = require('node:child_process');
-const { appendFileSync } = require('node:fs');
+const { appendFileSync, existsSync } = require('node:fs');
 const { createServer } = require('node:http');
 const [mode, port, pidFile] = process.argv.slice(2);
 appendFileSync(pidFile, mode + ' ' + process.pid + '\\n');
 const again = (next) =>
   spawn(process.execPath, [__filename, next, port, pidFile], { detached: true, stdio: 'ignore' }).unref();
 if (mode === 'server') createServer((_, res) => res.end('ok')).listen(Number(port), '127.0.0.1');
+else if (mode === 'exiting-parent') {
+  spawn(process.execPath, [__filename, 'server', port, pidFile], { stdio: 'ignore' }).unref();
+  setInterval(() => { if (existsSync(pidFile + '.exit')) process.exit(0); }, 20);
+}
 else if (mode === 'detached-parent') { again('server'); setInterval(() => {}, 1000); }
 else if (mode === 'double-fork') { again('intermediate'); setInterval(() => {}, 1000); }
 else if (mode === 'intermediate') { again('server'); setTimeout(() => process.exit(0), 300); }
@@ -290,6 +298,71 @@ test('task cancel kills what a finished command left running', opts, async () =>
   await serving(s, ['server']);
   await cancelAndCheck(s, taskIdOf(out));
 });
+
+// Issue #259: keep the root result separate from the lifetime of its server.
+// A direct Node root makes the parent/child relationship observable on both
+// Windows and POSIX, without relying on a shell's job-control semantics.
+for (const ending of ['server exit', 'Stop', 'owner close']) {
+  test(`a promoted shell stays running until its surviving server ends via ${ending}`, opts, async (t) => {
+    const s = await scenario(`root-exit-${ending.replaceAll(' ', '-')}`);
+    const owner = `sess_root_exit_${sequence}`;
+    const notices = [];
+    const options = {
+      ...ctx(owner),
+      notifyFn: (text, meta) => {
+        notices.push({ text, meta });
+        return true;
+      },
+    };
+    t.after(async () => {
+      for (const { pid } of recorded(s)) hardKill(pid);
+      await shutdownShellJobs('test-cleanup', { scope: { ownerSessionId: owner } });
+    });
+    const command = s.run('exiting-parent');
+    const result = await execShellCommand({
+      shell: process.execPath,
+      shellArg: '',
+      directArgv: [fixture, 'exiting-parent', String(s.port), s.pidFile],
+      command,
+      cwd: workDir,
+      env: process.env,
+      timeoutMs: 0,
+      autoBackgroundMs: 150,
+      backgroundOnTimeout: true,
+      ownerSessionId: owner,
+      clientHostPid: process.pid,
+    });
+    assert.equal(result.backgrounded, true);
+    const output = renderBackgroundedResult({ result, command, cwd: workDir, options, stdout: '', stderr: '' });
+    const taskId = taskIdOf(output);
+    await serving(s, ['exiting-parent', 'server']);
+    writeFileSync(`${s.pidFile}.exit`, '');
+    await until(() => getNativeTask(taskId)?.status === 'completed', 10_000, 'root exit');
+
+    assert.equal(await portOpen(s.port), true, 'the descendant is still serving');
+    assert.equal(peekShellJob(taskId)?.status, 'running');
+    assert.equal((await waitForShellJob(taskId, { timeoutMs: 30 }))?.status, 'running');
+    assert.match(await executeTaskTool({ action: 'read', task_id: taskId }, options), /status: running/);
+    assert.equal(getBackgroundTask(taskId)?.status, 'running');
+    assert.equal(notices.length, 0, 'a root exit must not notify completion');
+
+    if (ending === 'server exit') {
+      for (const { role, pid } of recorded(s)) if (role === 'server') hardKill(pid);
+    } else if (ending === 'Stop') {
+      assert.deepEqual(await stopBackgroundShellJob(taskId, options), { stopped: true });
+      await assertGoneNow(s, 'when Stop reports success');
+    } else {
+      await cancelOwnedShellTrees(owner);
+    }
+    await assertGoneSoon(s, `after ${ending}`);
+    const final = await waitForShellJob(taskId, { timeoutMs: 15_000 });
+    const expected = ending === 'server exit' ? 'completed' : 'cancelled';
+    assert.equal(final?.status, expected);
+    await until(() => getBackgroundTask(taskId)?.status === expected, 5_000, 'task settlement');
+    assert.equal(notices.length, 1, 'the whole task completes once');
+    assert.equal(notices[0].meta.status, expected);
+  });
+}
 
 test('a foreground timeout kills the whole tree', opts, async () => {
   const s = await scenario('timeout');

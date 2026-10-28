@@ -4,7 +4,8 @@
  * during promotion, backgrounded, or cleanup failure.
  */
 import { killShellJob } from '../../builtin/shell-jobs.mjs';
-import { ExecResult, treeKill } from '../../shell-exec-output.mjs';
+import { ExecResult } from '../../shell-exec-output.mjs';
+import { cleanupFailedShellChild } from '../shell-run-spawn.mjs';
 import {
   clearForegroundRecord,
   detachAbortHandler,
@@ -43,6 +44,7 @@ function capturedFields(run, { stdout, stderr, spill }) {
     ...spill,
     taskId: run.taskId,
     outputCaptureError: run.taskOutput.writeError,
+    settled: run.treeSettled,
   };
 }
 
@@ -56,9 +58,7 @@ export function resolveCancelledAfterPromotion(run, jobId, capture) {
   try {
     killShellJob(jobId);
   } catch {}
-  try {
-    treeKill(run.child);
-  } catch {}
+  detachAbortHandler(run);
   run.resolveResult(
     new ExecResult({
       ...capturedFields(run, capture),
@@ -124,7 +124,7 @@ export function resolveBackgrounded(run, { jobId, reason, remainingBackgroundTim
  * the child is killed, the unreferenced capture files dropped, the lease
  * returned, and the call resolves with the cleanup failure.
  */
-export function resolveCleanupFailure(run, error) {
+export async function resolveCleanupFailure(run, error) {
   const { taskOutput } = run;
   run.settled = true;
   run.autoBackgrounded = true;
@@ -134,19 +134,21 @@ export function resolveCleanupFailure(run, error) {
   detachAbortHandler(run);
   try {
     if (run.autoBackgroundJobId) killShellJob(run.autoBackgroundJobId);
-  } catch {}
-  try {
-    treeKill(run.child);
+    else await cleanupFailedShellChild(run);
   } catch {}
   // settle() is inert from here (settled), so the cleanup it owns has to
   // run in this branch: the reported result carries no spill paths, so
   // the capture files are unreferenced garbage — drop them, close their
   // descriptors and hand back any lease the failed handoff still holds.
-  try {
-    taskOutput.deleteFiles();
-  } catch {
-    /* best-effort */
-  }
+  const releaseCapture = () => {
+    try {
+      taskOutput.deleteFiles();
+    } catch {
+      /* best-effort */
+    }
+  };
+  if (run.treeSettled) void run.treeSettled.then(releaseCapture);
+  else releaseCapture();
   void releaseResourceLease(run);
   run.resolveResult(
     new ExecResult({
@@ -163,6 +165,7 @@ export function resolveCleanupFailure(run, error) {
       failurePhase: 'tool',
       failureReason: 'resource cleanup failed',
       backgrounded: false,
+      settled: run.treeSettled,
     })
   );
 }

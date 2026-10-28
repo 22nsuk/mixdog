@@ -82,6 +82,9 @@ test('a hung enumerator is killed at the deadline and the finished command still
       result = value;
     },
   };
+  // Releasing protection keeps the lifetime observer alive; it belongs to
+  // this fixture and must stop before the mocked clock is restored.
+  t.after(() => run.stopTerminationWatch?.());
   const settled = createSettle(run, () => {})(0, null);
   for (let i = 0; i < 5; i += 1) await flush();
   assert.equal(enumerators.length, 1, 'the post-exit probe is enumerating');

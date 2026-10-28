@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { confirmText } from './confirm-text.ts';
@@ -67,6 +70,55 @@ test('shell row action follows the stop state; finished rows only dismiss', () =
   assert.equal(shellRowAction(running, 'stopping'), 'stopping');
   assert.equal(shellRowAction(running, 'failed'), 'retry');
   assert.equal(shellRowAction({ finished: true }, 'stopping'), 'dismiss');
+});
+
+test('shell actions follow the runtime lifecycle record after root exit and explicit release', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-shell-row-lifecycle-'));
+  const previous = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = root;
+  const {
+    _shellJobRecordWritesSettledForTest,
+    completeShellJobRecord,
+    markShellJobTerminationUnconfirmed,
+    publishShellJobRecord,
+    releaseShellJobWorkspace,
+    retireShellJobRecord,
+  } = await import('../../../../src/runtime/agent/orchestrator/tools/builtin/lib/shell-job-records.mjs');
+  const { shellJobsStatusFresh } = await import('../../../../src/runtime/shared/statusline/statusline-segments.mjs');
+  const jobId = `job_row_lifecycle_${process.pid}`;
+  const ownerSessionId = 'sess_row_lifecycle';
+  const row = async () => {
+    const status = await shellJobsStatusFresh({ clientHostPid: process.pid });
+    return backgroundJobRows({ shellJobs: status.sessions?.[ownerSessionId] })[0];
+  };
+  try {
+    publishShellJobRecord(
+      { jobId, pid: 2_147_483_646, command: 'npm run dev', cwd: root },
+      { ownerSessionId, lifecycleTracked: true }
+    );
+    await _shellJobRecordWritesSettledForTest(jobId);
+    let current = await row();
+    assert.ok(current, 'a root that exited cannot remove the tracked task');
+    assert.equal(shellRowAction(current), 'stop');
+    await markShellJobTerminationUnconfirmed(jobId);
+    assert.equal(shellRowAction(await row()), 'release');
+    await markShellJobTerminationUnconfirmed(jobId, false);
+    assert.equal(shellRowAction(await row()), 'stop', 'a known live process can be stopped');
+    await markShellJobTerminationUnconfirmed(jobId);
+    await releaseShellJobWorkspace(jobId);
+    current = await row();
+    assert.equal(current.finished, undefined);
+    assert.equal(current.terminationUnconfirmed, undefined, 'the released folder is not shown as locked');
+    assert.equal(shellRowAction(current), 'stop');
+    await completeShellJobRecord(jobId, { status: 'cancelled' });
+    assert.equal(shellRowAction(await row()), 'dismiss');
+  } finally {
+    retireShellJobRecord(jobId);
+    await _shellJobRecordWritesSettledForTest(jobId);
+    if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('finished shell labels: exit 0 reads Exited, a stop Stopped, anything else Failed', () => {

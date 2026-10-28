@@ -189,13 +189,13 @@ function sweepLiveIdentities(tracker) {
 /** One observation loop: observe now, then every `intervalMs` until the tree
  *  is confirmed gone, then run `onTerminated` once. 'running', 'unknown', a
  *  failed or unanswered (by the next cadence tick) observation and a failing
- *  `onTerminated` all re-check on the same cadence; the first pass that is not
- *  'gone' calls `onUnconfirmed` once. The returned stop() clears the pending
- *  timer; nothing else (listener, timer) outlives the loop. Nothing in it ever
- *  releases on time alone.
+ *  `onTerminated` all re-check on the same cadence. `onObservation` receives
+ *  each state; the first unknown pass calls `onUnconfirmed` once. The returned
+ *  stop() clears the pending timer; nothing else (listener, timer) outlives the
+ *  loop. Nothing in it ever releases on time alone.
  *
- *  `sweep` (a killed tree): a pass that finds captured identities alive
- *  terminates them and observes again in the same pass, so a cancellation
+ *  `sweep` is a boolean or a live cancellation predicate. A pass that finds
+ *  captured identities alive terminates them and observes again, so a cancellation
  *  ends with the tree gone instead of a held folder over live processes.
  *  A missing pre-kill capture stays unknown even if the owning session
  *  closes: its lifetime is not evidence that every descendant has exited. */
@@ -204,13 +204,16 @@ export function watchTermination({
   rootExited = () => true,
   onTerminated,
   onUnconfirmed = null,
+  onObservation = null,
   releaseRequested = null,
+  onReleaseRequested = null,
   intervalMs = TERMINATION_RECHECK_MS,
   sweep = false,
 }) {
   let timer = null;
   let stopped = false;
   let reportedUnconfirmed = false;
+  let releasePending = false;
   const stop = () => {
     stopped = true;
     if (timer) clearTimeout(timer);
@@ -221,31 +224,43 @@ export function watchTermination({
     if (stopped) return;
     let state = 'unknown';
     let observation = null;
-    // An explicit user force-release made from another process (the hold's
-    // workspace is visible there): released as if confirmed, never on time.
-    if (releaseRequested?.()) state = 'gone';
-    else
+    // Releasing workspace protection says nothing about the processes. Keep
+    // observing them, and retry a failed release without losing its request.
+    if (releaseRequested?.()) releasePending = true;
+    if (releasePending) {
       try {
+        await onReleaseRequested?.();
+        releasePending = false;
+      } catch {
+        /* the protection remains until its release succeeds */
+      }
+    }
+    try {
+      observation = tracker.observe({ rootExited: rootExited() });
+      observation.catch(() => {});
+      // A pass that has not answered by the next cadence tick is unknown.
+      state = await withinBound(observation, intervalMs, 'unknown');
+      if (state === 'running' && (typeof sweep === 'function' ? sweep() : sweep) && !stopped) {
+        await withinBound(
+          sweepLiveIdentities(tracker).catch(() => {}),
+          intervalMs,
+          null
+        );
+        await observation.catch(() => {});
         observation = tracker.observe({ rootExited: rootExited() });
         observation.catch(() => {});
-        // A pass that has not answered by the next cadence tick is unknown.
         state = await withinBound(observation, intervalMs, 'unknown');
-        if (state === 'running' && sweep && !stopped) {
-          await withinBound(
-            sweepLiveIdentities(tracker).catch(() => {}),
-            intervalMs,
-            null
-          );
-          await observation.catch(() => {});
-          observation = tracker.observe({ rootExited: rootExited() });
-          observation.catch(() => {});
-          state = await withinBound(observation, intervalMs, 'unknown');
-        }
-      } catch {
-        state = 'unknown';
       }
+    } catch {
+      state = 'unknown';
+    }
     if (stopped) return;
-    if (state !== 'gone' && !reportedUnconfirmed) {
+    try {
+      onObservation?.(state);
+    } catch {
+      /* presentation only */
+    }
+    if (state === 'unknown' && !reportedUnconfirmed) {
       reportedUnconfirmed = true;
       try {
         onUnconfirmed?.();

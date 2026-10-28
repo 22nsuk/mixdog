@@ -276,15 +276,20 @@ test('CP949 stream ending in a lone lead byte is held back until final', async (
   assert.equal(directOutput('codepage-lead2', done).getLiveTail(), `${CP949_TEXT}한`);
 });
 
-test('promoted completion flushes the decoders', () => {
+test('promoted whole-tree completion flushes the decoders', async () => {
+  let finishTree;
   const run = {
     child: { exitCode: 0 },
+    treeSettled: new Promise((resolve) => { finishTree = resolve; }),
     taskOutput: new TaskOutput('codepage-promoted'),
     stdoutDecoder: new ShellTextDecoder('euc-kr'),
     stderrDecoder: new ShellTextDecoder('euc-kr'),
   };
   assert.equal(run.stdoutDecoder.write(Buffer.from('é done\n', 'utf8')), '');
   createPromotedCaptureRelease(run)();
+  assert.equal(run.taskOutput.stdoutBuf, '', 'the stream remains open while descendants may write');
+  finishTree();
+  await run.treeSettled;
   assert.equal(run.taskOutput.stdoutBuf, 'é done\n');
 });
 

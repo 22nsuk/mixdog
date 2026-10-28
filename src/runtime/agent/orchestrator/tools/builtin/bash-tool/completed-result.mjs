@@ -1,5 +1,6 @@
 import { renderBackgroundTask, startBackgroundTask } from '../../../../../shared/background-tasks.mjs';
-import { killShellDescendants, waitForShellDescendants } from '../../lib/shell-descendants.mjs';
+import { killAfterSnapshot, killShellDescendants, waitForShellDescendants } from '../../lib/shell-descendants.mjs';
+import { prepareOwnedShellTreeKill } from '../../lib/owned-shell-trees.mjs';
 import { releaseShellJobWorkspace } from '../lib/shell-job-records.mjs';
 import { readFilterTeeCapture } from '../shell-analysis.mjs';
 import { compactShellOutputLosslessly, renderShellOutputBody } from '../shell-lossless-compact.mjs';
@@ -23,9 +24,10 @@ import {
  *  task. It uses the SAME task registry every other background shell task
  *  uses, so task list/read/cancel need no special case: `run` settles the task
  *  when the last observed survivor exits, `cancel` terminates them. */
-function trackSurvivingDescendants(handle, { command, cwd, options, startedAtMs } = {}) {
+function trackSurvivingDescendants(handle, settled, { command, cwd, options, startedAtMs } = {}) {
   if (!handle?.taskId) return null;
   try {
+    let cancelRequested = false;
     const task = startBackgroundTask({
       taskId: handle.taskId,
       startedAtMs: startedAtMs || Date.now(),
@@ -35,20 +37,27 @@ function trackSurvivingDescendants(handle, { command, cwd, options, startedAtMs 
       input: { command, cwd },
       meta: { task_id: handle.taskId, stdout: null, stderr: null, cwd, timeoutMs: 0 },
       resultType: 'shell_task_result',
+      notifyOnCancel: true,
       run: async () => {
-        await waitForShellDescendants(handle);
+        await (settled || waitForShellDescendants(handle));
         // The folder reservation the finished command handed to its
         // survivors ends with the last of them.
-        releaseShellJobWorkspace(handle.taskId);
+        await releaseShellJobWorkspace(handle.taskId);
         return {
           task_id: handle.taskId,
-          status: 'completed',
+          status: cancelRequested ? 'cancelled' : 'completed',
           detail: 'every process the command left running has exited',
         };
       },
-      // The kill's own re-observation is what `task cancel` reports.
       cancel: () => {
-        task.cancelOutcome = killShellDescendants(handle);
+        cancelRequested = true;
+        void killAfterSnapshot(
+          prepareOwnedShellTreeKill(handle.taskId),
+          () => killShellDescendants(handle)
+        );
+        // Bounded kill confirmation is diagnostic. Task completion follows
+        // the same actual tree settlement as its normal run path.
+        return task.promise;
       },
     });
     // The command already returned its result; these processes are a side
@@ -66,7 +75,7 @@ function trackSurvivingDescendants(handle, { command, cwd, options, startedAtMs 
 // survivor exits, and cancels the whole set — instead of work running with no
 // handle at all.
 function survivingDescendantsWarning(result, taskContext) {
-  const task = result.descendants ? trackSurvivingDescendants(result.descendants, taskContext) : null;
+  const task = result.descendants ? trackSurvivingDescendants(result.descendants, result.settled, taskContext) : null;
   if (!task) return '';
   const heading = result.descendants?.reachable
     ? SURVIVING_DESCENDANTS_WARNING

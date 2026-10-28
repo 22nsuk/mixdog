@@ -33,6 +33,7 @@ import {
   publishShellJobRecord,
   recordShellJobHop,
   registerTerminationHold,
+  releaseShellJobWorkspace,
   retireShellJobRecord,
   takeReleaseRequest,
 } from './lib/shell-job-records.mjs';
@@ -64,8 +65,10 @@ const PRE_DEADLINE_CAPTURE_MS = PROCESS_TABLE_READ_BOUND_MS + 1_000;
 // after-exit observation.
 function prepareTrackedKill(entry) {
   entry.killed = true;
+  entry.cancelRequested = true;
+  if (!entry.tracker) return Promise.resolve(true);
   return (entry.baseline || Promise.resolve(false)).then(() =>
-    entry.tracker.capture().catch(() => entry.tracker.complete)
+    entry.tracker.capture({ rootExited: entry.rootSettled }).catch(() => entry.tracker.complete)
   );
 }
 import { isPidAlive } from '../../../../shared/pid-liveness.mjs';
@@ -87,13 +90,52 @@ export function buildJobNotFoundMessage(jobId) {
   return `Error: task not found: ${jobId}`;
 }
 
-// Running promoted jobs, for the runtime-wide read-only counts `task list`
-// shows; each leaves when its native task settles (trackShellJobRecord).
-const promotedJobIds = new Set();
 const backgroundShellJobWatchers = new Map();
 const jobNotifyCtxByJobId = new Map();
-// jobId -> process-tree tracker of a published background job.
+// The whole shell lifecycle, including a retained root result after the native
+// cache expires. Only completed lifecycles are bounded by this recovery cache.
 const backgroundTrackers = new Map();
+const COMPLETED_JOB_TTL_MS = 10 * 60_000;
+const COMPLETED_JOB_LIMIT = 256;
+let completedJobSweep = null;
+
+function sweepCompletedJobs() {
+  const now = Date.now();
+  const completed = [...backgroundTrackers].filter(([, entry]) => entry.finishedAtMs);
+  for (const [jobId, entry] of completed) {
+    if (now - entry.finishedAtMs >= COMPLETED_JOB_TTL_MS) backgroundTrackers.delete(jobId);
+  }
+  const retained = [...backgroundTrackers].filter(([, entry]) => entry.finishedAtMs);
+  retained.sort((a, b) => a[1].finishedAtMs - b[1].finishedAtMs);
+  for (const [jobId] of retained.slice(0, Math.max(0, retained.length - COMPLETED_JOB_LIMIT))) {
+    backgroundTrackers.delete(jobId);
+  }
+  if (![...backgroundTrackers.values()].some((entry) => entry.finishedAtMs)) {
+    clearInterval(completedJobSweep);
+    completedJobSweep = null;
+  }
+}
+
+function retainCompletedJob() {
+  sweepCompletedJobs();
+  if (!completedJobSweep) {
+    completedJobSweep = setInterval(sweepCompletedJobs, 60_000);
+    completedJobSweep.unref?.();
+  }
+}
+
+function lifecycleDetail(entry) {
+  if (entry.finishedAtMs) return { ...entry.detail };
+  return {
+    ...entry.detail,
+    status: 'running',
+    finishedAt: null,
+    killed: entry.killed || entry.detail.killed,
+    terminationUnconfirmed:
+      entry.observation === 'unknown' || (entry.killed && entry.observation === 'running'),
+    workspaceReleased: entry.workspaceReleased,
+  };
+}
 
 function demoteBackgroundShellPriority(pid) {
   if (process.env.MIXDOG_BG_PRIORITY === '0') return;
@@ -113,7 +155,9 @@ function demoteBackgroundShellPriority(pid) {
 function trackShellJobRecord(task, options) {
   const jobId = String(task?.jobId || '').trim();
   if (!jobId) return;
-  publishShellJobRecord(task, options);
+  const tracker =
+    options?.terminationTracker || (Number(task?.pid) > 0 ? createProcessTreeTracker({ pid: task.pid }) : null);
+  publishShellJobRecord(task, { ...options, lifecycleTracked: Boolean(tracker) });
   if (task?.cwd) {
     // The record's own reader is filed under the job's root pid, which the
     // gate drops the moment that pid dies. Survivors must keep the folder
@@ -122,29 +166,37 @@ function trackShellJobRecord(task, options) {
     if (!hold) throw worktreeError('WORKTREE_BUSY_JOBS', 'The command folder is being managed.');
     adoptShellWorkspaceAdmission(jobId, hold);
   }
-  const tracker = task?.cwd ? createProcessTreeTracker({ pid: task.pid }) : null;
   let resolveTerminated = null;
   const entry = {
     tracker,
+    detail: normalizeShellJobDetail(task),
     killed: false,
+    cancelRequested: false,
+    rootSettled: false,
+    finishedAtMs: 0,
+    observation: 'pending',
+    workspaceReleased: false,
+    listeners: new Set(),
     baseline: null,
-    // Settles once every process of the job is confirmed gone (or the user
-    // force-released it): what `task cancel` waits on before it reports.
+    // Only confirmed whole-tree termination settles this promise. Releasing
+    // workspace protection leaves the processes and their observation alone.
     terminated: new Promise((resolve) => {
       resolveTerminated = resolve;
     }),
   };
+  backgroundTrackers.set(jobId, entry);
   if (tracker) {
-    backgroundTrackers.set(jobId, entry);
     // Baseline identities while the promoted root is known to run, so a later
     // kill (ours or the native timeout) has a pre-kill snapshot without
     // waiting for one.
     entry.baseline = tracker.capture().catch(() => false);
-    entry.owned = { ownerSessionId: options?.ownerSessionId || null, prepareKill: () => prepareTrackedKill(entry) };
+    entry.owned = {
+      ownerSessionId: options?.ownerSessionId || null,
+      prepareKill: () => prepareTrackedKill(entry),
+    };
     registerOwnedShellTree(jobId, entry.owned);
   }
   let unsubscribe = null;
-  let settled = false;
   // The native runner enforces the job's deadline itself, with no snapshot
   // from here: one is taken shortly before it, so the timeout kill has the
   // identities of what the job started since its promotion.
@@ -153,56 +205,91 @@ function trackShellJobRecord(task, options) {
     tracker && deadlineMs > 0
       ? setTimeout(
           () => {
-            if (!settled) void tracker.capture().catch(() => false);
+            if (!entry.rootSettled) void tracker.capture().catch(() => false);
           },
           Math.max(0, deadlineMs - PRE_DEADLINE_CAPTURE_MS)
         )
       : null;
   deadlineCapture?.unref?.();
   const settle = (detail) => {
-    if (settled || !detail || detail.status === 'running') return;
-    settled = true;
+    if (entry.rootSettled || !detail) return;
+    entry.detail = normalizeShellJobDetail(detail);
+    if (detail.status === 'running') return;
+    entry.rootSettled = true;
     clearTimeout(deadlineCapture);
     try {
       unsubscribe?.();
     } catch {}
-    promotedJobIds.delete(jobId);
-    if (entry.owned) unregisterOwnedShellTree(jobId, entry.owned);
-    const normalized = normalizeShellJobDetail(detail);
-    if (!tracker) {
-      void completeShellJobRecord(jobId, normalized);
-      return;
-    }
     // A root that exited on its own is observed after exit, as a foreground
     // settle does. A killed one relies on the snapshot taken before the kill.
-    const killed = entry.killed || detail.killed || detail.timedOut || String(detail.status) === 'cancelled';
-    if (!killed) tracker.acceptExitObservation();
-    // The completion notice is already on its way (watchBackgroundShellJob);
-    // the record — and with it the workspace admission — completes only once
-    // every process is confirmed gone, or the user releases it explicitly.
-    let finished = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
+    entry.killed = entry.killed || detail.killed || detail.timedOut || String(detail.status) === 'cancelled';
+    if (!entry.killed) tracker?.acceptExitObservation();
+    let stop = () => {};
+    const finish = async () => {
+      if (entry.finishedAtMs) return;
+      let completed = normalizeShellJobDetail({
+        ...entry.detail,
+        ...(entry.cancelRequested ? { status: 'cancelled', killed: true, error: 'cancelled by task control' } : {}),
+        finishedAt: new Date().toISOString(),
+        terminationUnconfirmed: false,
+        workspaceReleased: entry.workspaceReleased,
+      });
+      await completeShellJobRecord(jobId, completed);
+      // Stop stays available until this publication lands. If it arrived
+      // during the write, persist its outcome before publishing completion.
+      // Cancellation only moves false -> true, so one correction is enough.
+      if (entry.cancelRequested && completed.status !== 'cancelled') {
+        completed = normalizeShellJobDetail({
+          ...completed,
+          status: 'cancelled',
+          killed: true,
+          error: 'cancelled by task control',
+        });
+        await completeShellJobRecord(jobId, completed);
+      }
+      entry.detail = completed;
+      entry.finishedAtMs = Date.now();
+      entry.observation = 'gone';
       stop();
       clearTerminationHold(jobId);
-      if (backgroundTrackers.get(jobId) === entry) backgroundTrackers.delete(jobId);
+      if (entry.owned) unregisterOwnedShellTree(jobId, entry.owned);
+      for (const listener of [...entry.listeners]) listener();
+      entry.listeners.clear();
       resolveTerminated(true);
-      return completeShellJobRecord(jobId, normalized);
+      retainCompletedJob();
     };
-    const stop = watchTermination({
+    if (!tracker) {
+      void finish();
+      return;
+    }
+    const releaseWorkspace = async () => {
+      await releaseShellJobWorkspace(jobId);
+      entry.workspaceReleased = true;
+      clearTerminationHold(jobId);
+    };
+    let markedUnconfirmed = false;
+    stop = watchTermination({
       tracker,
       // A killed job is not over while processes it started still run.
-      sweep: killed,
+      sweep: () => entry.killed,
       onTerminated: finish,
       releaseRequested: () => takeReleaseRequest(jobId),
-      onUnconfirmed: () => {
-        void markShellJobTerminationUnconfirmed(jobId);
-        registerTerminationHold(jobId, {
-          ownerSessionId: options?.ownerSessionId || null,
-          cwd: task.cwd,
-          release: finish,
-        });
+      onReleaseRequested: releaseWorkspace,
+      onObservation: (state) => {
+        entry.observation = state;
+        if (state === 'gone') return;
+        const unconfirmed = state === 'unknown' || (entry.killed && state === 'running');
+        if (unconfirmed !== markedUnconfirmed) {
+          markedUnconfirmed = unconfirmed;
+          void markShellJobTerminationUnconfirmed(jobId, unconfirmed);
+        }
+        if (unconfirmed && !entry.workspaceReleased) {
+          registerTerminationHold(jobId, {
+            ownerSessionId: options?.ownerSessionId || null,
+            cwd: task.cwd,
+            release: releaseWorkspace,
+          });
+        } else clearTerminationHold(jobId);
       },
     });
   };
@@ -329,7 +416,27 @@ export function buildShellCompletion(jobId, detail, { output } = {}) {
 
 export async function waitForShellJob(jobId, { timeoutMs = 30_000, signal = null } = {}) {
   const started = Date.now();
-  const detail = normalizeShellJobDetail(await waitNativeTask(jobId, timeoutMs, signal));
+  const entry = backgroundTrackers.get(String(jobId || ''));
+  let detail;
+  if (entry) {
+    if (!entry.finishedAtMs && !signal?.aborted) {
+      await new Promise((resolve) => {
+        let timer = null;
+        let unsubscribe = () => {};
+        const finish = () => {
+          clearTimeout(timer);
+          unsubscribe();
+          signal?.removeEventListener('abort', finish);
+          resolve();
+        };
+        timer = setTimeout(finish, Math.max(1, Number(timeoutMs) || 30_000));
+        timer.unref?.();
+        signal?.addEventListener('abort', finish, { once: true });
+        unsubscribe = subscribeShellJobSettled(jobId, finish) || (() => {});
+      });
+    }
+    detail = lifecycleDetail(entry);
+  } else detail = normalizeShellJobDetail(await waitNativeTask(jobId, timeoutMs, signal));
   const withInsights = attachJobInsights(detail);
   if (!withInsights) return null;
   withInsights.waitedMs = Date.now() - started;
@@ -338,24 +445,16 @@ export async function waitForShellJob(jobId, { timeoutMs = 30_000, signal = null
 }
 
 export function peekShellJob(jobId) {
-  return attachJobInsights(normalizeShellJobDetail(getNativeTask(jobId)));
-}
-
-/** Run `onTreeSettled` once a job whose native task is terminal is over as a
- *  whole: at once for an untracked job, else once every process of its tree is
- *  confirmed gone (or the user released it) — a root's exit is not the end of
- *  what it started. */
-function afterTreeSettled(jobId, onTreeSettled) {
-  const entry = backgroundTrackers.get(jobId);
-  if (entry) void entry.terminated.then(onTreeSettled);
-  else onTreeSettled();
+  const entry = backgroundTrackers.get(String(jobId || ''));
+  return attachJobInsights(entry ? lifecycleDetail(entry) : normalizeShellJobDetail(getNativeTask(jobId)));
 }
 
 /** True while a process of the job is still alive in this daemon. Owners of
  *  in-use artifacts consult it before a fallback cleanup fires. */
 export function isShellJobRunning(jobId) {
   const key = String(jobId || '');
-  return getNativeTask(key)?.status === 'running' || backgroundTrackers.has(key);
+  const entry = backgroundTrackers.get(key);
+  return entry ? !entry.finishedAtMs : getNativeTask(key)?.status === 'running';
 }
 
 /** Run `onSettled` once the job leaves 'running' and its tree has settled
@@ -367,17 +466,34 @@ export function isShellJobRunning(jobId) {
 export function subscribeShellJobSettled(jobId, onSettled) {
   const key = String(jobId || '').trim();
   if (!key || typeof onSettled !== 'function') return null;
+  const entry = backgroundTrackers.get(key);
+  if (entry) {
+    let subscribed = true;
+    const deliver = () => {
+      if (!subscribed) return;
+      subscribed = false;
+      entry.listeners.delete(deliver);
+      try {
+        onSettled(lifecycleDetail(entry));
+      } catch {}
+    };
+    if (entry.finishedAtMs) queueMicrotask(deliver);
+    else entry.listeners.add(deliver);
+    return () => {
+      subscribed = false;
+      entry.listeners.delete(deliver);
+    };
+  }
   const current = getNativeTask(key);
   if (!current) return null;
   let done = false;
-  const deliver = (task) =>
-    afterTreeSettled(key, () => {
-      if (done) return;
-      done = true;
-      try {
-        onSettled(task);
-      } catch {}
-    });
+  const deliver = (task) => {
+    if (done) return;
+    done = true;
+    try {
+      onSettled(task);
+    } catch {}
+  };
   if (current.status !== 'running') {
     queueMicrotask(() => deliver(current));
     return () => {
@@ -404,19 +520,22 @@ export function subscribeShellJobSettled(jobId, onSettled) {
 }
 
 export function refreshShellJob(jobId) {
-  return normalizeShellJobDetail(getNativeTask(jobId));
+  const entry = backgroundTrackers.get(String(jobId || ''));
+  return entry ? lifecycleDetail(entry) : normalizeShellJobDetail(getNativeTask(jobId));
 }
 
 export function killShellJob(jobId) {
   const tracked = backgroundTrackers.get(String(jobId || ''));
-  const current = tracked ? getNativeTask(jobId) : null;
-  if (current?.status === 'running') {
+  const current = tracked ? lifecycleDetail(tracked) : null;
+  if (tracked && !tracked.finishedAtMs) {
     // The pre-kill snapshot is the promotion baseline (or, when that did not
     // complete, a fresh read). The kill waits for it at most the read bound
     // and is sent regardless; without a snapshot the outcome stays unknown and
     // the folder stays held under the observation loop.
-    void killAfterSnapshot(prepareTrackedKill(tracked), () => cancelNativeTask(jobId));
-    return { ...attachJobInsights(normalizeShellJobDetail(current)), killed: true };
+    void killAfterSnapshot(prepareTrackedKill(tracked), () => {
+      if (!tracked.rootSettled) cancelNativeTask(jobId);
+    });
+    return { ...attachJobInsights(current), killed: true };
   }
   const detail = cancelNativeTask(jobId);
   if (!detail) return null;
@@ -430,7 +549,7 @@ export function killShellJob(jobId) {
 export async function waitShellJobTerminated(jobId, timeoutMs) {
   const entry = backgroundTrackers.get(String(jobId || ''));
   if (!entry) return true;
-  return withinBound(entry.terminated, timeoutMs, false);
+  return timeoutMs == null ? entry.terminated : withinBound(entry.terminated, timeoutMs, false);
 }
 
 export function clearShellJobNotifyCtx(jobId) {
@@ -456,19 +575,23 @@ export function watchBackgroundShellJob(jobId, notifyCtx) {
     notifyCtx && typeof notifyCtx.notifyFn === 'function'
       ? normalizeToolNotifyContext(notifyCtx)
       : jobNotifyCtxByJobId.get(jobId);
-  if (!jobId || !getNativeTask(jobId) || backgroundShellJobWatchers.has(jobId)) return;
+  if (!jobId || !peekShellJob(jobId)) return null;
+  const watching = backgroundShellJobWatchers.get(jobId);
+  if (watching) return watching.completion;
   if (ctx) jobNotifyCtxByJobId.set(jobId, ctx);
   // The launching turn's bot-chain hop travels with the job: on its notify
   // context, and on its record for a completion recovered after a restart.
   const hop = hopOf(notifyCtx?.hop) || ctx?.hop || 0;
   if (hop) void recordShellJobHop(jobId, hop);
   let settled = false;
+  let notificationCancelled = false;
+  let resolveCompletion = null;
+  const completionPromise = new Promise((resolve) => {
+    resolveCompletion = resolve;
+  });
   let unsubscribe = () => {};
   const cancel = () => {
-    if (settled) return;
-    settled = true;
-    unsubscribe();
-    backgroundShellJobWatchers.delete(jobId);
+    notificationCancelled = true;
   };
   const finish = (detail) => {
     if (settled || !detail || detail.status === 'running') return;
@@ -492,9 +615,10 @@ export function watchBackgroundShellJob(jobId, notifyCtx) {
       error: completion.error,
       resultType: 'shell_task_result',
       instruction: completion.instruction,
-      terminalReason: 'shell-native-event',
+      terminalReason: 'shell-tree-settled',
+      notify: !notificationCancelled,
     });
-    if (!completedTask) {
+    if (!completedTask && !notificationCancelled) {
       // Delivery order: owner notifyFn when present, else the owner
       // session's pending queue. A ctx-less finish (daemon restarted
       // between job start and completion, or a watcher armed without a
@@ -512,12 +636,14 @@ export function watchBackgroundShellJob(jobId, notifyCtx) {
         logPrefix: 'shell-jobs',
       });
     }
+    resolveCompletion(completion);
   };
-  unsubscribe = subscribeNativeTask(jobId, finish);
+  unsubscribe = subscribeShellJobSettled(jobId, finish) || (() => {});
   if (!settled) {
-    backgroundShellJobWatchers.set(jobId, { cancel, notifyCtx: ctx });
+    backgroundShellJobWatchers.set(jobId, { cancel, notifyCtx: ctx, completion: completionPromise });
   }
-  queueMicrotask(() => finish(getNativeTask(jobId)));
+  queueMicrotask(() => finish(peekShellJob(jobId)));
+  return completionPromise;
 }
 
 export async function trackForegroundShellJob({ command, cwd, child, jobId, clientHostPid, ownerSessionId }) {
@@ -542,6 +668,7 @@ export async function promoteForegroundShellJob({
   startedAtMs = 0,
   stdoutPath = null,
   stderrPath = null,
+  terminationTracker = null,
 }) {
   const native = await promoteNativeTask({
     jobId,
@@ -570,22 +697,15 @@ export async function promoteForegroundShellJob({
     native.stdoutPath = stdoutPath || null;
     native.stderrPath = stderrPath || null;
   }
-  // Added before tracking: the record's settlement removes it again.
-  promotedJobIds.add(native.jobId);
-  trackShellJobRecord(native, { ownerSessionId, clientHostPid, startedAtMs: started, timeoutMs });
+  trackShellJobRecord(native, { ownerSessionId, clientHostPid, startedAtMs: started, timeoutMs, terminationTracker });
   return native;
 }
 
 /** Running background shell jobs owned by sessions outside `ownSessionIds`. */
 export function otherSessionBackgroundShellJobCount(ownSessionIds) {
   let count = 0;
-  for (const jobId of [...promotedJobIds]) {
-    const task = getNativeTask(jobId);
-    if (task?.status !== 'running') {
-      promotedJobIds.delete(jobId);
-      continue;
-    }
-    if (!ownSessionIds.has(String(task.ownerSessionId || ''))) count += 1;
+  for (const entry of backgroundTrackers.values()) {
+    if (!entry.finishedAtMs && !ownSessionIds.has(String(entry.detail.ownerSessionId || ''))) count += 1;
   }
   return count;
 }
@@ -605,6 +725,7 @@ export function publishForegroundShellRecord({
   ownerSessionId = null,
   clientHostPid = null,
   terminationUnconfirmed = false,
+  lifecycleTracked = false,
 }) {
   if (!jobId || !Number.isFinite(Number(pid)) || Number(pid) <= 0) return;
   publishShellJobRecord(
@@ -615,6 +736,7 @@ export function publishForegroundShellRecord({
       startedAtMs,
       foreground: true,
       terminationUnconfirmed,
+      lifecycleTracked,
     }
   );
 }
@@ -645,7 +767,8 @@ export async function reconcileRecoveredShellJobCompletions() {
     // A foreground record is a liveness marker, not a task: it has no
     // task id a caller could query and no waiter expecting a completion.
     if (record.foreground) continue;
-    if (getNativeTask(record.jobId)) continue; // live in this daemon
+    if (isShellJobRunning(record.jobId) || getNativeTask(record.jobId)) continue; // live in this daemon
+    if (isPidAlive(Number(record.lifecycleOwnerPid) || 0)) continue; // tracked by another live runtime
     if (isPidAlive(Number(record.pid) || 0)) continue; // survived the restart
     const detail = {
       ...record,
@@ -690,7 +813,9 @@ export async function shutdownShellJobs(_reason = 'runtime-close', { scope = nul
   if (scoped && !ownerSessionId) {
     return { killed: 0, cancelledJobs: 0, cancelledWatchers: 0 };
   }
-  const jobs = listNativeTasks().filter(
+  const knownJobs = new Map(listNativeTasks().map((task) => [task.jobId, task]));
+  for (const [jobId, entry] of backgroundTrackers) knownJobs.set(jobId, lifecycleDetail(entry));
+  const jobs = [...knownJobs.values()].filter(
     (task) => task.status === 'running' && (!scoped || String(task.ownerSessionId || '') === ownerSessionId)
   );
   let cancelledWatchers = 0;
@@ -714,16 +839,22 @@ export async function shutdownShellJobs(_reason = 'runtime-close', { scope = nul
   // The roots are gone; what they started outside their group is swept by
   // each job's termination watch. Shutdown waits for that, bounded.
   const treesGone = await Promise.all(jobs.map((task) => waitShellJobTerminated(task.jobId, SHUTDOWN_TREE_CONFIRM_MS)));
+  const confirmedJobs = jobs.filter((task, index) => {
+    const detail = refreshShellJob(task.jobId) || settled[index];
+    return treesGone[index] && detail && detail.status !== 'running';
+  }).length;
   if (scoped) {
     // The owning session is gone: nothing can query its tasks again, so
     // drop ALL of its retained state — not only the ones that happened to
     // be running when shutdown began. releaseNativeTask refuses a task
     // that is still alive, and disk records still serve a post-restart
     // recovery read.
-    for (const task of listNativeTasks()) {
+    for (const task of knownJobs.values()) {
       if (String(task.ownerSessionId || '') !== ownerSessionId) continue;
+      if (isShellJobRunning(task.jobId)) continue;
       try {
         releaseNativeTask(task.jobId);
+        backgroundTrackers.delete(task.jobId);
       } catch {}
     }
   }
@@ -731,7 +862,7 @@ export async function shutdownShellJobs(_reason = 'runtime-close', { scope = nul
   return {
     killed: jobs.length,
     cancelledJobs: jobs.length,
-    confirmedJobs: settled.filter((task) => task && task.status !== 'running').length,
+    confirmedJobs,
     unconfirmedJobs: unconfirmed,
     treeUnconfirmedJobs: jobs.filter((_, index) => !treesGone[index]).map((task) => task.jobId),
     cancelledWatchers,

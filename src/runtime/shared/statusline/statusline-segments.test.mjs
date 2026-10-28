@@ -229,22 +229,54 @@ test('a foreground command whose termination is unconfirmed stays listed after i
     mkdirSync(dir, { recursive: true });
     const jobId = `job_${Date.now()}_unconfirmed`;
     // The root pid is gone; a descendant may still be alive. The owner lives.
-    writeFileSync(
-      join(dir, `${jobId}.json`),
-      JSON.stringify({
-        pid: 2_147_483_646,
-        ownerSessionId: 'sess-unconfirmed',
-        command: 'node server.js',
-        foreground: true,
-        terminationUnconfirmed: true,
-      })
-    );
+    const record = {
+      pid: 2_147_483_646,
+      ownerSessionId: 'sess-unconfirmed',
+      command: 'node server.js',
+      foreground: true,
+      terminationUnconfirmed: true,
+    };
+    writeFileSync(join(dir, `${jobId}.json`), JSON.stringify(record));
     writeFileSync(join(dir, `${jobId}.owner-${process.pid}`), '');
     const status = await shellJobsStatusFresh({ clientHostPid: process.pid });
     assert.equal(status.count, 1);
     assert.deepEqual(
       status.sessions['sess-unconfirmed'].jobs.map((job) => [job.command, job.terminationUnconfirmed]),
       [['node server.js', true]]
+    );
+    writeFileSync(join(dir, `${jobId}.json`), JSON.stringify({ ...record, workspaceReleased: true }));
+    const released = await shellJobsStatusFresh({ clientHostPid: process.pid });
+    assert.equal(released.count, 0, 'a released foreground hold has no background task for Stop to address');
+  } finally {
+    if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('lifecycle records follow the tracker runtime while legacy records follow their root pid', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-statusline-lifecycle-'));
+  const previous = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = root;
+  try {
+    const dir = join(root, 'shell-jobs');
+    mkdirSync(dir, { recursive: true });
+    const deadPid = 2_147_483_646;
+    const write = (suffix, record) => {
+      const jobId = `job_${Date.now()}_${suffix}`;
+      writeFileSync(join(dir, `${jobId}.json`), JSON.stringify({ ownerSessionId: 'sess-tracked', ...record }));
+      // A desktop host can outlive the session runtime that tracked the tree.
+      writeFileSync(join(dir, `${jobId}.owner-${process.pid}`), '');
+    };
+    write('tracked', { pid: deadPid, lifecycleOwnerPid: process.pid, command: 'tracked tree' });
+    write('stale', { pid: process.pid, lifecycleOwnerPid: deadPid, command: 'lost tracker' });
+    write('legacy_live', { pid: process.pid, command: 'legacy live root' });
+    write('legacy_dead', { pid: deadPid, command: 'legacy dead root' });
+    const status = await shellJobsStatusFresh({ clientHostPid: process.pid });
+    assert.equal(status.count, 2);
+    assert.deepEqual(
+      status.sessions['sess-tracked'].jobs.map((job) => job.command).sort(),
+      ['legacy live root', 'tracked tree']
     );
   } finally {
     if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;

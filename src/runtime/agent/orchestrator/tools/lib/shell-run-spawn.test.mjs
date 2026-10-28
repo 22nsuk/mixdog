@@ -68,7 +68,7 @@ const isHeld = (repo) => {
 
 test('a startup whose child termination is unconfirmed keeps the reservation until the child is gone', async () => {
   const repo = makeRepo();
-  const run = { foregroundRecordId: 'job_unconfirmed_startup' };
+  const run = { foregroundRecordId: 'job_unconfirmed_startup', taskOutput: { closeFds() {} } };
   mock.timers.enable({ apis: ['setTimeout'] });
   try {
     await assert.rejects(
@@ -125,7 +125,11 @@ test('a failed startup whose killed root leaves a descendant keeps the reservati
     tree.state.next = () => processTable([{ ...worker, ppid: 1 }]);
     nativeDetail = { nativeStatus: 'cancelled' };
   };
-  const run = { foregroundRecordId: 'job_startup_survivor' };
+  let capturesClosed = 0;
+  const run = {
+    foregroundRecordId: 'job_startup_survivor',
+    taskOutput: { closeFds() { capturesClosed += 1; } },
+  };
   t.after(() => {
     nativeKill = () => {};
     nativeDetail = { nativeStatus: 'running' };
@@ -144,13 +148,19 @@ test('a failed startup whose killed root leaves a descendant keeps the reservati
   );
   await flush();
   assert.equal(isHeld(repo), true, 'the root exit is not the end of its tree');
+  let settled = false;
+  void run.treeSettled.then(() => { settled = true; });
+  assert.equal(capturesClosed, 0, 'the failed startup still owns a live capture');
   assert.ok(tree.state.kills.includes(worker.pid), 'the surviving worker is swept like any killed tree');
   t.mock.timers.tick(5_000);
   await flush();
   assert.equal(isHeld(repo), true);
+  assert.equal(settled, false);
   tree.state.next = () => processTable([]);
   t.mock.timers.tick(5_000);
   await flush();
   assert.equal(isHeld(repo), false);
   assert.equal(run.workspaceAdmission, null);
+  assert.equal(settled, true);
+  assert.equal(capturesClosed, 1);
 });

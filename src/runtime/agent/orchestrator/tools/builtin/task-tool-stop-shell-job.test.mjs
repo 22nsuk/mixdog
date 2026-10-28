@@ -11,7 +11,7 @@ import { shellJobsStatus } from '../../../../shared/statusline/statusline-segmen
 import { createAgentOps } from '../../../../../session-runtime/turn/agent-ops.mjs';
 import { execShellCommand } from '../shell-command.mjs';
 import { killShellJob, shutdownShellJobs, waitShellJobTerminated, watchBackgroundShellJob } from './shell-jobs.mjs';
-import { stopBackgroundShellJob } from './task-tool.mjs';
+import { executeTaskTool, stopBackgroundShellJob } from './task-tool.mjs';
 import { PROCESS_TABLE_READ_BOUND_MS, TERMINATION_RECHECK_MS } from '../lib/shell-descendants.mjs';
 import {
   _resetNativeSpawnClientForTest,
@@ -98,6 +98,38 @@ test('the runtime stopShellJob scopes the stop to its own session', async () => 
   assert.equal(getBackgroundTask('job_stop_runtime').status, 'cancelled');
 });
 
+test('Stop and task cancel keep a descendant task running until its cancellation settles', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const notices = [];
+  let finish;
+  const settled = new Promise((resolve) => {
+    finish = resolve;
+  });
+  let cancellations = 0;
+  const task = registerShellTask('job_stop_descendants', OWNER, {
+    notifyOnCancel: true,
+    context: { ...ctx(OWNER), notifyFn: (text) => notices.push(text) },
+    cancel: () => {
+      cancellations += 1;
+      return settled;
+    },
+  });
+  const stopping = stopBackgroundShellJob(task.taskId, ctx(OWNER));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(task.status, 'running');
+  assert.equal(notices.length, 0);
+  t.mock.timers.tick(20_000);
+  assert.deepEqual(await stopping, { stopped: false, error: `cancellation not confirmed: ${task.taskId}` });
+  assert.equal(task.status, 'running');
+  assert.match(await executeTaskTool({ action: 'read', task_id: task.taskId }, ctx(OWNER)), /status: running/);
+  const retry = executeTaskTool({ action: 'cancel', task_id: task.taskId }, ctx(OWNER));
+  finish();
+  assert.match(await retry, /cancelled: shell\/shell/);
+  assert.equal(cancellations, 2);
+  assert.equal(task.status, 'cancelled');
+  assert.equal(notices.length, 1);
+});
+
 test('stopping a real background job settles it as cancelled in the shell-jobs status', {
   skip: skipNative,
   timeout: 60_000,
@@ -119,8 +151,18 @@ test('stopping a real background job settles it as cancelled in the shell-jobs s
   const jobId = result.jobId;
   assert.equal(getNativeTask(jobId)?.status, 'running');
   // What the bash tool does with a promoted job (backgrounded-result.mjs).
-  registerShellTask(jobId, OWNER, { cancel: () => killShellJob(jobId) });
-  watchBackgroundShellJob(jobId, { callerSessionId: OWNER, routingSessionId: OWNER, clientHostPid: process.pid });
+  const task = registerShellTask(jobId, OWNER, {
+    notifyOnCancel: true,
+    cancel: () => {
+      killShellJob(jobId);
+      return task.promise;
+    },
+  });
+  task.promise = watchBackgroundShellJob(jobId, {
+    callerSessionId: OWNER,
+    routingSessionId: OWNER,
+    clientHostPid: process.pid,
+  });
 
   assert.equal((await stopBackgroundShellJob(jobId, ctx(OTHER))).stopped, false);
   assert.equal(getNativeTask(jobId)?.status, 'running');
@@ -129,7 +171,7 @@ test('stopping a real background job settles it as cancelled in the shell-jobs s
   assert.notEqual(getNativeTask(jobId)?.status, 'running');
   if (!stop.stopped) {
     // On a heavily loaded machine the process-table reads that confirm the
-    // whole tree is gone can outlast the 15 s confirmation ceiling; the stop
+    // whole tree is gone can outlast the 20 s confirmation ceiling; the stop
     // then says so (and the job stays tracked) instead of claiming a cancel.
     assert.match(stop.error, /cancellation not confirmed/);
     assert.equal(await waitShellJobTerminated(jobId, 60_000), true, 'the tree is eventually confirmed gone');

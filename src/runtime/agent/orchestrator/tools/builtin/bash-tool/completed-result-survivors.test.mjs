@@ -6,6 +6,8 @@ import { cleanupTempDirs, makeRepo } from '../../../../../shared/worktrees/test-
 import { processTable, scriptedChildTree } from '../../lib/process-table-fixture.mjs';
 import {
   completeBackgroundTask,
+  cancelBackgroundTask,
+  getBackgroundTask,
   hasActiveBackgroundTasks,
   registerBackgroundTask,
 } from '../../../../../shared/background-tasks.mjs';
@@ -16,6 +18,7 @@ const tree = scriptedChildTree();
 mock.module('../../../mcp/child-tree.mjs', { namedExports: tree.namedExports });
 const { renderCompletedResult } = await import('./completed-result.mjs');
 const { adoptShellWorkspaceAdmission } = await import('../lib/shell-job-records.mjs');
+const { registerOwnedShellTree, unregisterOwnedShellTree } = await import('../../lib/owned-shell-trees.mjs');
 
 after(cleanupTempDirs);
 
@@ -125,4 +128,67 @@ test('survivors a finished command left running do not hold the idle agent row w
   await flush();
   await flush();
   assert.equal(hasActiveBackgroundTasks(scope), false, 'the task settled once the survivors were gone');
+});
+
+test('a detached survivor cancellation waits for its original lifetime and notifies once when it ends', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const taskId = 'job_survivor_late_cancel';
+  let finishTree;
+  const settled = new Promise((resolve) => { finishTree = resolve; });
+  let preparations = 0;
+  const owned = { ownerSessionId: 'session', prepareKill: () => { preparations += 1; return true; } };
+  registerOwnedShellTree(taskId, owned);
+  tree.state.next = () => processTable([{ pid: 7301, ppid: 1, token: 'survivor' }]);
+  const notifications = [];
+  try {
+    renderCompletedResult({
+      result: {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        settled,
+        descendants: {
+          taskId,
+          rootPid: 7300,
+          groupPid: null,
+          killPids: [7301],
+          watchPids: [7301],
+          watch: [{ pid: 7301, token: 'survivor', name: 'node.exe' }],
+          reachable: true,
+        },
+      },
+      command: 'node launcher.js',
+      analysisCommand: 'node launcher.js',
+      cwd: process.cwd(),
+      options: { sessionId: 'session', notifyFn: (notice) => { notifications.push(notice); return true; } },
+      stdout: '',
+      stderr: '',
+      timeout: 0,
+    });
+    const task = getBackgroundTask(taskId);
+    const reads = tree.state.reads;
+    await flush();
+    assert.equal(tree.state.reads, reads, 'the task reuses the foreground lifetime instead of another observer');
+    cancelBackgroundTask(taskId, 'stop');
+    await flush();
+    assert.equal(preparations, 1, 'late cancellation reaches the original lifecycle owner');
+    assert.equal(task.status, 'running');
+    assert.equal(notifications.length, 0);
+    t.mock.timers.tick(10_000);
+    await flush();
+    assert.equal(task.status, 'running', 'a cancellation grace period cannot complete a live tree');
+    assert.equal(notifications.length, 0);
+    tree.state.next = () => processTable([]);
+    finishTree();
+    await task.promise;
+    await flush();
+    assert.equal(task.status, 'cancelled');
+    assert.equal(task.result.status, 'cancelled');
+    assert.equal(notifications.length, 1);
+    cancelBackgroundTask(taskId, 'stop again');
+    assert.equal(notifications.length, 1);
+  } finally {
+    finishTree();
+    unregisterOwnedShellTree(taskId, owned);
+  }
 });

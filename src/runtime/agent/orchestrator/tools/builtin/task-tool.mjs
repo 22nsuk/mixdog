@@ -4,12 +4,9 @@ import {
   peekShellJob,
   killShellJob,
   otherSessionBackgroundShellJobCount,
-  cancelBackgroundShellJobWatch,
-  clearShellJobNotifyCtx,
   shellJobPublicTaskResult,
   shellJobTaskStatus,
   waitForShellJob,
-  waitShellJobTerminated,
 } from './shell-jobs.mjs';
 import { beginSessionTaskWait } from '../../session/manager/runtime-liveness.mjs';
 import { TASK_WAIT_TIMEOUT_DEFAULT_MS, TASK_WAIT_TIMEOUT_MAX_MS, TASK_WAIT_TIMEOUT_MIN_MS } from './builtin-tools.mjs';
@@ -29,21 +26,18 @@ import { recordDeliveredCompletion } from '../../session/manager/delivered-compl
 import { listShellJobRecords, readShellJobRecord } from './lib/shell-job-records.mjs';
 import { resourceAdmission } from '../../../../shared/resource-admission.mjs';
 import { readShellTaskOutput } from './lib/shell-task-output.mjs';
+import { withinBound } from '../lib/shell-descendants.mjs';
 
-// Ceiling for confirming that a cancelled task's process really exited. The
-// wait returns the moment the native task settles, so this only bounds a
-// process that ignores the kill.
-const TASK_CANCEL_CONFIRM_MS = 5_000;
-// Ceiling for confirming that every process the task started is gone once its
-// root exited: a sweep is a table read, the kill and a second read (each read
-// ~1-2 s on Windows).
-const TASK_CANCEL_TREE_CONFIRM_MS = 15_000;
+// One ceiling for the whole lifecycle: root exit and confirmation that every
+// process it started is gone. A sweep includes the kill and two table reads
+// (each read can take ~1-2 s on Windows).
+const TASK_CANCEL_CONFIRM_MS = 20_000;
 
 function cancelPendingText(taskId) {
   return [
-    'status: cancel-pending',
+    'status: cancel-unconfirmed',
     `task_id: ${taskId}`,
-    'the kill was sent and the command itself exited, but processes it started are still alive. They keep being terminated and stay tracked (the folder stays held) until they are gone; re-run task cancel or task read to check again.',
+    'cancellation was requested, but termination of every process has not been confirmed. The task stays tracked and its completion is delivered when it ends; re-run task cancel or task read to check again.',
   ].join('\n');
 }
 
@@ -218,7 +212,7 @@ async function waitForShellTask(task, taskId, args, options) {
   return { interruptedByUser, notified, notifiedTaskId };
 }
 
-// Outcome of a shell cancel: `outcome` is 'cancelled' only when the process is
+// Outcome of a shell cancel: `outcome` is 'cancelled' only when the whole task is
 // confirmed gone (or never had one), 'unconfirmed' when the kill was delivered
 // but the exit could not be confirmed, 'not-found' for an unknown task.
 async function cancelShellTaskOutcome(task, taskId, options) {
@@ -227,54 +221,28 @@ async function cancelShellTaskOutcome(task, taskId, options) {
   // their shell). Remember that it WAS live so the outcome is
   // reported as a cancellation rather than "task not found".
   const wasRunning = task.status === 'running';
-  const job = killShellJob(taskId);
+  const job = peekShellJob(taskId);
+  // The run owns its cancellation. A queued command still in the foreground
+  // must abort through its snapshot-taking handler, not kill its native root
+  // first and lose the identities of its descendants.
+  if (task.cancel || !job) cancelBackgroundTask(taskId, 'cancelled by task control');
+  else killShellJob(taskId);
   if (job) {
-    // Confirm the process actually terminated before reporting a
-    // terminal status. Removing the watcher on the strength of a
-    // delivered signal left a live, unmonitored process behind a
-    // false 'cancelled'.
+    // The projected job stays running after its root exits, until its tree is
+    // confirmed gone. Native state disappearing is never proof of completion.
     const confirmed = await waitForShellJob(taskId, { timeoutMs: TASK_CANCEL_CONFIRM_MS });
-    if (confirmed && confirmed.status === 'running') {
-      // Watcher and notify context stay armed: the eventual exit
-      // must still reach the owner.
-      return {
-        outcome: 'unconfirmed',
-        text: [
-          'status: cancel-unconfirmed',
-          `task_id: ${taskId}`,
-          'the cancellation was delivered but the process has not exited yet. It stays tracked and its completion is still delivered; re-run task cancel or task read to check again.',
-        ].join('\n'),
-      };
-    }
-    // The root exited; what it started outside its process group is swept
-    // by the job's termination watch. Cancelled means all of it is gone.
-    if (confirmed && !(await waitShellJobTerminated(taskId, TASK_CANCEL_TREE_CONFIRM_MS))) {
+    if (!confirmed || confirmed.status === 'running') {
       return { outcome: 'unconfirmed', text: cancelPendingText(taskId) };
     }
-    if (!confirmed) {
-      // No terminal event and no observable task: absence of
-      // state is not proof of termination. Stop tracking it so it
-      // cannot hang as 'running' forever, but never claim it died.
-      cancelBackgroundShellJobWatch(taskId);
-      clearShellJobNotifyCtx(taskId);
-      cancelBackgroundTask(taskId, 'cancelled by task control; termination unconfirmed');
-      return {
-        outcome: 'unconfirmed',
-        text: [
-          'status: cancel-unconfirmed',
-          `task_id: ${taskId}`,
-          'the cancellation was delivered but this task is no longer observable, so its termination could not be confirmed. Verify the process directly if it must be gone.',
-        ].join('\n'),
-      };
-    }
   }
-  cancelBackgroundShellJobWatch(taskId);
-  clearShellJobNotifyCtx(taskId);
-  cancelBackgroundTask(taskId, 'cancelled by task control');
-  // A task whose own cancel hook kills (what a finished command left running)
-  // reports what that kill confirmed.
-  const hookKill = job ? null : await task.cancelOutcome;
-  if (hookKill && hookKill.terminated !== true) return { outcome: 'unconfirmed', text: cancelPendingText(taskId) };
+  if (!task.cancel && job) cancelBackgroundTask(taskId, 'cancelled by task control');
+  // A foreground command's survivors (or a queued run) may have no native
+  // job. Its cancel hook returns the run's actual completion promise.
+  if (!job && task.status === 'running') {
+    const completion = task.cancelPending?.promise || task.promise;
+    if (completion) await withinBound(Promise.resolve(completion).catch(() => {}), TASK_CANCEL_CONFIRM_MS, null);
+  }
+  if (task.status === 'running') return { outcome: 'unconfirmed', text: cancelPendingText(taskId) };
   return job || wasRunning
     ? {
         outcome: 'cancelled',

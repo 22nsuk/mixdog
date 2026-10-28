@@ -56,26 +56,55 @@ mock.module('../lib/native-spawn-client.mjs', {
   },
 });
 
-const { otherSessionBackgroundShellJobCount, promoteForegroundShellJob, shutdownShellJobs, shellShutdownSurvivors } =
-  await import('./shell-jobs.mjs');
-const { cancelOwnedShellTrees, registerOwnedShellTree } = await import('../lib/owned-shell-trees.mjs');
+const {
+  otherSessionBackgroundShellJobCount,
+  promoteForegroundShellJob,
+  shutdownShellJobs,
+  shellShutdownSurvivors,
+  waitShellJobTerminated,
+} = await import('./shell-jobs.mjs');
+const { cancelOwnedShellTrees, registerOwnedShellTree, unregisterOwnedShellTree } =
+  await import('../lib/owned-shell-trees.mjs');
 const { PROCESS_TABLE_READ_BOUND_MS } = await import('../lib/shell-descendants.mjs');
 
 test('runtime shutdown sends a session-close cancel still waiting for its snapshot', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   // A snapshot read that never answers: the close is waiting on its bound.
-  registerOwnedShellTree('job_snapshot_pending', {
+  const owned = {
     ownerSessionId: 'sess_closing',
     prepareKill: () => new Promise(noop),
-  });
+  };
+  registerOwnedShellTree('job_snapshot_pending', owned);
+  t.after(() => unregisterOwnedShellTree('job_snapshot_pending', owned));
   const closing = cancelOwnedShellTrees('sess_closing');
   assert.equal(typeof closing.then, 'function');
   assert.deepEqual(ownerCancels, [], 'the close is still waiting for the snapshot');
-  await shutdownShellJobs('runtime-close');
+  const shuttingDown = shutdownShellJobs('runtime-close');
   assert.deepEqual(ownerCancels, ['sess_closing'], 'shutdown sent the kill at once');
   t.mock.timers.tick(PROCESS_TABLE_READ_BOUND_MS);
+  await shuttingDown;
+  unregisterOwnedShellTree('job_snapshot_pending', owned);
   assert.deepEqual((await closing).cancelled, 1);
   assert.deepEqual(ownerCancels, ['sess_closing'], 'the kill is sent exactly once');
+});
+
+test('owner cancellation follows a promotion handoff until the current lifecycle unregisters', async () => {
+  const foreground = { ownerSessionId: 'sess_handoff', prepareKill: () => true };
+  const background = { ownerSessionId: 'sess_handoff', prepareKill: () => true };
+  registerOwnedShellTree('job_handoff', foreground);
+  let ended = false;
+  const closing = Promise.resolve(cancelOwnedShellTrees('sess_handoff')).then((result) => {
+    ended = true;
+    return result;
+  });
+  registerOwnedShellTree('job_handoff', background);
+  unregisterOwnedShellTree('job_handoff', foreground);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ended, false, 'retiring the old foreground entry cannot finish the promoted tree');
+  unregisterOwnedShellTree('job_handoff', background);
+  const result = await closing;
+  assert.equal(result.confirmed, true);
+  assert.deepEqual(result.unconfirmed, []);
 });
 
 test('shutdown keeps retrying a survivor until its exit is confirmed', async (t) => {
@@ -85,6 +114,7 @@ test('shutdown keeps retrying a survivor until its exit is confirmed', async (t)
   survivors.add('job_stuck');
   const result = await shutdownShellJobs('test', { scope: { ownerSessionId: 'sess_x' } });
   assert.equal(result.killed, 2);
+  assert.equal(result.confirmedJobs, 1, 'the native root still running is not confirmed terminated');
   assert.deepEqual(result.unconfirmedJobs, ['job_stuck']);
   assert.deepEqual(shellShutdownSurvivors(), [{ jobId: 'job_stuck', attempts: 1 }]);
 
@@ -129,6 +159,7 @@ test('a promoted job leaves the other-session count when it settles', async () =
   await promoteForegroundShellJob({ command: 'serve', cwd: '.', pid: 0, jobId: 'job_p', ownerSessionId: 'sess_other' });
   assert.equal(otherSessionBackgroundShellJobCount(mine), 1);
   setTask('job_p', 'cancelled', 'sess_other');
+  await waitShellJobTerminated('job_p');
   // Revive the state silently: a still-tracked id would be counted again.
   tasks.get('job_p').status = 'running';
   assert.equal(otherSessionBackgroundShellJobCount(mine), 0, 'removed on settlement, not on count');

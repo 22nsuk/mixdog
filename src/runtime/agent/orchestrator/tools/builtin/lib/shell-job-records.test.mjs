@@ -10,16 +10,20 @@ import { setTimeout as delay } from 'node:timers/promises';
 import {
   _shellJobRecordWritesSettledForTest,
   completeShellJobRecord,
+  forceReleaseTerminationHold,
   listShellJobRecords,
+  markShellJobTerminationUnconfirmed,
   publishShellJobRecord,
   readShellJobRecord,
   recordShellJobHop,
+  registerTerminationHold,
+  releaseShellJobWorkspace,
   retireShellJobRecord,
 } from './shell-job-records.mjs';
 import { holdWorkspaceActivity } from '../../../../../shared/worktrees/activity-gate.mjs';
 import { cleanupTempDirs, makeRepo } from '../../../../../shared/worktrees/test-support.mjs';
 import { executeTaskTool } from '../task-tool.mjs';
-import { shellJobsStatus } from '../../../../../shared/statusline/statusline-segments.mjs';
+import { shellJobsStatus, shellJobsStatusFresh } from '../../../../../shared/statusline/statusline-segments.mjs';
 
 // The reader caches for 1s and refreshes in the background, so a probe polls
 // until the scan lands instead of assuming the first call is populated.
@@ -85,6 +89,103 @@ test('a running shell job publishes a record the statusline reader counts', asyn
     else process.env.MIXDOG_DATA_DIR = previous;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('a tracked lifecycle stays listed through root exit and recoverable observation gaps', async () => {
+  await withDataDir('mixdog-shell-records-lifecycle-', async (root) => {
+    const jobId = `job_lifecycle_${process.pid}`;
+    try {
+      publishShellJobRecord(
+        { jobId, pid: 2_147_483_646, command: 'node worker.js', cwd: root },
+        { ownerSessionId: 'sess-lifecycle', clientHostPid: process.pid, lifecycleTracked: true }
+      );
+      await _shellJobRecordWritesSettledForTest(jobId);
+      assert.equal((await readShellJobRecord(jobId)).lifecycleOwnerPid, process.pid);
+      let status = await shellJobsStatusFresh({ clientHostPid: process.pid });
+      assert.equal(status.sessions['sess-lifecycle']?.count, 1, 'the tracker owns the pending observation');
+      assert.equal(status.sessions['sess-lifecycle'].jobs[0].terminationUnconfirmed, undefined);
+      await markShellJobTerminationUnconfirmed(jobId);
+      status = await shellJobsStatusFresh({ clientHostPid: process.pid });
+      assert.equal(status.sessions['sess-lifecycle'].jobs[0].terminationUnconfirmed, true);
+      await markShellJobTerminationUnconfirmed(jobId, false);
+      status = await shellJobsStatusFresh({ clientHostPid: process.pid });
+      assert.equal(status.sessions['sess-lifecycle'].count, 1);
+      assert.equal(status.sessions['sess-lifecycle'].jobs[0].terminationUnconfirmed, undefined);
+    } finally {
+      retireShellJobRecord(jobId);
+      await _shellJobRecordWritesSettledForTest(jobId);
+    }
+  });
+});
+
+test('repeated lifecycle observations do not rewrite an unchanged running record', async () => {
+  await withDataDir('mixdog-shell-records-unchanged-', async (root) => {
+    const jobId = `job_unchanged_${process.pid}`;
+    const jsonPath = join(root, 'shell-jobs', `${jobId}.json`);
+    try {
+      publishShellJobRecord(
+        { jobId, pid: process.pid, command: 'node worker.js', cwd: root },
+        { ownerSessionId: 'sess-unchanged', lifecycleTracked: true }
+      );
+      assert.equal(await markShellJobTerminationUnconfirmed(jobId), true);
+      const unchangedTime = new Date('2000-01-01T00:00:00Z');
+      await fsp.utimes(jsonPath, unchangedTime, unchangedTime);
+      const before = await fsp.stat(jsonPath);
+
+      assert.equal(await markShellJobTerminationUnconfirmed(jobId), false);
+      assert.equal((await fsp.stat(jsonPath)).mtimeMs, before.mtimeMs);
+      assert.equal((await readShellJobRecord(jobId)).terminationUnconfirmed, true);
+      assert.equal(await markShellJobTerminationUnconfirmed(jobId, false), true);
+      assert.equal((await readShellJobRecord(jobId)).terminationUnconfirmed, false);
+    } finally {
+      retireShellJobRecord(jobId);
+      await _shellJobRecordWritesSettledForTest(jobId);
+    }
+  });
+});
+
+test('force release frees the folder while retaining an unfinished task record', async () => {
+  await withDataDir('mixdog-shell-records-release-', async (root) => {
+    const jobId = `job_release_${process.pid}`;
+    const repo = makeRepo();
+    try {
+      publishShellJobRecord(
+        { jobId, pid: process.pid, command: 'node worker.js', cwd: repo },
+        { ownerSessionId: 'sess-release', lifecycleTracked: true, terminationUnconfirmed: true }
+      );
+      registerTerminationHold(jobId, {
+        ownerSessionId: 'sess-release',
+        cwd: repo,
+        release: () => releaseShellJobWorkspace(jobId),
+      });
+      await _shellJobRecordWritesSettledForTest(jobId);
+      assert.throws(() => holdWorkspaceActivity([repo]), { code: 'WORKTREE_BUSY_JOBS' });
+      assert.equal((await forceReleaseTerminationHold(jobId, { callerSessionId: 'other' })).released, false);
+      assert.deepEqual(await forceReleaseTerminationHold(jobId, { callerSessionId: 'sess-release' }), {
+        released: true,
+      });
+      holdWorkspaceActivity([repo])();
+      const record = await readShellJobRecord(jobId);
+      assert.equal(record.status, 'running');
+      assert.equal(record.terminal, false);
+      assert.equal(record.workspaceReleased, true);
+      assert.equal(record.terminationUnconfirmed, true, 'releasing protection is not proof of termination');
+      const status = await shellJobsStatusFresh({ clientHostPid: process.pid });
+      assert.equal(status.sessions['sess-release'].count, 1);
+      assert.equal(
+        status.sessions['sess-release'].jobs[0].terminationUnconfirmed,
+        undefined,
+        'the row no longer offers Release or claims that the folder is locked'
+      );
+      assert.equal((await forceReleaseTerminationHold(jobId, { callerSessionId: 'sess-release' })).released, false);
+      await completeShellJobRecord(jobId, { status: 'completed', exitCode: 0 });
+      assert.equal((await readShellJobRecord(jobId)).terminal, true);
+    } finally {
+      retireShellJobRecord(jobId);
+      await _shellJobRecordWritesSettledForTest(jobId);
+      cleanupTempDirs();
+    }
+  });
 });
 
 test('a NUL-filled job record is no record, even for a strict reader', async () => {

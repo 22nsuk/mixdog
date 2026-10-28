@@ -26,7 +26,7 @@ export function shellTaskIdentity(command, options) {
 
 function registerPromotedTask({ result, command, cwd, options, startedAtMs }) {
   try {
-    return registerBackgroundTask({
+    const task = registerBackgroundTask({
       taskId: result.jobId,
       startedAtMs,
       surface: 'shell',
@@ -41,8 +41,13 @@ function registerPromotedTask({ result, command, cwd, options, startedAtMs }) {
         timeoutMs: result.backgroundTimeoutMs || 0,
       },
       resultType: 'shell_task_result',
-      cancel: () => killShellJob(result.jobId),
+      notifyOnCancel: true,
+      cancel: () => {
+        killShellJob(result.jobId);
+        return task.promise;
+      },
     });
+    return task;
   } catch {
     return null;
   }
@@ -67,13 +72,14 @@ export function renderBackgroundedResult({
   if (result.jobId) {
     task = registerPromotedTask({ result, command, cwd, options, startedAtMs });
     try {
-      watchBackgroundShellJob(result.jobId, {
+      const completion = watchBackgroundShellJob(result.jobId, {
         notifyFn: typeof options?.notifyFn === 'function' ? options.notifyFn : null,
         callerSessionId: options?.callerSessionId || options?.sessionId,
         routingSessionId: options?.routingSessionId || options?.sessionId,
         clientHostPid: options?.clientHostPid,
         hop: options?.hop,
       });
+      if (task && completion) task.promise = completion;
     } catch {
       /* best effort */
     }
