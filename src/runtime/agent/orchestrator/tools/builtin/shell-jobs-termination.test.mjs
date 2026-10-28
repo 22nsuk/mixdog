@@ -139,7 +139,10 @@ test('a background job that exits on its own keeps the folder until its survivor
   assert.equal(isHeld(repo), true);
   tree.state.next = () => processTable([]);
   t.mock.timers.tick(5_000);
-  await until(() => !isHeld(repo));
+  await until(async () => {
+    await _shellJobRecordWritesSettledForTest('job_bg_6100');
+    return !isHeld(repo);
+  });
 });
 
 test('a killed background job tracks a grandchild the kill orphaned', async (t) => {
@@ -161,7 +164,10 @@ test('a killed background job tracks a grandchild the kill orphaned', async (t) 
   assert.equal(isHeld(repo), true);
   tree.state.next = () => processTable([]);
   t.mock.timers.tick(5_000);
-  await until(() => !isHeld(repo));
+  await until(async () => {
+    await _shellJobRecordWritesSettledForTest('job_bg_6200');
+    return !isHeld(repo);
+  });
 });
 
 test('a background job left unconfirmed is flagged on its record and can be force-released', async (t) => {
@@ -197,7 +203,10 @@ test('a background job left unconfirmed is flagged on its record and can be forc
   assert.equal(isShellJobRunning('job_bg_6300'), true, 'release is not evidence of termination');
   tree.state.next = () => processTable([]);
   t.mock.timers.tick(5_000);
-  await until(() => !isShellJobRunning('job_bg_6300'));
+  await until(async () => {
+    await _shellJobRecordWritesSettledForTest('job_bg_6300');
+    return !isShellJobRunning('job_bg_6300');
+  });
 });
 
 test('closing a job owner without a snapshot keeps its hold visible until explicit release', async (t) => {
@@ -330,7 +339,10 @@ test('one whole lifecycle owns reads, waits and completion after the native resu
   assert.equal(isHeld(repo), true);
   tree.state.next = () => processTable([]);
   t.mock.timers.tick(5_000);
-  await until(() => !isShellJobRunning(jobId));
+  await until(async () => {
+    await _shellJobRecordWritesSettledForTest(jobId);
+    return !isShellJobRunning(jobId);
+  });
   await completed;
   assert.equal(peekShellJob(jobId).status, 'completed', 'the final result survives native eviction too');
   assert.equal(peekShellJob(jobId).stdoutPreview, 'root output');
@@ -407,7 +419,10 @@ test('releasing unknown protection keeps observation and completion pending unti
   assert.equal(settled, 0);
   tree.state.next = () => processTable([]);
   t.mock.timers.tick(5_000);
-  await until(() => settled === 1);
+  await until(async () => {
+    await _shellJobRecordWritesSettledForTest(jobId);
+    return settled === 1;
+  });
   assert.equal(peekShellJob(jobId).status, 'completed');
 });
 
@@ -444,7 +459,10 @@ test('a pending post-root observation keeps the task and its Stop row visible', 
   assert.equal(peekShellJob(jobId).status, 'running');
   tree.state.next = () => processTable([]);
   t.mock.timers.tick(5_000);
-  await until(() => !isShellJobRunning(jobId));
+  await until(async () => {
+    await _shellJobRecordWritesSettledForTest(jobId);
+    return !isShellJobRunning(jobId);
+  });
 });
 
 test('Stop during terminal persistence keeps the record, task and notification outcome consistent', async () => {
