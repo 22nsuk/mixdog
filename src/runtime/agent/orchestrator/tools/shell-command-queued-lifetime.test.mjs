@@ -13,11 +13,21 @@ const tree = scriptedChildTree();
 mock.module('../mcp/child-tree.mjs', { namedExports: tree.namedExports });
 let spawnedRun;
 let spawnFailure = null;
+let runReady;
+let runReported;
 mock.module('./lib/shell-run-spawn.mjs', {
   namedExports: {
     cleanupFailedShellChild: async () => {},
     spawnShellChild: async ({ run, ownerSessionId, cwd, command }) => {
       spawnedRun = run;
+      const ready = runReady;
+      const reported = runReported;
+      const resolveResult = run.resolveResult;
+      run.resolveResult = (result) => {
+        const accepted = resolveResult(result);
+        if (accepted) reported.resolve(result);
+        return accepted;
+      };
       if (spawnFailure) {
         run.treeSettled = spawnFailure;
         throw new Error('startup failed after process creation');
@@ -35,6 +45,11 @@ mock.module('./lib/shell-run-spawn.mjs', {
           return true;
         },
       });
+      // The remaining exit/abort wiring is synchronous. Await its listener
+      // registration instead of counting event-loop turns before spawn.
+      run.child.on('newListener', (event) => {
+        if (event === 'exit') ready.resolve(run);
+      });
       registerForegroundOwnedTree(run, ownerSessionId);
     },
   },
@@ -42,10 +57,6 @@ mock.module('./lib/shell-run-spawn.mjs', {
 const { execShellCommand } = await import('./shell-command.mjs');
 const { registerForegroundOwnedTree } = await import('./lib/shell-run-state.mjs');
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-async function until(predicate) {
-  for (let i = 0; i < 100 && !predicate(); i += 1) await flush();
-  assert.ok(predicate(), 'the asynchronous lifecycle transition completed');
-}
 function exitRoot(code) {
   const child = spawnedRun.child;
   child.exitCode = code;
@@ -54,6 +65,8 @@ function exitRoot(code) {
   child.emit('close', code, null);
 }
 function queueCommand(taskId) {
+  runReady = Promise.withResolvers();
+  runReported = Promise.withResolvers();
   let acquisitions = 0;
   return execShellCommand({
     shell: process.execPath,
@@ -74,7 +87,7 @@ function queueCommand(taskId) {
 }
 
 for (const rootExit of ['natural', 'cancelled']) {
-  test(`a queued command whose root is ${rootExit} stays running until every descendant exits`, async (t) => {
+  test(`a queued command whose root is ${rootExit} stays running until every descendant exits`, { timeout: 5_000 }, async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const realKill = process.kill;
     t.mock.method(process, 'kill', (pid, signal) =>
@@ -86,15 +99,19 @@ for (const rootExit of ['natural', 'cancelled']) {
     const taskId = `job_queued_${rootExit}_tree`;
     const result = await queueCommand(taskId);
     assert.equal(result.backgrounded, true);
-    await until(() => spawnedRun?.abortHandler);
+    await runReady.promise;
+    assert.equal(typeof spawnedRun.abortHandler, 'function');
     const task = getBackgroundTask(taskId);
     if (rootExit === 'natural') {
       exitRoot(0);
-      await until(() => spawnedRun.isResolved());
+      await runReported.promise;
       assert.equal(task.status, 'running', 'a root result cannot finish the queued task');
     }
     cancelBackgroundTask(taskId, 'stop', { notify: false });
-    await until(() => spawnedRun.treeSettled && spawnedRun.isResolved());
+    await runReported.promise;
+    assert.ok(spawnedRun.treeSettled);
+    // Finish the scripted observer's first pass before advancing its clock.
+    await flush();
     assert.equal(task.status, 'running', 'cancellation waits for actual termination');
     let settled = false;
     void result.settled.then(() => { settled = true; });
@@ -115,13 +132,13 @@ for (const rootExit of ['natural', 'cancelled']) {
   });
 }
 
-test('a queued startup failure does not finish its task while cleanup still owns a tree', async () => {
+test('a queued startup failure does not finish its task while cleanup still owns a tree', { timeout: 5_000 }, async () => {
   spawnedRun = null;
   let finishTree;
   spawnFailure = new Promise((resolve) => { finishTree = resolve; });
   try {
     const result = await queueCommand('job_queued_failed_startup');
-    await until(() => spawnedRun?.isResolved());
+    await runReported.promise;
     const task = getBackgroundTask('job_queued_failed_startup');
     assert.equal(task.status, 'running');
     cancelBackgroundTask(task.taskId, 'stop', { notify: false });

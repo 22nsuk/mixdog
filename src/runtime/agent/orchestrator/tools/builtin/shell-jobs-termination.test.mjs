@@ -493,11 +493,16 @@ test('Stop during terminal persistence keeps the record, task and notification o
   task.promise = watchBackgroundShellJob(jobId, context);
   const originalRename = fsp.rename;
   let releaseWrite;
+  let signalWriteStarted;
+  const writeStarted = new Promise((resolve) => { signalWriteStarted = resolve; });
   // Hold only the terminal record's first rename. The actual persistence and
   // task/notification consumers run unchanged, on both sides of the Stop.
   fsp.rename = async (source, destination, ...args) => {
     if (String(destination).endsWith(`${jobId}.json`) && !releaseWrite) {
-      await new Promise((resolve) => { releaseWrite = resolve; });
+      await new Promise((resolve) => {
+        releaseWrite = resolve;
+        signalWriteStarted();
+      });
     }
     return originalRename(source, destination, ...args);
   };
@@ -505,7 +510,7 @@ test('Stop during terminal persistence keeps the record, task and notification o
   try {
     tree.state.next = () => processTable([]);
     setTask(jobId, 'completed', { exitCode: 0 });
-    await until(() => releaseWrite);
+    await writeStarted;
     assert.equal(peekShellJob(jobId).status, 'running', 'Stop remains available while completion is being stored');
     const stopping = stopBackgroundShellJob(jobId, context);
     await flush();

@@ -52,8 +52,7 @@ test('a failed promotion settles with the exit its drain grace already consumed'
   advanceTimers = (ms) => t.mock.timers.tick(ms);
   const wake = new AbortController();
   wake.abort('input');
-  let result;
-  void execShellCommand({
+  const result = await execShellCommand({
     shell: process.execPath,
     shellArg: '',
     command: 'node server-launcher.js',
@@ -63,11 +62,7 @@ test('a failed promotion settles with the exit its drain grace already consumed'
     backgroundOnTimeout: true,
     wakeSignal: wake.signal,
     admission: { acquire: async () => ({ release: async () => {} }) },
-  }).then((value) => {
-    result = value;
   });
-  for (let turn = 0; turn < 100 && !result; turn += 1) await new Promise((resolve) => setImmediate(resolve));
-  assert.ok(result, 'the call resolves without waiting for a stdio close that never comes');
   assert.equal(result.backgrounded, false);
   assert.equal(result.killed, false, result.killCause || result.stderr);
   assert.equal(result.signal, null);
