@@ -17,6 +17,8 @@ after(restore);
 
 const { createRoot } = await import('react-dom/client');
 const { RouteEditor } = await import('./RouteEditor.tsx');
+const { ModelRouteEditor } = await import('./ModelRouteEditor.tsx');
+const { vertexTierOption } = await import('../../../../src/runtime/agent/orchestrator/providers/vertex-ai-models.mjs');
 
 const noop = () => {};
 const options = () => [...document.querySelectorAll('.route-sheet-option')];
@@ -101,3 +103,81 @@ test('a model-parameter pane roves with the arrows and ArrowLeft closes it', asy
     []
   );
 });
+
+for (const dropdown of [false, true]) {
+  test(`Vertex service tiers remain selectable in a ${dropdown ? 'dropdown' : 'flyout'} route menu`, async (t) => {
+    const host = document.createElement('main');
+    document.body.append(host);
+    const root = createRoot(host);
+    t.after(async () => {
+      await act(async () => root.unmount());
+      host.remove();
+    });
+    const model = {
+      provider: 'vertex-ai',
+      model: 'gemini-3.8-flash',
+      display: 'Gemini 3.8 Flash',
+      effortOptions: [{ value: 'high', label: 'High' }],
+      fastCapable: false,
+      modelParameterOptions: [vertexTierOption('gemini-3.8-flash')],
+    };
+    let value = {
+      provider: model.provider,
+      model: model.model,
+      effort: 'high',
+      contextPercent: 80,
+      modelParameters: { serviceTier: 'standard' },
+    };
+    const render = () =>
+      root.render(
+        React.createElement(ModelRouteEditor, {
+          models: [model],
+          value,
+          dropdown,
+          onChange: (selection) => {
+            value = selection;
+            render();
+          },
+        })
+      );
+    await act(async () => render());
+    await act(async () => host.querySelector('.model-trigger').click());
+    const rows = [...document.querySelectorAll('.route-sheet-row')];
+    const tier = rows.find((row) => row.textContent.includes('Service tier'));
+    assert.ok(tier, 'the catalog service tier must not disappear when there is no Speed control');
+    assert.equal(
+      rows.some((row) => row.textContent.startsWith('Speed')),
+      false
+    );
+    await act(async () => tier.click());
+    assert.deepEqual(
+      options().map((button) => button.textContent),
+      ['Standard', 'Flex (50% off, slower)', 'Priority (faster, higher price)']
+    );
+    for (const [label, serviceTier] of [
+      ['Flex', 'flex'],
+      ['Priority', 'priority'],
+      ['Standard', 'standard'],
+    ]) {
+      await act(async () =>
+        options()
+          .find((button) => button.textContent.startsWith(label))
+          .click()
+      );
+      assert.deepEqual(value, {
+        provider: model.provider,
+        model: model.model,
+        effort: 'high',
+        contextPercent: 80,
+        modelParameters: { serviceTier },
+      });
+      assert.equal(
+        options()
+          .find((button) => button.textContent.startsWith(label))
+          .getAttribute('aria-checked'),
+        'true',
+        'the controlled route retains the selected tier'
+      );
+    }
+  });
+}

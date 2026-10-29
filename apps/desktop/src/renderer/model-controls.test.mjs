@@ -866,10 +866,11 @@ async function openSpeedPane(selectorProps) {
     await Promise.resolve();
   });
   await act(async () => document.querySelector('.model-trigger').click());
-  const speedRow = [...document.querySelectorAll('.route-sheet-row')].find((button) =>
+  const speedRows = [...document.querySelectorAll('.route-sheet-row')].filter((button) =>
     button.textContent.includes('Speed')
   );
-  await act(async () => speedRow.click());
+  assert.equal(speedRows.length, 1, 'the dedicated Speed control must not have a duplicate parameter row');
+  await act(async () => speedRows[0].click());
   return {
     cleanup: async () => {
       await act(async () => root.unmount());

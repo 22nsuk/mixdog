@@ -125,11 +125,12 @@ function routeSheetContent({
   const speedLabel = speedLabels[speed];
   // The slider row IS the context control (TUI parity): a provider's own
   // context-window parameter (Cursor 272K/1M) must never duplicate it.
-  // `serviceTier` is the Speed row's Ultrafast tier, never a generic row.
+  // Speed owns `serviceTier` only when it offers Ultrafast; other tiers
+  // (such as Vertex Flex/Priority) remain generic parameters.
   // Daybreak Blue is the switch under Auto reasoning, never a generic row.
   const parameterRows = modelParameterOptions.filter(
     (parameter) =>
-      parameter.id !== 'serviceTier' &&
+      !(fastVisible && ultrafastAvailable && parameter.id === 'serviceTier') &&
       parameter.id !== DAYBREAK_PARAMETER_ID &&
       !(contextVisible && parameter.id === 'context')
   );
