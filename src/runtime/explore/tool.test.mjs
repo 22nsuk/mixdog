@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { runExplore, EXPLORE_OUTPUT_CAP } from './tool.mjs';
 import { EXPLORER_MAX_TOOL_ROUNDS, EXPLORER_SYSTEM_PROMPT, EXPLORER_TOOL_NAMES } from './explorer.mjs';
 import { featureDisallowedToolsFor } from '../agent/orchestrator/runtime-core/builtin-features.mjs';
@@ -46,9 +47,6 @@ function harness(respond, config = configured, extra = {}) {
   const deps = { load: () => config, initialize: async () => {}, providerFor: () => provider, ...extra };
   return { deps, requests, children };
 }
-
-const abortable = (signal) =>
-  new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
 
 test('a string query runs one read-only explorer on the Explore route and returns its answer', async () => {
   const h = harness((q) => `answer to ${q}\nsrc/a.mjs:3 — here`);
@@ -207,45 +205,74 @@ test('a long question gets a shortened heading, never the answer-truncated marke
   assert.doesNotMatch(text(res), /answer truncated/);
 });
 
-// Nothing an explorer may leave behind: no stored session, no child process.
-async function leftovers() {
+async function storedExploreSessions() {
   const { listStoredSessionSummaries } = await import('../agent/orchestrator/session/store/listing.mjs');
-  const sessions = listStoredSessionSummaries().filter((s) => /explore/i.test(`${s.agent} ${s.sourceName}`)).length;
-  const handles = process._getActiveHandles().filter((handle) => handle?.constructor?.name === 'ChildProcess').length;
-  return { sessions, handles };
+  return listStoredSessionSummaries().filter((s) => /explore/i.test(`${s.agent} ${s.sourceName}`)).length;
 }
 
-test('timeout aborts every explorer, keeps salvaged text and leaves nothing behind', async () => {
-  const before = await leftovers();
-  const h = harness(
-    (q, _messages, opts) => {
-      if (q === 'a') opts.onTextDelta?.('partial src/a.mjs:2');
-      return abortable(opts.signal);
-    },
-    configured,
-    { timeoutMs: 30 }
-  );
-  const res = await runExplore({ query: ['a', 'b'] }, {}, h.deps);
-  assert.ok(h.children.every((c) => c.signal.aborted && c.open === 0));
-  assert.match(text(res), /partial src\/a\.mjs:2\n\[explore: partial, timed out\]/);
-  assert.match(text(res), /## Q2: b\n\[explore error\] timed out after 0s with no answer/);
-  assert.deepEqual(await leftovers(), before);
-});
-
-test('caller cancellation aborts every explorer and returns only after they settled', async () => {
-  const before = await leftovers();
-  const h = harness((_q, _messages, opts) => abortable(opts.signal));
-  const controller = new AbortController();
-  const pending = runExplore({ query: ['a', 'b'] }, { signal: controller.signal }, h.deps);
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(h.children.length, 2);
-  controller.abort(new Error('esc'));
-  const res = await pending;
-  assert.equal(res.isError, true);
-  assert.match(text(res), /cancelled/);
-  assert.ok(h.children.every((c) => c.signal.aborted && c.open === 0));
-  assert.deepEqual(await leftovers(), before);
-});
+for (const mode of ['timeout', 'caller cancellation']) {
+  test(`${mode} aborts every explorer and waits for each request to settle`, async (t) => {
+    const before = await storedExploreSessions();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const gates = new Map(
+      ['a', 'b'].map((query) => [query, {
+        started: Promise.withResolvers(), release: Promise.withResolvers(),
+      }])
+    );
+    const h = harness(
+      async (query, _messages, opts) => {
+        if (query === 'a') opts.onTextDelta?.('partial src/a.mjs:2');
+        const gate = gates.get(query);
+        gate.started.resolve();
+        // Cancellation and request cleanup are separate events. Keep one
+        // request pending even after its sibling has finished cleanup.
+        await gate.release.promise;
+        if (opts.signal.aborted) throw opts.signal.reason;
+        return 'finished';
+      },
+      configured,
+      { timeoutMs: 30 }
+    );
+    const controller = new AbortController();
+    let returned = false;
+    const pending = runExplore({ query: ['a', 'b'] }, { signal: controller.signal }, h.deps).then((res) => {
+      returned = true;
+      assert.ok(h.children.every((child) => child.open === 0), 'all requests settled before Explore returned');
+      return res;
+    });
+    // Observe a failure immediately, even while the test holds cleanup gates.
+    pending.catch(() => {});
+    try {
+      await Promise.all([...gates.values()].map((gate) => gate.started.promise));
+      assert.equal(h.children.length, 2);
+      t.mock.timers.tick(29);
+      assert.ok(h.children.every((child) => !child.signal.aborted));
+      if (mode === 'timeout') t.mock.timers.tick(1);
+      else controller.abort(new Error('esc'));
+      assert.ok(h.children.every((child) => child.signal.aborted), 'cancellation reaches both requests');
+      await nextTurn();
+      assert.equal(returned, false, 'cancellation alone does not finish Explore');
+      gates.get('a').release.resolve();
+      await nextTurn();
+      assert.equal(h.children.find((child) => child.query === 'a').open, 0);
+      assert.equal(returned, false, 'Explore also waits for the second request');
+      gates.get('b').release.resolve();
+      const res = await pending;
+      if (mode === 'timeout') {
+        assert.equal(res.isError, undefined);
+        assert.match(text(res), /partial src\/a\.mjs:2\n\[explore: partial, timed out\]/);
+        assert.match(text(res), /## Q2: b\n\[explore error\] timed out after 0s with no answer/);
+      } else {
+        assert.equal(res.isError, true);
+        assert.match(text(res), /cancelled/);
+      }
+      assert.equal(await storedExploreSessions(), before);
+    } finally {
+      for (const gate of gates.values()) gate.release.resolve();
+      await pending;
+    }
+  });
+}
 
 test('without an Explore model the tool is off the surface and refuses to run', async () => {
   assert.ok(featureDisallowedToolsFor({}).includes('explore'));
