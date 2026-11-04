@@ -335,7 +335,7 @@ export async function executeTerminalTool(args, options = {}) {
     } catch (error) {
       if (error?.name === 'TimeoutError') return terminalToolError('terminal bridge timed out');
       if (options.signal?.aborted) return terminalToolError('terminal command cancelled');
-      const replacement = readBridgeDiscovery(DISCOVERY_FILE);
+      const replacement = readBridgeDiscovery(DISCOVERY_FILE, { fresh: true });
       if (!isRun && attempt === 0 && bridgeDiscoveryChanged(discovery, replacement)) {
         discovery = replacement;
         continue;
