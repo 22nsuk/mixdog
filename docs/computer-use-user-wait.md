@@ -76,46 +76,9 @@ they complete the pending Notepad/Calculator/Excel live acceptance checks.
 
 No deployment or app restart is part of this change.
 
-## Verification — 2026-09-05
-
-- 30 scoped tests passed: quiet-period reset, held input, explicit stop,
-  uncertain observation, cleanup, last-moment input, timeout/cancellation,
-  duplicate wait rejection, persistence, bridge queue separation, old-target
-  invalidation, overlay response/error delivery, and native guards.
-- Main/preload TypeScript passed. The main and both preload entries built;
-  `out/preload/computer-overlay.js` is emitted separately from the app preload.
-- The isolated hidden Electron fixture delivered Resume once, Stop once,
-  accepted a 10-second preference, and rejected stale/invalid requests.
-  The old custom-scheme navigation also reached its handler in that fixture.
-  Therefore it does **not** establish the installed no-response root cause.
-- PowerShell parsing and C# compilation passed without driving user windows.
-- The built-in skill structure validator passed. Guidance review retained
-  normal native-app routing, used bounded waiting for an interruption,
-  required fresh capture after resume, refused input after timeout, and kept
-  web-page work on Browser Use. This is a contract review, not an agent A/B run.
-- The initial test invocation used the repository root, where `tsx` is absent.
-  Running from the desktop package resolved that harness error; no dependency
-  installation was needed.
-
-Installed real-pointer Resume and the pending Notepad/Calculator/Excel flows
-remain unverified until a separately approved deployment and live test.
-
-## Historical minimal overlay revision (superseded)
-
-The single-button design supersedes the earlier text status, separate
-Resume/Stop controls and interval selector. Accessibility labels identify
-Pause/Resume without introducing additional visible text or hover captions.
-The pulse stops while paused and respects reduced-motion preferences.
-
-The revised scope passed 36 tests, main/preload TypeScript and production
-builds, and skill validation. The hidden Electron fixture checked the actual
-240×70 surface: one button, only the fixed caption, no overflow, and successful
-pause/resume IPC. A manual `user_pause` remained paused beyond the quiet interval.
-No installed-app deployment, restart or real-pointer acceptance was performed.
-
 ## Queue-preserving pause revision
 
-The fixed-caption/single-button surface above is superseded by distinct status
+The fixed-caption/single-button surface is superseded by distinct status
 text and a separate Stop button. The hidden Electron fixture checks both
 languages, all status/detail layouts, and real pause/resume/Stop preload IPC
 without showing a window. Queue tests cover FIFO preservation, native

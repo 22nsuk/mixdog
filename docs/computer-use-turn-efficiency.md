@@ -108,11 +108,3 @@ Recommended next changes, **not implemented in this pass**:
 - Preserve interruption, stale-target, authorization, and uncertain-delivery
   guards. Any changed batch capability or settle policy needs separate
   approval and observable native-fixture checks.
-
-### Follow-up verification
-
-All nine focused sequence, timing, run-log privacy, and failure-bundle tests
-passed. The desktop node typecheck reported five `timing` property errors in
-`src/main/browser/host.integration.ts:627–630`, outside this change; no Computer
-Use type errors were reported. The full node typecheck remains unresolved.
-No deployment, installed restart, or live desktop input was performed.
