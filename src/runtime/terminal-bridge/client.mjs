@@ -295,6 +295,7 @@ async function requestBridge(discovery, payload, signal) {
   try {
     return { body: await readJson(response), status: response.status };
   } catch {
+    signal.throwIfAborted();
     throw new Error(`terminal bridge returned an invalid response (HTTP ${response.status})`);
   }
 }

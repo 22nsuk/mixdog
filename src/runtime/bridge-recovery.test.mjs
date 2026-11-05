@@ -65,6 +65,16 @@ for (const client of CLIENTS) {
         seen.push({ endpoint, token: request.headers.authorization, command });
         if (endpoint === 'old' && mode !== 'warm') {
           if (mode !== 'unchanged') publish(replacement);
+          if (mode.startsWith('body-')) {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.write('{"ok":');
+            return;
+          }
+          if (mode.startsWith('invalid-json')) {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end('{');
+            return;
+          }
           if (mode === 'cancel') controller.abort();
           if (mode === 'unauthorized') {
             response.writeHead(401, { 'content-type': 'application/json' });
@@ -94,30 +104,59 @@ for (const client of CLIENTS) {
       }
       const modes = ['warm', 'changed', 'unchanged', 'twice', 'mutation', 'cancel'];
       if (client.name === 'computer') modes.push('unauthorized');
+      if (client.name === 'terminal') {
+        modes.push('body-timeout', 'body-timeout-mutation', 'body-cancel', 'invalid-json', 'invalid-json-mutation');
+      }
       for (mode of modes) {
-        await t.test(mode, async () => {
+        await t.test(mode, async (t) => {
           _resetWatchedFileCachesForTest();
           publish(old, 'old');
           assert.equal(readBridgeDiscovery(file).port, old.address().port);
           seen.length = 0;
           controller = new AbortController();
-          const args = mode === 'mutation' ? client.mutation : client.read;
+          let bodyReads = 0;
+          if (mode.startsWith('body-')) {
+            let deadline;
+            t.mock.method(AbortSignal, 'timeout', () => {
+              deadline = new AbortController();
+              return deadline.signal;
+            });
+            const readText = Response.prototype.text;
+            t.mock.method(Response.prototype, 'text', function () {
+              const reading = readText.call(this);
+              if (new URL(this.url).port === String(old.address().port)) {
+                // Real headers have arrived and native body consumption has
+                // started. Only the abort timing is controlled.
+                bodyReads += 1;
+                if (mode === 'body-cancel') controller.abort(new Error('user stopped'));
+                else deadline.abort(new DOMException('budget expired', 'TimeoutError'));
+              }
+              return reading;
+            });
+          }
+          const args = mode.endsWith('mutation') ? client.mutation : client.read;
           const result = await client.execute(args, {
             sessionId: `${client.name}-${mode}`,
             signal: controller.signal,
           });
-          const recovered = mode === 'changed' || mode === 'unauthorized';
-          assert.equal(result.isError, mode === 'warm' || recovered ? undefined : true);
+          const recovered = mode === 'changed' || mode === 'unauthorized' || mode === 'invalid-json';
+          if (mode.startsWith('body-')) assert.equal(bodyReads, 1);
           assert.deepEqual(
             seen.map(({ endpoint }) => endpoint),
             recovered || mode === 'twice' ? ['old', 'replacement'] : ['old']
           );
+          assert.equal(result.isError, mode === 'warm' || recovered ? undefined : true);
           assert.equal(seen[0].token, 'Bearer old');
           if (seen.length === 2) {
             assert.equal(seen[1].token, 'Bearer replacement');
             assert.deepEqual(seen[1].command, seen[0].command, 'only the same observation is retried');
           }
           if (recovered) assert.match(result.content[0].text, /observed/);
+          if (mode.startsWith('body-timeout')) assert.equal(result.content[0].text, 'Error: terminal bridge timed out');
+          if (mode === 'body-cancel') assert.equal(result.content[0].text, 'Error: terminal command cancelled');
+          if (mode === 'invalid-json-mutation') {
+            assert.equal(result.content[0].text, 'Error: terminal bridge returned an invalid response (HTTP 200)');
+          }
         });
       }
       await t.test('timeout is not retried even with a replacement', async (t) => {
